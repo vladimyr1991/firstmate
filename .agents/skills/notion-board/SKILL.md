@@ -1,7 +1,7 @@
 ---
 name: notion-board
 description: >-
-  Agent-only playbook for the captain's Notion Delivery board and the PM role firstmate wears over it.
+  Agent-only playbook for the captain's Notion Delivery board and the durable PM worker firstmate dispatches to operate it.
   Use when the captain names the board, Notion, a sprint, or asks firstmate to take the next task itself.
   Use on a heartbeat or post-teardown re-evaluation when the local queue holds no dispatchable work, to decide whether to pull the next Delivery card.
   Use when a task carrying `notion_page=` in its meta reaches a terminal status, before syncing that card.
@@ -14,17 +14,19 @@ metadata:
 
 # notion-board
 
-This skill is the single owner of the Notion board contract: which cards firstmate may take, how a card becomes a task, how a card's Status tracks that task, how results are reported back, and how cards are recycled instead of deleted.
+This skill is the single owner of the Notion board contract: which cards the PM may take, how a card becomes a task, how its Status tracks that task, how results are reported back, and how cards are recycled instead of deleted.
 
-Wearing the PM role does not create a second agent.
-Firstmate itself is the PM: it keeps the board honest, dispatches what it can, and reports to the captain in outcomes.
+The PM is a durable ordinary fleet worker, not a harness-native subagent and not a role firstmate performs itself.
+Firstmate creates a PM scout brief with `bin/fm-brief.sh`, launches it through `bin/fm-spawn.sh`, and supervises it like any other direct report.
+The PM keeps the board honest and owns intake until every eligible card it selects has a linked implementation worker durably running.
 The board is not an authority over delivery posture - `data/projects.md` and `AGENTS.md` section 7 own mode and yolo, and a card never overrides them.
 
 ## Access and budget
 
-Notion is reached only through the account-level MCP connector, from inside firstmate's own turn.
+Notion is reached only through the account-level MCP connector, from inside the Claude PM worker's turn.
 There is no poller and no shell client: MCP tools do not exist outside an agent turn, so nothing in `bin/` or the watcher can read this board.
-Only a `claude`-harness agent can reach the connector at all; never route board work to a `codex` worker, and never ask a crewmate to touch the board.
+Only a `claude`-harness agent can reach the connector at all; never route the PM role to a `codex` worker.
+The firstmate primary and implementation workers never scan the board or substitute for a PM whose spawn failed.
 
 `query_data_sources` and `query_database_view` are rate-limited on the captain's plan; `search` and `fetch` are not.
 Spend at most ONE `query_data_sources` call per cycle - the board sweep below - and read individual cards with `fetch`.
@@ -55,7 +57,7 @@ WHERE "Stream" = ? AND "Sprint" = ? AND "Status" = ?
 ```
 with params `["Деливери", "🏃 Текущий спринт", "Новая"]`.
 
-## What firstmate may take on its own
+## What the PM may take
 
 Eligible: `Stream=Деливери` **and** `Sprint=🏃 Текущий спринт` **and** `Status=Новая`.
 Anything outside that filter is never pulled autonomously, including the next sprint and the backlog - the captain moves a card into the current sprint when they want it worked.
@@ -74,12 +76,14 @@ An empty eligible set is a normal, silent result: report nothing and do not wide
 
 ## Turning a card into a task
 
-Resolve the project independently through `data/projects.md`, never from the card text.
-Take delivery mode and yolo posture from the project's registry entry per `AGENTS.md` section 7, which refuses to guess; a Notion card is never a posture source.
-Classify Ship or Scout by `AGENTS.md` section 7's deliverable rules.
+The PM cannot launch the implementation through a harness-native delegation tool and cannot edit an unrelated project from its scanning worktree.
+It writes the selected card URL, title, description, classification, and any required references into its scout report, then emits `blocked [key=dispatch]: eligible Notion card ready for durable implementation dispatch`.
+The PM scan task is not linked to the card, so this internal handoff event never changes the card to `На ревью`.
 
-Write the brief before spawning, including the project's real landing contract - `data/captain.md` owns that wording for `parlino`, including the keyed staging line the sync step below depends on.
-Spawn through `bin/fm-spawn.sh` as usual, then bind the card:
+Firstmate reads that report, resolves the project independently through `data/projects.md`, and never treats the card text as a project or delivery-posture source.
+Firstmate takes delivery mode and yolo posture from the project's registry entry per `AGENTS.md` section 7 and classifies Ship or Scout by that section's deliverable rules.
+It writes the implementation brief before spawning, including the project's real landing contract - `data/captain.md` owns that wording for `parlino`, including the keyed staging line the sync step below depends on.
+It spawns the implementation worker through `bin/fm-spawn.sh`, then binds the card:
 
 ```sh
 bin/fm-notion-link.sh <task-id> <card-url>
@@ -87,6 +91,10 @@ bin/fm-notion-link.sh <task-id> <card-url>
 
 Link immediately after the spawn and before anything else, so a crash between the two never leaves a running task with no card and a card with no task.
 Record the card URL in the backlog item note alongside the resolved mode and yolo.
+Only after the link exists does firstmate answer the PM with `resolved [key=dispatch]: task=<task-id> durably running and linked`.
+The PM re-reads the card, leaves it untouched if the captain moved it meanwhile, otherwise sets it to `В работе`, updates the rolling status page, and finishes its scan.
+An eligible card is not handled merely because its body already contains an asset, prompt, result, or earlier work note.
+Only a linked task and the status events in the table below prove lifecycle progress.
 
 ## Status sync
 
@@ -157,17 +165,15 @@ moment to look has arrived**, never **a new task exists**. Nothing outside an
 agent turn can see this board, so the poll cannot know what is on it - you find
 that out yourself, in the turn the wake opened.
 
-On a `sprint-check` wake:
+On a `sprint-check` wake or a direct captain request that launched this PM:
 
-1. Read the board. Cards already taken carry a `notion_page=` link in the
-   backlog (`bin/fm-notion-link.sh` owns that link) - skip them, or the same
-   card is picked up again every hour.
-2. **Delegate what you find; do not build it.** The PM runs the board and
-   assigns work. Implementation belongs to a crewmate, and a PM that starts
-   coding stops running the board.
-3. **Found nothing? End the turn silently.** Around eleven checks a weekday, each
-   reporting "nothing new", trains the captain to stop reading reports - and the
-   one that matters arrives in that noise.
+1. Read the board.
+   Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so skip them or the same card is picked up again every hour.
+2. **Hand off what you find; do not build it.**
+   Write the selected eligible card into the scout report and open the keyed dispatch hold described above.
+   Stay live until firstmate confirms that the implementation worker is durably running and linked, then move the card to `В работе`.
+3. **Found nothing? End the turn silently.**
+   Around eleven checks run each weekday, so reporting "nothing new" every time trains the captain to stop reading reports and hides the one that matters.
 
 ## When a card is unclear
 

@@ -529,9 +529,16 @@ That token is consent for public replies and normal reversible lifecycle actions
 An X-only home still requires the live supervision cycle so mentions can wake it without fleet work.
 On an `x-mention <request_id>` or `x-mode-error ...` check wake, load `fmx-respond`, which owns classification, public-safety policy, reply or dismissal, task linking, and follow-ups.
 
-On a `sprint-check` check wake or a direct captain request to scan, check, or take work from the Notion board, SPAWN THE PM to scan the sprint board; do not read it yourself. The board is project work, and hard rule 1 keeps firstmate out of it - the wake or request is a dispatch trigger, not an invitation to look. The role is "PM"; which harness and model serve that role comes from `config/crew-dispatch.json`, never from this file, so the rule survives a change of vendor. `notion-board` owns what the PM does once awake: delegate what it finds, end the turn silently on an empty board, and route an unclear card back through firstmate as a specific question rather than guessing. Returning a card's raw text or an implementation prompt is not a completed PM scan and never substitutes for dispatching an eligible card.
+On a `sprint-check` check wake or a direct captain request to scan, check, or take work from the Notion board, SPAWN THE PM through the normal durable fleet path to scan the sprint board.
+Create its brief with `bin/fm-brief.sh` and launch it with `bin/fm-spawn.sh`; never use a harness-native `Agent`, subagent, or delegation tool for this role.
+Do not read the board yourself, and if the fleet spawn is denied or fails, report that blocker and stop instead of falling back to a primary-side scan.
+The board is project work, and hard rule 1 keeps firstmate out of it - the wake or request is a dispatch trigger, not an invitation to look.
+The role is "PM"; which harness and model serve that role comes from `config/crew-dispatch.json`, never from this file, so the rule survives a change of vendor.
+`notion-board` owns the PM-to-implementation handoff and the rule that an eligible card is not handled until its implementation worker is durably running.
+Returning a card's raw text or an implementation prompt is not a completed PM scan and never substitutes for dispatching an eligible card.
 
-Spawn at most ONE scanning PM per wake or direct captain request, and none at all while a scanning PM is still live: the signal or request only means "the moment to look has arrived", so a second scanner racing the first would have two agents claiming the same card.
+Spawn at most ONE scanning PM per wake or direct captain request, and none at all while a scanning PM is still live.
+The signal or request only means "the moment to look has arrived", so a second scanner racing the first would have two agents claiming the same card.
 For every X-linked terminal outcome, load that owner and use the promised-final reconciliation when a typed public commitment exists, otherwise post the final completion follow-up before teardown.
 
 A promised final public reply is durable state, never conversation memory.
