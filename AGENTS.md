@@ -534,7 +534,7 @@ Create its brief with `bin/fm-brief.sh` and launch it with `bin/fm-spawn.sh`; ne
 Do not read the board yourself, and if the fleet spawn is denied or fails, report that blocker and stop instead of falling back to a primary-side scan.
 The board is project work, and hard rule 1 keeps firstmate out of it - the wake or request is a dispatch trigger, not an invitation to look.
 The role is "PM"; which harness and model serve that role comes from `config/crew-dispatch.json`, never from this file, so the rule survives a change of vendor.
-`notion-board` owns the PM-to-implementation handoff and the rule that an eligible card is not handled until its implementation worker is durably running.
+`notion-board` owns the PM-to-implementation handoff, the four-worker concurrency cap, and the rule that an eligible card is not handled until its implementation worker is durably running.
 Returning a card's raw text or an implementation prompt is not a completed PM scan and never substitutes for dispatching an eligible card.
 
 Spawn at most ONE scanning PM per wake or direct captain request, and none at all while a scanning PM is still live.

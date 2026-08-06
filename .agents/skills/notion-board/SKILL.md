@@ -19,6 +19,7 @@ This skill is the single owner of the Notion board contract: which cards the PM 
 The PM is a durable ordinary fleet worker, not a harness-native subagent and not a role firstmate performs itself.
 Firstmate creates a PM scout brief with `bin/fm-brief.sh`, launches it through `bin/fm-spawn.sh`, and supervises it like any other direct report.
 The PM keeps the board honest and owns intake until every eligible card it selects has a linked implementation worker durably running.
+Notion-board implementation work is capped at four concurrent workers across the whole home, not four new workers per scan.
 The board is not an authority over delivery posture - `data/projects.md` and `AGENTS.md` section 7 own mode and yolo, and a card never overrides them.
 
 ## Access and budget
@@ -71,19 +72,24 @@ Apply the dispatchability test to every candidate: can a crewmate finish this in
 The real board mixes both freely, so make this call per card and state which bucket each candidate landed in.
 When a card is ambiguous, treat it as captain work and ask one concise question rather than dispatching a guess.
 
-Pull one card at a time unless the captain asks for more.
+Fill available implementation capacity up to four concurrent Notion-linked workers on every scan.
+Firstmate calculates capacity from reconciled live task state immediately before each spawn, counting every non-terminal task carrying an active `notion_page=` link, including blocked or paused workers whose endpoint and work remain live.
+Firstmate records that scan's `active_count` and remaining capacity in the PM brief before launch so the PM knows the maximum number of cards it may select.
+The PM may select at most `4 - active_count` dispatchable cards from the single sweep and records each selected card separately in its report.
+If the fleet is already at four, leave every `Новая` card untouched and end the scan without dispatching another worker.
+Re-check capacity before every spawn in a multi-card handoff because another task may have started after the PM produced its report.
 An empty eligible set is a normal, silent result: report nothing and do not widen the filter to find work.
 
 ## Turning a card into a task
 
 The PM cannot launch the implementation through a harness-native delegation tool and cannot edit an unrelated project from its scanning worktree.
-It writes the selected card URL, title, description, classification, and any required references into its scout report, then emits `blocked [key=dispatch]: eligible Notion card ready for durable implementation dispatch`.
+It writes each selected card's URL, title, description, classification, and any required references into its scout report, then emits `blocked [key=dispatch]: <count> eligible Notion card(s) ready for durable implementation dispatch`.
 The PM scan task is not linked to the card, so this internal handoff event never changes the card to `На ревью`.
 
-Firstmate reads that report, resolves the project independently through `data/projects.md`, and never treats the card text as a project or delivery-posture source.
-Firstmate takes delivery mode and yolo posture from the project's registry entry per `AGENTS.md` section 7 and classifies Ship or Scout by that section's deliverable rules.
-It writes the implementation brief before spawning, including the project's real landing contract - `data/captain.md` owns that wording for `parlino`, including the keyed staging line the sync step below depends on.
-It spawns the implementation worker through `bin/fm-spawn.sh`, then binds the card:
+Firstmate reads that report, resolves each card's project independently through `data/projects.md`, and never treats the card text as a project or delivery-posture source.
+For each card, firstmate takes delivery mode and yolo posture from the project's registry entry per `AGENTS.md` section 7 and classifies Ship or Scout by that section's deliverable rules.
+For every selected card while capacity remains, it writes an implementation brief before spawning, including the project's real landing contract - `data/captain.md` owns that wording for `parlino`, including the keyed staging line the sync step below depends on.
+It spawns one implementation worker per card through `bin/fm-spawn.sh`, then binds that card:
 
 ```sh
 bin/fm-notion-link.sh <task-id> <card-url>
@@ -91,8 +97,9 @@ bin/fm-notion-link.sh <task-id> <card-url>
 
 Link immediately after the spawn and before anything else, so a crash between the two never leaves a running task with no card and a card with no task.
 Record the card URL in the backlog item note alongside the resolved mode and yolo.
-Only after the link exists does firstmate answer the PM with `resolved [key=dispatch]: task=<task-id> durably running and linked`.
-The PM re-reads the card, leaves it untouched if the captain moved it meanwhile, otherwise sets it to `В работе`, updates the rolling status page, and finishes its scan.
+Only after every successful spawn has its link does firstmate answer the PM with `resolved [key=dispatch]: <card-url>=<task-id> ... durably running and linked`.
+If capacity closes or one spawn fails, firstmate lists only the successfully linked mappings and states the failed or deferred cards explicitly; those cards remain `Новая` for the next scan.
+The PM re-reads every successfully linked card, leaves any card untouched if the captain moved it meanwhile, otherwise sets it to `В работе`, updates the rolling status page, and finishes its scan.
 An eligible card is not handled merely because its body already contains an asset, prompt, result, or earlier work note.
 Only a linked task and the status events in the table below prove lifecycle progress.
 
@@ -169,9 +176,9 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
 
 1. Read the board.
    Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so skip them or the same card is picked up again every hour.
-2. **Hand off what you find; do not build it.**
-   Write the selected eligible card into the scout report and open the keyed dispatch hold described above.
-   Stay live until firstmate confirms that the implementation worker is durably running and linked, then move the card to `В работе`.
+2. **Fill available capacity; do not build the cards yourself.**
+   Select as many dispatchable cards as the four-worker cap permits, write each one into the scout report, and open the single keyed dispatch hold described above.
+   Stay live until firstmate confirms which implementation workers are durably running and linked, then move only those cards to `В работе`.
 3. **Found nothing? End the turn silently.**
    Around eleven checks run each weekday, so reporting "nothing new" every time trains the captain to stop reading reports and hides the one that matters.
 
