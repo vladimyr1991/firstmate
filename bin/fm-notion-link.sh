@@ -68,7 +68,7 @@ notion_meta_write() {  # <meta> <mode:link|archive> [url] [ts]
   mv -f "$tmp" "$meta" || { rm -f "$tmp"; return 1; }
 }
 
-MODE=link
+MODE="link"
 if [ "${1:-}" = "--archive" ]; then
   MODE=archive
   shift
@@ -124,7 +124,7 @@ case "$URL" in
   *) echo "fm-notion-link: page url must be a notion.so or notion.com link" >&2; exit 2 ;;
 esac
 case "$URL" in
-  *[[:space:]]*|*'$'*|*'`'*|*'"'*|*"'"*|*'\'*|*'<'*|*'>'*)
+  *[[:space:]]*|*'$'*|*'`'*|*'"'*|*"'"*|*"\\"*|*'<'*|*'>'*)
     echo "fm-notion-link: page url contains an unsafe character" >&2; exit 2 ;;
 esac
 

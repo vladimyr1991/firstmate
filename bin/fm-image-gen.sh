@@ -266,6 +266,7 @@ fi
 [ -n "$PROMPT_FILE" ] || die_usage "a prompt is required (--prompt-file <path> or --prompt -)"
 
 PROMPT_TMP=
+# shellcheck disable=SC2329 # trap resolves "cleanup" dynamically; this runs on any exit before the fuller redefinition below replaces it
 cleanup() { [ -z "$PROMPT_TMP" ] || rm -f "$PROMPT_TMP"; }
 trap cleanup EXIT
 
