@@ -100,6 +100,8 @@ state/               volatile runtime signals; gitignored
   <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
   <id>.pr-poll-registration  private transactional provenance record binding the task, canonical metadata identity, sidecar, and static poll publication
   <id>.pr-poll-retirement  private identity-bound crash-recovery receipt for one exact validated merged result; removed after its poll artifacts retire
+  <id>.ci-run-poll   private validated forge/repo/run-id sidecar for a raw CI run watch (bin/fm-ci-run-check.sh), independent of any pull request; armed as an intentional custom check, not a byte-static template
+  <id>.ci-run-poll-retirement  private one-shot receipt claimed by the generated check itself on a terminal result, before it prints and retires every artifact; a leftover receipt means an earlier firing was interrupted before finishing removal, recovered by the next check execution or the next fm-ci-run-check.sh registration for the same task id
   .pr-check-quarantine/  private non-runnable storage for checks neutralized by the non-executing migration
   .pr-check-migration.log  private per-task outcomes distinguishing rebuilt or canonically registered replacement polls, quarantined unarmed polls, and incomplete migrations
   .pr-check-migration-scan-v1  private marker proving the non-executing scan disabled every unsafe legacy check; .pr-check-migration-v1 separately records completed private repairs
