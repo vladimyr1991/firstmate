@@ -98,6 +98,7 @@ test_prompt_metacharacters_survive_intact() {
   mkdir -p "$home" "$out"
   make_fake_curl "$bin" normal
   printf 'GEMINI_IMAGE_API_KEY=k\n' > "$home/.env"
+  # shellcheck disable=SC2016 # deliberate literal $ and ` — this is prompt data, not shell syntax
   prompt='Постер "Parlino" за $5; `rm -rf /`; 50% off
 вторая строка с '"'"'кавычками'"'"' и \backslash'
   printf '%s' "$prompt" > "$d/prompt.txt"
@@ -141,7 +142,7 @@ test_unknown_model_fails_loudly_without_substituting() {
 # The configured model is used when no flag overrides it, and config/ is the
 # captain-private home for that choice.
 test_model_comes_from_config() {
-  local d bin home out url
+  local d bin home out
   d="$TMP_ROOT/config"; bin="$d/bin"; home="$d/home"; out="$d/out"
   mkdir -p "$home" "$out" "$d/config"
   make_fake_curl "$bin" normal
