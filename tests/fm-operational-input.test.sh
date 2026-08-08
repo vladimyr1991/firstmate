@@ -32,6 +32,20 @@ test_current_generic_matrix() {
     body="CURRENT_BODY_FOR_${kind}"
     fm_operational_input_encode "$kind" "$body" encoded \
       || fail "could not encode current $kind fixture"
+    if [ "$kind" = launch-brief ]; then
+      [ "${encoded#'FIRSTMATE_OP: '}" != "$encoded" ] \
+        || fail "launch-brief emission did not begin with the visible FIRSTMATE_OP: header"
+      case "$encoded" in
+        *"$FM_OPERATIONAL_MARK"*) fail "launch-brief emission still carries the invisible U+2063 marker" ;;
+      esac
+      [ "$encoded" = "FIRSTMATE_OP: v1 launch-brief: ${FM_LAUNCH_BRIEF_DISCLOSURE}"$'\n'"$body" ] \
+        || fail "launch-brief emission lost its header/disclosure/body shape"
+    else
+      [ "${encoded#"$FM_OPERATIONAL_HEADER_PREFIX"}" != "$encoded" ] \
+        || fail "current $kind emission lost the landed marked header"
+      [ "$encoded" = "${FM_OPERATIONAL_HEADER_PREFIX}${kind}: ${body}" ] \
+        || fail "current $kind emission is no longer byte-identical to the landed form"
+    fi
     fm_operational_input_kind "$encoded" parsed \
       || fail "could not parse current $kind fixture"
     [ "$parsed" = "$kind" ] \
@@ -46,6 +60,31 @@ test_current_generic_matrix() {
       || fail "current $kind body changed during encode/parse"
   done
   pass "operational input: every current generic envelope retains its exact structured kind"
+}
+
+test_launch_brief_dual_forms() {
+  local marked parsed stripped
+  marked="${FM_OPERATIONAL_HEADER_PREFIX}launch-brief: IN_FLIGHT_MARKED_BRIEF"
+  fm_operational_input_kind "$marked" parsed \
+    || fail "the marked in-flight launch-brief form no longer parses"
+  [ "$parsed" = launch-brief ] \
+    || fail "marked launch-brief became $parsed"
+  [ "$(kind_cli "$marked")" = launch-brief ] \
+    || fail "CLI lost the marked launch-brief form"
+  [ "$(classify_cli "$marked")" = launch-brief ] \
+    || fail "classifier lost the marked launch-brief form"
+  fm_operational_input_body "$marked" stripped \
+    || fail "could not recover the marked launch-brief body"
+  [ "$stripped" = IN_FLIGHT_MARKED_BRIEF ] \
+    || fail "marked launch-brief body changed during parse"
+
+  # An unmarked launch-brief without the disclosure line (a hand-fed or
+  # foreign producer) still parses, with its body intact.
+  fm_operational_input_body "FIRSTMATE_OP: v1 launch-brief: BARE_UNMARKED_BRIEF" stripped \
+    || fail "the unmarked disclosure-free launch-brief form no longer parses"
+  [ "$stripped" = BARE_UNMARKED_BRIEF ] \
+    || fail "unmarked disclosure-free launch-brief body changed during parse"
+  pass "operational input: launch-brief parses in both its marked in-flight and unmarked current forms"
 }
 
 test_current_from_firstmate_carrier() {
@@ -113,6 +152,9 @@ test_genuine_near_misses_remain_unclassified() {
   done <<EOF
 Captain quote: ${FM_OPERATIONAL_PREFIX}v1 watcher
 FIRSTMATE_OP: v1 watcher
+FIRSTMATE_OP: v1 watcher: UNMARKED_NON_LAUNCH_KIND_STAYS_CAPTAIN_TEXT
+FIRSTMATE_OP: v1 launch-brief
+Captain quote: FIRSTMATE_OP: v1 launch-brief: QUOTED_UNMARKED_LAUNCH_BRIEF
 $marker arbitrary captain text
 Captain quote: $FM_LEGACY_SESSIONSTART
 ${FM_LEGACY_SESSIONSTART} Please explain this sentence.
@@ -152,6 +194,7 @@ test_invalid_current_encodings_are_rejected() {
 }
 
 test_current_generic_matrix
+test_launch_brief_dual_forms
 test_current_from_firstmate_carrier
 test_landed_untyped_prefix_is_explicitly_legacy
 test_isolated_legacy_matrix

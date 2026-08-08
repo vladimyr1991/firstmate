@@ -2827,7 +2827,9 @@ for (const [needle, kind] of expected) {
   const text = entry?.message.content?.find((item) => item.type === "text")?.text;
   const exactEnvelope = kind === "from-firstmate"
     ? text?.startsWith("[fm-from-firstmate]\u2063corr=0123456789abcdef ")
-    : text?.startsWith(`\u2063FIRSTMATE_OP: v1 ${kind}: `);
+    : kind === "launch-brief"
+      ? text?.startsWith("FIRSTMATE_OP: v1 launch-brief: ") && !text.includes("\u2063")
+      : text?.startsWith(`\u2063FIRSTMATE_OP: v1 ${kind}: `);
   if (!entry || !exactEnvelope) {
     throw new Error(`expected exact user-role ${needle} as ${kind}, found ${JSON.stringify(entry)}`);
   }

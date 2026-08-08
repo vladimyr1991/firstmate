@@ -172,7 +172,8 @@ Only `genuine-user-prompt`, `genuine-agent-response`, and `working-status` are p
 Every other audited class is policy-hidden when Pi exposes a supported presentation boundary, but semantic input is never transformed to enforce that preference.
 The home-local persistence schema is owned by [`docs/configuration.md`](configuration.md#pi-calm-preference-configcalm).
 
-Current session-start, watcher, turn-end guard, away supervisor, and launch-brief inputs retain their versioned U+2063 static envelopes.
+Current session-start, watcher, turn-end guard, and away supervisor inputs retain their versioned U+2063 static envelopes.
+The launch-brief input keeps the same versioned header without the invisible marker and adds a fixed self-disclosure line, because its recipient is always a brand-new worker and a hidden leading byte reads as injection obfuscation to a safety-conscious model; parsing accepts both the unmarked current form and the marked in-flight form.
 The established leading `[fm-from-firstmate]` plus U+2063 routing carrier remains current so running secondmate charters remain compatible.
 An exact current static envelope remains sufficient provenance without nonce, source-authentication, replay-prevention, secondary-token, blocking, redaction, or private-retrieval machinery.
 Calm classifies only at Pi's transcript-presentation owner through the canonical parser and never replaces, reorders, or weakens those messages.
