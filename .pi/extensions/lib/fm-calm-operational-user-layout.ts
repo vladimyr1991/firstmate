@@ -65,7 +65,9 @@ export function installCalmOperationalUserLayout(): void {
   };
   const hidesOperationalInput = (): boolean => calmPresentationHides("synthetic-user");
   const isOperationalInput = (text: string): boolean => {
-    if (!text.includes("\u2063")) return false;
+    // Cheap gate only; the canonical classifier decides. The unmarked visible
+    // prefix covers the launch-brief kind, which carries no U+2063.
+    if (!text.includes("\u2063") && !text.startsWith("FIRSTMATE_OP: ")) return false;
     return (
       classifyFirstmateCurrentOperationalText(text) !== undefined ||
       text.startsWith(LEGACY_CALM_OPERATIONAL_PREFIX)

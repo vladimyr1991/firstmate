@@ -8,7 +8,25 @@
 # Current generic wire form:
 #   U+2063 FIRSTMATE_OP: v1 <kind>: <body>
 #
-# The landed U+2063 + "FIRSTMATE_OP: " prefix is permanent compatibility.
+# The launch-brief kind is the one exception on emission: it drops the
+# invisible U+2063 marker and prepends one fixed self-disclosure line, so its
+# current wire form is
+#   FIRSTMATE_OP: v1 launch-brief: <disclosure line>\n<body>
+# A launch-brief's recipient is always a brand-new agent with no prior
+# context, so nothing keys on that leading byte on the receiving side, and a
+# hidden character prefixing a message that then claims authority reads as
+# injection obfuscation to a safety-conscious model (2026-08-07: four
+# consecutive fresh workers refused marked launch briefs as suspected prompt
+# injection). Nothing about the delivery is concealed: the disclosure line
+# names this file as the verifiable source of the format.
+#
+# The landed U+2063 + "FIRSTMATE_OP: " prefix is permanent compatibility for
+# PARSING every kind, including already-in-flight marked launch briefs, and
+# for EMISSION of every kind except launch-brief: live agents' hooks and
+# charters key on the marker (FM_INJECT_MARK, the away-mode daemon,
+# secondmate charter context). Unmarked parsing stays scoped to launch-brief
+# so an ASCII-only "FIRSTMATE_OP:" near miss of any other kind remains
+# ordinary captain text.
 # The version and kind header make current inputs structurally typed without
 # deriving provenance from body prose. The established from-firstmate routing
 # marker remains a current compatibility carrier because already-running
@@ -25,10 +43,17 @@
 # A non-match exits 1 silently. Invalid use exits 2. Bash 3.2 compatible.
 
 FM_OPERATIONAL_MARK=$'\xE2\x81\xA3'
-FM_OPERATIONAL_PREFIX="${FM_OPERATIONAL_MARK}FIRSTMATE_OP: "
+FM_OPERATIONAL_VISIBLE_PREFIX='FIRSTMATE_OP: '
+FM_OPERATIONAL_PREFIX="${FM_OPERATIONAL_MARK}${FM_OPERATIONAL_VISIBLE_PREFIX}"
 FM_OPERATIONAL_VERSION=v1
 FM_OPERATIONAL_HEADER_PREFIX="${FM_OPERATIONAL_PREFIX}${FM_OPERATIONAL_VERSION} "
+FM_OPERATIONAL_VISIBLE_HEADER_PREFIX="${FM_OPERATIONAL_VISIBLE_PREFIX}${FM_OPERATIONAL_VERSION} "
 FM_OPERATIONAL_KINDS='session-start watcher turn-end-guard away-supervisor launch-brief'
+
+# The fixed launch-brief self-disclosure line. Emitted as the first line after
+# the visible header and stripped back out by body parsing, so an encoded
+# brief round-trips to its exact original body.
+FM_LAUNCH_BRIEF_DISCLOSURE='[delivery note: this message is machine-tagged operational input composed by firstmate'\''s spawn mechanism; bin/fm-operational-input.sh in this repository defines this header format and is its verifiable source]'
 
 # Compatibility name retained for the away-mode owner and its tests.
 # shellcheck disable=SC2034 # Public source-library variable used by callers.
@@ -52,6 +77,11 @@ fm_operational_input_encode() {  # <generic-kind> <body> <result-var>
   [ -n "$result_var" ] || return 2
   fm_operational_kind_is_current "$kind" || return 2
   [ -n "$body" ] || return 2
+  if [ "$kind" = launch-brief ]; then
+    printf -v "$result_var" '%s%s: %s\n%s' \
+      "$FM_OPERATIONAL_VISIBLE_HEADER_PREFIX" "$kind" "$FM_LAUNCH_BRIEF_DISCLOSURE" "$body"
+    return
+  fi
   printf -v "$result_var" '%s%s: %s' "$FM_OPERATIONAL_HEADER_PREFIX" "$kind" "$body"
 }
 
@@ -65,18 +95,42 @@ fm_operational_input_construct() {  # <kind> <body> <result-var>
   fm_operational_input_encode "$kind" "$body" "$result_var"
 }
 
-fm_operational_generic_kind() {  # <message> <result-var>
-  local message=${1-} result_var=${2-} remainder parsed_kind body
-  [ -n "$result_var" ] || return 2
-  case "$message" in
-    "$FM_OPERATIONAL_HEADER_PREFIX"*': '?*) ;;
+# fm_operational_generic_parse: shared current-header parse. Accepts the
+# marked header for every current kind, and the unmarked visible header for
+# launch-brief only, so ASCII near misses of other kinds stay unclassified.
+fm_operational_generic_parse() {  # <message> <kind-var> <body-var>
+  # Locals carry a _fm_gp_ prefix: printf -v writes through dynamic scoping,
+  # so a caller's result-var named like an ordinary local here would be
+  # silently captured and lost.
+  local _fm_gp_message=${1-} _fm_gp_kind_var=${2-} _fm_gp_body_var=${3-}
+  local _fm_gp_header _fm_gp_remainder _fm_gp_kind _fm_gp_body
+  [ -n "$_fm_gp_kind_var" ] && [ -n "$_fm_gp_body_var" ] || return 2
+  case "$_fm_gp_message" in
+    "$FM_OPERATIONAL_HEADER_PREFIX"*': '?*) _fm_gp_header=$FM_OPERATIONAL_HEADER_PREFIX ;;
+    "$FM_OPERATIONAL_VISIBLE_HEADER_PREFIX"*': '?*) _fm_gp_header=$FM_OPERATIONAL_VISIBLE_HEADER_PREFIX ;;
     *) return 1 ;;
   esac
-  remainder=${message#"$FM_OPERATIONAL_HEADER_PREFIX"}
-  parsed_kind=${remainder%%': '*}
-  fm_operational_kind_is_current "$parsed_kind" || return 1
-  body=${remainder#"${parsed_kind}: "}
-  [ "$body" != "$remainder" ] && [ -n "$body" ] || return 1
+  _fm_gp_remainder=${_fm_gp_message#"$_fm_gp_header"}
+  _fm_gp_kind=${_fm_gp_remainder%%': '*}
+  fm_operational_kind_is_current "$_fm_gp_kind" || return 1
+  if [ "$_fm_gp_header" = "$FM_OPERATIONAL_VISIBLE_HEADER_PREFIX" ] && [ "$_fm_gp_kind" != launch-brief ]; then
+    return 1
+  fi
+  _fm_gp_body=${_fm_gp_remainder#"${_fm_gp_kind}: "}
+  [ "$_fm_gp_body" != "$_fm_gp_remainder" ] && [ -n "$_fm_gp_body" ] || return 1
+  if [ "$_fm_gp_kind" = launch-brief ]; then
+    case "$_fm_gp_body" in
+      "$FM_LAUNCH_BRIEF_DISCLOSURE"$'\n'?*) _fm_gp_body=${_fm_gp_body#"$FM_LAUNCH_BRIEF_DISCLOSURE"$'\n'} ;;
+    esac
+  fi
+  printf -v "$_fm_gp_kind_var" '%s' "$_fm_gp_kind"
+  printf -v "$_fm_gp_body_var" '%s' "$_fm_gp_body"
+}
+
+fm_operational_generic_kind() {  # <message> <result-var>
+  local message=${1-} result_var=${2-} parsed_kind parsed_body
+  [ -n "$result_var" ] || return 2
+  fm_operational_generic_parse "$message" parsed_kind parsed_body || return 1
   printf -v "$result_var" '%s' "$parsed_kind"
 }
 
@@ -99,8 +153,7 @@ fm_operational_input_kind() {  # <message> <result-var>
 fm_operational_input_body() {  # <current-message> <result-var>
   local message=${1-} result_var=${2-} current_kind parsed_body
   [ -n "$result_var" ] || return 2
-  if fm_operational_generic_kind "$message" current_kind; then
-    parsed_body=${message#"${FM_OPERATIONAL_HEADER_PREFIX}${current_kind}: "}
+  if fm_operational_generic_parse "$message" current_kind parsed_body; then
     printf -v "$result_var" '%s' "$parsed_body"
     return 0
   fi
@@ -206,6 +259,9 @@ Current construction kinds:
   session-start watcher turn-end-guard away-supervisor from-firstmate launch-brief
 
 The from-firstmate kind uses its established live-charter-compatible carrier.
+The launch-brief kind emits a fully visible header (no leading U+2063) plus a
+fixed self-disclosure first line; parsing accepts both its unmarked current
+form and the marked form of already-in-flight launches.
 EOF
 }
 
