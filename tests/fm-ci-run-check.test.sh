@@ -294,6 +294,90 @@ test_registration_recovers_leftover_retirement_before_arming() {
   pass "a fresh registration recovers a leftover interrupted retirement before arming cleanly"
 }
 
+write_pr_poll_meta() {
+  local dir=$1 id=${2:-task-a} url=${3:-https://github.com/my-org/my-repo/pull/7}
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "endpoint_task_id=$id" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "pr=$url"
+}
+
+arm_pr_poll() {
+  local dir=$1 id=${2:-task-a} url=${3:-https://github.com/my-org/my-repo/pull/7}
+  (
+    fm_pr_poll_prepare "$dir/home/state" "$id" github "$url" github.com my-org/my-repo 7 \
+      "$ROOT/bin/fm-pr-poll.sh" || exit 1
+    fm_pr_poll_publish_prepared
+  )
+}
+
+test_refuses_to_replace_live_pr_merge_poll() {
+  local dir before after rc
+  dir=$(make_case pr-slot-refusal)
+  setup_root "$dir"
+  write_pr_poll_meta "$dir"
+  arm_pr_poll "$dir" || fail "arming the PR merge poll fixture failed"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$ROOT/bin/fm-pr-poll.sh" \
+    || fail "PR merge poll fixture did not validate as live"
+  before=$(state_snapshot "$dir/home/state")
+
+  set +e
+  run_ci_check "$dir" task-a myorg/myrepo 42 >/dev/null 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "registration over a live PR merge poll did not refuse with exit 3"
+  grep -q 'PR merge poll' "$dir/stderr" || fail "refusal did not name the PR merge poll owner"
+
+  after=$(state_snapshot "$dir/home/state")
+  [ "$after" = "$before" ] || fail "refused registration changed state"
+  pass "registration refuses loudly instead of replacing a live PR merge poll"
+}
+
+test_stale_receipt_never_removes_a_foreign_check() {
+  local dir rc
+  dir=$(make_case stale-receipt-foreign-check)
+  setup_root "$dir"
+  write_pr_poll_meta "$dir"
+  arm_pr_poll "$dir" || fail "arming the PR merge poll fixture failed"
+
+  # A stale receipt from an earlier CI run poll whose slot has since been
+  # re-armed as a PR merge poll: recovery must remove only the receipt.
+  printf 'success\n' > "$dir/home/state/task-a.ci-run-poll-retirement"
+  chmod 0600 "$dir/home/state/task-a.ci-run-poll-retirement"
+
+  set +e
+  run_ci_check "$dir" task-a myorg/myrepo 42 >/dev/null 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "registration did not still refuse over the live PR merge poll"
+  [ ! -e "$dir/home/state/task-a.ci-run-poll-retirement" ] \
+    || fail "recovery left the stale receipt in place"
+  cmp -s "$ROOT/bin/fm-pr-poll.sh" "$dir/home/state/task-a.check.sh" \
+    || fail "recovery removed or altered the PR merge poll's check"
+  [ -e "$dir/home/state/task-a.pr-poll" ] && [ -e "$dir/home/state/task-a.pr-poll-registration" ] \
+    || fail "recovery removed the PR merge poll's sidecar or registration"
+  pass "a stale CI run receipt recovers without touching a check slot owned by another poll"
+}
+
+test_publish_failure_leaves_no_temp_files() {
+  local dir rc
+  dir=$(make_case publish-failure-temps)
+  setup_root "$dir"
+  write_task_meta "$dir"
+  ln -s missing-target "$dir/home/state/task-a.ci-run-poll"
+
+  set +e
+  run_ci_check "$dir" task-a myorg/myrepo 42 >/dev/null 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "publication over a symlinked destination succeeded"
+  [ -z "$(find "$dir/home/state" -name '.fm-ci-run-poll-*' -print)" ] \
+    || fail "a failed registration left mktemp temporaries in state/"
+  pass "a failed registration sweeps every staged temporary out of state/"
+}
+
 test_registration_records_sidecar_and_arms_check
 test_help_documents_usage
 test_invalid_inputs_have_zero_side_effects
@@ -302,3 +386,6 @@ test_check_fires_once_and_retires
 test_watcher_dispatch_delivers_exactly_one_wake
 test_interrupted_retirement_recovers_without_duplicate_wake
 test_registration_recovers_leftover_retirement_before_arming
+test_refuses_to_replace_live_pr_merge_poll
+test_stale_receipt_never_removes_a_foreign_check
+test_publish_failure_leaves_no_temp_files

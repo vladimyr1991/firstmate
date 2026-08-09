@@ -320,10 +320,14 @@ fm_ci_run_poll_artifacts_valid() {
 # fm_ci_run_poll_retirement_recover_one <state> <id>: called before arming a
 # fresh poll. A receipt can only exist here because an earlier poll for this
 # same task id already claimed and reported a terminal result but was killed
-# before it finished removing its own check, trust, sidecar, and receipt (all
-# four names are deterministic functions of <id>, so nothing else can be
-# holding them at this path). Finish that interrupted removal so a fresh
-# registration never has to reason about leftover artifacts, then arm cleanly.
+# before it finished removing its own check, trust, sidecar, and receipt.
+# The shared check slot may since have been re-armed by a different owner
+# (a PR merge poll or another registered custom check), so before removing
+# anything the current check.sh bytes are verified to be exactly what
+# fm_ci_run_poll_render produces for this task; a slot held by someone else
+# keeps every artifact and only the stale receipt itself is removed. Finish
+# that interrupted removal so a fresh registration never has to reason about
+# leftover artifacts, then arm cleanly.
 fm_ci_run_poll_retirement_recover_one() {
   local state=$1 id=$2 receipt check trust data state_device artifact
   fm_pr_task_id_valid "$id" || return 1
@@ -344,6 +348,11 @@ fm_ci_run_poll_retirement_recover_one() {
         && [ "$(fm_pr_file_link_count "$artifact")" = 1 ] || return 1
     fi
   done
+  if [ -f "$check" ] && ! fm_ci_run_poll_render "$id" "$state" | cmp -s - "$check"; then
+    rm -f -- "$receipt" || return 1
+    [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || return 1
+    return 0
+  fi
   rm -f -- "$check" "$trust" "$data" "$receipt" || return 1
   [ ! -e "$check" ] && [ ! -L "$check" ] \
     && [ ! -e "$trust" ] && [ ! -L "$trust" ] \

@@ -53,6 +53,13 @@ retired poll (an interrupted cleanup after an earlier watch already fired)
 finishes that cleanup first, then arms cleanly; it never refuses on stale
 state left behind by its own prior retirement.
 
+The per-task check slot (state/<task-id>.check.sh plus its trust binding) is
+shared with the PR merge poll armed by bin/fm-pr-check.sh. If a live PR merge
+poll currently owns that slot, registration refuses with exit code 3 instead
+of silently destroying the merge watch; tear that watch down first if
+replacement is intended. bin/fm-pr-check.sh applies the same refusal in the
+other direction over a live CI run poll.
+
 GitLab is not supported by this script. bin/fm-pr-check.sh already covers
 GitLab merge-request polling, and a raw-pipeline analog for GitLab would be a
 separate follow-up if it is ever needed; unlike GitHub Actions runs, a GitLab
@@ -103,6 +110,17 @@ fm_ci_run_poll_retirement_recover_one "$STATE" "$ID" || {
   exit 1
 }
 
+# The check slot is shared with the PR merge poll. A supervision primitive
+# whose whole purpose is no-missed-wakes must never silently destroy a sibling
+# watch, so a slot owned by a live PR merge poll is refused loudly (exit 3)
+# rather than overwritten.
+if fm_pr_poll_artifacts_valid "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+  echo "error: a live PR merge poll already owns state/$ID.check.sh; refusing to replace it" >&2
+  exit 3
+fi
+
+trap fm_ci_run_poll_cleanup EXIT
+trap 'exit 1' HUP INT TERM
 fm_ci_run_poll_prepare "$STATE" "$ID" "$FORGE" "$REPO" "$RUN_ID" || {
   echo "error: could not prepare CI run poll" >&2
   exit 1

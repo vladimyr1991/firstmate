@@ -15,6 +15,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-check-lib.sh
+. "$SCRIPT_DIR/fm-check-lib.sh"
+# shellcheck source=bin/fm-ci-run-lib.sh
+. "$SCRIPT_DIR/fm-ci-run-lib.sh"
 
 if [ "$#" -ne 2 ]; then
   echo "error: invalid PR check request" >&2
@@ -46,6 +50,15 @@ fm_pr_poll_retirement_recover_one "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh" || 
   echo "error: pending PR poll retirement could not be validated" >&2
   exit 1
 }
+
+# The check slot is shared with the raw CI run poll armed by
+# bin/fm-ci-run-check.sh. A slot owned by a live CI run poll is refused loudly
+# (exit 3) rather than overwritten, mirroring fm-ci-run-check.sh's own refusal
+# over a live PR merge poll.
+if fm_ci_run_poll_artifacts_valid "$STATE" "$ID"; then
+  echo "error: a live CI run poll already owns state/$ID.check.sh; refusing to replace it" >&2
+  exit 3
+fi
 
 # Refuse to arm a GitLab watch with no glab on PATH. The poll is silent on
 # every error by design, so a missing CLI would be indistinguishable from a

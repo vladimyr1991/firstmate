@@ -3325,7 +3325,29 @@ test_gitlab_merged_poll_retires() {
   pass "GitHub and GitLab exact merged results share one retirement path"
 }
 
+test_pr_check_refuses_to_replace_live_ci_run_poll() {
+  local dir before after rc
+  dir=$(make_case ci-run-slot-refusal)
+  write_task_meta "$dir"
+  FM_HOME="$dir/home" PATH="$dir/fakebin:$BASE_PATH" FM_TEST_GH_LOG="$dir/gh.log" \
+    "$ROOT/bin/fm-ci-run-check.sh" task-a myorg/myrepo 42 >/dev/null 2> "$dir/stderr" \
+    || fail "arming the CI run poll fixture failed: $(cat "$dir/stderr")"
+  before=$(state_snapshot "$dir/home/state")
+
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/7 >/dev/null 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "PR check over a live CI run poll did not refuse with exit 3"
+  grep -q 'CI run poll' "$dir/stderr" || fail "refusal did not name the CI run poll owner"
+
+  after=$(state_snapshot "$dir/home/state")
+  [ "$after" = "$before" ] || fail "refused PR check changed state"
+  pass "fm-pr-check.sh refuses loudly instead of replacing a live CI run poll"
+}
+
 test_parser_matrix
+test_pr_check_refuses_to_replace_live_ci_run_poll
 test_gitlab_merge_watch
 test_merged_poll_retires_once
 test_persistent_secondmate_retirement_is_poll_only
