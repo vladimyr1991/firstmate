@@ -119,6 +119,15 @@ if fm_pr_poll_artifacts_valid "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then
   exit 3
 fi
 
+# Refuse to arm a watch with no gh on PATH. The poll is silent on every error
+# by design, so a missing CLI would be indistinguishable from a run that never
+# completes. Arming is the one point where that can be reported, so the absent
+# tool stops the watch here instead of watching nothing.
+if ! command -v gh >/dev/null 2>&1; then
+  echo "error: watching a GitHub Actions run requires gh on PATH" >&2
+  exit 1
+fi
+
 trap fm_ci_run_poll_cleanup EXIT
 trap 'exit 1' HUP INT TERM
 fm_ci_run_poll_prepare "$STATE" "$ID" "$FORGE" "$REPO" "$RUN_ID" || {

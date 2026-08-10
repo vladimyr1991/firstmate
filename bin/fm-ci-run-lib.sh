@@ -18,12 +18,17 @@
 # at poll time, never trusted from the generated script's own bytes.
 #
 # Retirement is one-shot and self-contained inside the generated check: on a
-# terminal result it atomically claims a private receipt (a hard link, which
-# only one execution can win) before printing, then removes its own check,
-# trust, sidecar, and receipt. An interrupted removal leaves the receipt
-# behind; the next poll execution (or the next fm-ci-run-check.sh
+# terminal result it prints its one wake line first - with no preceding side
+# effect that could fail or be interrupted - then best-effort claims a
+# private receipt (a hard link, a create-if-absent primitive) and removes its
+# own check, trust, sidecar, and receipt. An interrupted removal leaves the
+# receipt behind; the next poll execution (or the next fm-ci-run-check.sh
 # registration for the same task id) finds it and finishes the cleanup
-# without reporting the result a second time.
+# without reporting the result a second time. An interruption after the
+# print but before the receipt is claimed can instead cause the next
+# execution to report the same terminal result again - an accepted, minor
+# cost, because the alternative ordering could silently lose the result
+# forever, defeating this backstop's whole purpose.
 
 FM_CI_RUN_DATA_FORGE=
 FM_CI_RUN_DATA_REPO=
@@ -90,6 +95,14 @@ fm_ci_run_poll_data_parse() {
 # sidecar without relying on fm-watch.sh's custom-check dispatch passing
 # arguments or preserving a meaningful "$0" - it validates a snapshot copy of
 # this file, not this file itself.
+#
+# Follow-up idea (out of scope here): the fully gap-closing retirement would
+# extend bin/fm-watch.sh's generic custom-check dispatch with a
+# retire-after-firing contract - durably append the wake first, as it already
+# does for every check's output, then let the check own its own retirement
+# afterward, exactly like the existing PR-poll special case already gets.
+# That touches the shared dispatch loop used by every custom check in the
+# fleet, so it is deliberately not done as part of this poll.
 fm_ci_run_poll_render() {
   local id=$1 state=$2 qid qstate
   printf -v qid '%q' "$id"
@@ -116,7 +129,7 @@ DATA="\$STATE_DIR/\$ID.ci-run-poll"
 RECEIPT="\$STATE_DIR/\$ID.ci-run-poll-retirement"
 
 # A receipt already present means an earlier execution of this exact poll
-# already claimed and reported a terminal result but was interrupted before
+# already reported a terminal result and claimed this receipt, but was interrupted before
 # it finished removing every artifact. Finish that cleanup quietly and never
 # report the result a second time.
 if [ -e "\$RECEIPT" ] || [ -L "\$RECEIPT" ]; then
@@ -163,22 +176,25 @@ case "\$result" in
   *[!A-Za-z0-9_]*) exit 0 ;;
 esac
 
-# Terminal: atomically claim the receipt (a hard link, so only one execution
-# can ever win it) before printing, then retire every artifact.
-umask 077
-tmp=\$(mktemp "\$STATE_DIR/.fm-ci-run-poll-retirement.XXXXXX") || exit 0
-if ! printf '%s\\n' "\$result" > "\$tmp" || ! chmod 0600 "\$tmp"; then
-  rm -f -- "\$tmp"
-  exit 0
-fi
-if [ -e "\$RECEIPT" ] || [ -L "\$RECEIPT" ] || ! ln -- "\$tmp" "\$RECEIPT" 2>/dev/null; then
-  rm -f -- "\$tmp"
-  exit 0
-fi
-rm -f -- "\$tmp"
-
+# Terminal: print the wake line first, with no preceding side effect that
+# could fail or be interrupted, so the result can never be silently lost;
+# at worst an interruption before the receipt claim below makes the next
+# execution report the same result again. Everything after the print is
+# best-effort: claim the receipt (a hard link, a create-if-absent primitive)
+# so a mid-cleanup interruption stays silent on the next execution, then
+# retire every artifact.
 printf '%s\\n' "\$result"
-rm -f -- "\$CHECK" "\$TRUST" "\$DATA" "\$RECEIPT"
+
+umask 077
+if tmp=\$(mktemp "\$STATE_DIR/.fm-ci-run-poll-retirement.XXXXXX" 2>/dev/null); then
+  if printf '%s\\n' "\$result" > "\$tmp" 2>/dev/null && chmod 0600 "\$tmp" 2>/dev/null; then
+    if [ ! -e "\$RECEIPT" ] && [ ! -L "\$RECEIPT" ]; then
+      ln -- "\$tmp" "\$RECEIPT" 2>/dev/null || true
+    fi
+  fi
+  rm -f -- "\$tmp" 2>/dev/null
+fi
+rm -f -- "\$CHECK" "\$TRUST" "\$DATA" "\$RECEIPT" 2>/dev/null
 exit 0
 EOF
 }
@@ -319,7 +335,7 @@ fm_ci_run_poll_artifacts_valid() {
 
 # fm_ci_run_poll_retirement_recover_one <state> <id>: called before arming a
 # fresh poll. A receipt can only exist here because an earlier poll for this
-# same task id already claimed and reported a terminal result but was killed
+# same task id already reported a terminal result and claimed its receipt but was killed
 # before it finished removing its own check, trust, sidecar, and receipt.
 # The shared check slot may since have been re-armed by a different owner
 # (a PR merge poll or another registered custom check), so before removing

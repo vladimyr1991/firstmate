@@ -361,6 +361,80 @@ test_stale_receipt_never_removes_a_foreign_check() {
   pass "a stale CI run receipt recovers without touching a check slot owned by another poll"
 }
 
+test_refuses_to_arm_without_gh() {
+  local dir nogh bindir entry name before after rc
+  dir=$(make_case no-gh)
+  setup_root "$dir"
+  write_task_meta "$dir"
+
+  # The whole search path is mirrored without gh, because a real gh anywhere
+  # on PATH would make this prove nothing.
+  nogh="$dir/nogh"
+  mkdir -p "$nogh"
+  while IFS= read -r bindir; do
+    [ -d "$bindir" ] || continue
+    for entry in "$bindir"/*; do
+      [ -e "$entry" ] || continue
+      name=$(basename "$entry")
+      [ "$name" = gh ] && continue
+      [ -e "$nogh/$name" ] || ln -s "$entry" "$nogh/$name" 2>/dev/null
+    done
+  done <<EOF
+$(printf '%s\n' "$BASE_PATH" | tr ':' '\n')
+EOF
+  ! PATH="$nogh" command -v gh >/dev/null 2>&1 \
+    || fail "the gh-free search path still resolved gh"
+  before=$(state_snapshot "$dir/home/state")
+
+  set +e
+  FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" PATH="$nogh" \
+    "$CI_CHECK" task-a myorg/myrepo 42 >/dev/null 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "arming succeeded with gh absent from PATH"
+  grep -q 'requires gh on PATH' "$dir/stderr" \
+    || fail "arming with gh absent did not report the missing CLI"
+  after=$(state_snapshot "$dir/home/state")
+  [ "$after" = "$before" ] || fail "refused arming without gh changed state"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "refused arming left a poll armed"
+
+  pass "arming refuses loudly when gh is not on PATH instead of watching nothing"
+}
+
+test_terminal_result_is_reported_even_when_retirement_cannot_proceed() {
+  local dir out
+  dir=$(make_case print-before-claim)
+  setup_root "$dir"
+  write_task_meta "$dir"
+  run_ci_check "$dir" task-a myorg/myrepo 42 >/dev/null || fail "registration failed"
+
+  # Deny the check any write to state/: the receipt claim and every removal
+  # fail, exactly like an interruption landing right after the print. The
+  # wake line must still come out - it can never be gated on retirement work.
+  chmod 0500 "$dir/home/state"
+  out=$(FM_TEST_GH_RESULT=success run_generated_check "$dir" 2>/dev/null)
+  chmod 0700 "$dir/home/state"
+  [ "$out" = success ] || fail "terminal result was not reported when retirement could not proceed"
+  [ -e "$dir/home/state/task-a.check.sh" ] && [ -e "$dir/home/state/task-a.ci-run-poll" ] \
+    || fail "write-denied retirement somehow removed poll artifacts"
+  [ ! -e "$dir/home/state/task-a.ci-run-poll-retirement" ] \
+    || fail "write-denied retirement somehow claimed a receipt"
+  [ -z "$(find "$dir/home/state" -name '.fm-ci-run-poll-retirement.*' -print)" ] \
+    || fail "write-denied retirement left a receipt temporary behind"
+
+  # With the receipt absent but check.sh and the sidecar still present, the
+  # next execution re-reports the same terminal result rather than staying
+  # silent, then finishes the retirement.
+  out=$(FM_TEST_GH_RESULT=success run_generated_check "$dir")
+  [ "$out" = success ] || fail "partially cleaned-up poll stayed silent instead of re-reporting"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "re-report did not retire the check"
+  [ ! -e "$dir/home/state/task-a.check-trust" ] || fail "re-report did not retire the trust binding"
+  [ ! -e "$dir/home/state/task-a.ci-run-poll" ] || fail "re-report did not retire the sidecar"
+  [ ! -e "$dir/home/state/task-a.ci-run-poll-retirement" ] || fail "re-report left its receipt behind"
+
+  pass "a terminal result is printed before any retirement side effect and survives partial cleanup"
+}
+
 test_publish_failure_leaves_no_temp_files() {
   local dir rc
   dir=$(make_case publish-failure-temps)
@@ -388,4 +462,6 @@ test_interrupted_retirement_recovers_without_duplicate_wake
 test_registration_recovers_leftover_retirement_before_arming
 test_refuses_to_replace_live_pr_merge_poll
 test_stale_receipt_never_removes_a_foreign_check
+test_refuses_to_arm_without_gh
+test_terminal_result_is_reported_even_when_retirement_cannot_proceed
 test_publish_failure_leaves_no_temp_files
