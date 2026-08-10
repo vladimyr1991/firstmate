@@ -59,24 +59,41 @@
 #
 # THE COMMIT INVARIANT, which governs every path in this feature:
 #
-#   Once a durable result is committed - the record file renamed into place, or
-#   the poll's wake line printed - NO later step may die, roll back, or
-#   overwrite it. A later failure warns and leaves the committed result intact.
+#   Once a durable result is committed, NO later step may die, roll back,
+#   overwrite it, or MISREPORT it. A later failure warns and leaves the
+#   committed result intact.
 #
-# It is stated here, once, because the two failures it forbids are the only two
-# ways this mechanism can betray its purpose, and both have been reintroduced by
-# well-meaning cleanup code: an obligation destroyed by a later step means
-# nothing will ever wake that work again, and a completed action reported as a
-# failure invites the caller to redo something already done. What follows from
-# it: every fallible check that can still reject a record runs against the
-# TEMPORARY file, so the rename is the last fallible step in
-# fm_quota_freeze_record_write; the notified-marker clear, the poll arming in
-# bin/fm-quota-freeze.sh, and the pane confirmation in bin/fm-limit-dialog.sh
-# are all after-the-commit steps and therefore warn rather than undo; and
-# everything the generated poll does after printing its wake line is best
-# effort and silent on failure. Rolling back artifacts this mechanism has not
-# yet published (an unpublished poll's own temporaries) is the one exception,
-# and it may never reach a registry record.
+# There are exactly FOUR committed results here, and every function in
+# bin/fm-quota-freeze-lib.sh, bin/fm-quota-freeze.sh and bin/fm-limit-dialog.sh
+# is written against all four. Enumerating them is the point: each time only
+# some of them were held in mind, a later cleanup step quietly reintroduced one
+# of the two failures this mechanism exists to prevent - an obligation nothing
+# will ever wake again, or a completed action reported as not done, which
+# invites the caller to redo it.
+#
+#   1. A RECORD RENAMED INTO PLACE. Every fallible check that can still reject a
+#      record therefore runs against the TEMPORARY file, so the rename is the
+#      last fallible step in fm_quota_freeze_record_write. Nothing after it -
+#      the notified-marker clear, the poll arming in bin/fm-quota-freeze.sh -
+#      may remove the destination or turn the write into a failure.
+#   2. A WAKE LINE PRINTED. Everything the generated poll does after printing -
+#      writing markers, retiring itself - is best effort, silent on failure, and
+#      touches no record.
+#   3. A RECORD REMOVED as the intentional discharge of an obligation. The
+#      removal is the commit; clearing the marker that suppressed its wakes
+#      comes after and may not change the reported outcome or skip retirement.
+#      The same holds for retiring the poll: removing the check is the commit,
+#      and its trust file follows as cleanup.
+#   4. A POLL ALREADY ARMED. The poll is fleet-wide - one file watching the
+#      whole registry, enumerated at run time - so an armed poll is already
+#      watching every obligation, including ones recorded after it was written.
+#      A later arming attempt that fails may roll back only the artifacts THAT
+#      attempt actually published; a poll it did not publish stays, because
+#      disarming it would stop the wakes for every other open obligation too.
+#
+# Rolling back artifacts this mechanism has not yet published (an unpublished
+# poll's own temporaries) is the one permitted rollback, and it may never reach
+# a registry record or an already-live poll.
 
 # The reserved check id this poll publishes under. Not a task id: see
 # fm_task_id_creation_valid in bin/fm-pr-lib.sh, which refuses it at task
@@ -142,6 +159,8 @@ FM_QUOTA_RESET_POLL_CHECK_TMP=
 FM_QUOTA_RESET_POLL_TRUST_TMP=
 FM_QUOTA_RESET_POLL_CHECK_DEST=
 FM_QUOTA_RESET_POLL_TRUST_DEST=
+FM_QUOTA_RESET_POLL_CHECK_PUBLISHED=0
+FM_QUOTA_RESET_POLL_TRUST_PUBLISHED=0
 FM_QUOTA_RESET_POLL_STATE=
 FM_QUOTA_RESET_POLL_STATE_DEVICE=
 
@@ -464,16 +483,23 @@ fm_quota_freeze_count() {
   printf '%s\n' "$n"
 }
 
-# Remove one obligation and the marker that suppressed its repeat wakes.
+# Discharge one obligation. Removing the record is the committed result, so it
+# alone decides the answer: a marker that cannot be cleared afterwards is a
+# warning, never a report that the discharge did not happen. Saying otherwise
+# would tell firstmate an obligation is still open when it is already gone, and
+# would skip retiring a poll that has nothing left to watch.
 fm_quota_freeze_record_remove() {
-  local state=$1 subject=$2 dir notified
+  local state=$1 subject=$2 dir
   fm_task_id_path_safe "$subject" || return 1
   dir=$(fm_quota_freeze_dir "$state")
-  notified=$(fm_quota_freeze_notified_dir "$state")
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   [ -e "$dir/$subject" ] || [ -L "$dir/$subject" ] || return 1
-  rm -f -- "$dir/$subject" "$notified/$subject" || return 1
-  [ ! -e "$dir/$subject" ] && [ ! -L "$dir/$subject" ]
+  rm -f -- "$dir/$subject" || return 1
+  [ ! -e "$dir/$subject" ] && [ ! -L "$dir/$subject" ] || return 1
+  fm_quota_freeze_notified_clear "$state" "$subject" \
+    || printf 'warning: the obligation for %s was discharged but its surfaced marker could not be removed\n' \
+      "$subject" >&2
+  return 0
 }
 
 # Render the generated, self-contained poll. Only the state directory and the
@@ -565,29 +591,51 @@ window_remaining() {
   printf '%s\\n' "\$out"
 }
 
+# How long this record stays quiet between wakes, from the only thing that
+# decides it: whether the record has a recorded reset to anchor on. Deliberately
+# cheap and local - it reads one line of one file and never touches quota-axi -
+# because it gates whether the record is looked at at all.
+record_repeat() {  # <record-path>
+  local rec=\$1 line epoch=
+  while IFS= read -r line; do
+    case "\$line" in
+      resets_at_epoch=*) epoch=\${line#resets_at_epoch=}; break ;;
+    esac
+  done 2>/dev/null < "\$rec"
+  case "\$epoch" in
+    ''|*[!0-9]*) printf '%s\\n' "\$RESURFACE"; return 0 ;;
+  esac
+  if [ "\$epoch" -gt 0 ]; then
+    printf '%s\\n' "\$RESURFACE"
+  else
+    printf '%s\\n' "\$UNANCHORED_RESURFACE"
+  fi
+}
+
 # Read one record and decide what, if anything, firstmate should be told about
-# it. Echoes "<repeat-secs>|<provider>/<window>,<verdict>" when it should be
-# surfaced and nothing when it should stay quiet; the repeat span travels with
-# the verdict because it depends on which anchor the record could offer. A
-# record this cannot parse is surfaced as unreadable rather than skipped: an
-# obligation nobody can read is still an obligation, and silently stepping over
-# it is the exact stall this poll exists to remove.
+# it. Echoes "<provider>/<window>,<verdict>" when it should be surfaced and
+# nothing when it should stay quiet. A record this cannot parse is surfaced as
+# unreadable rather than skipped: an obligation nobody can read is still an
+# obligation, and silently stepping over it is the exact stall this poll exists
+# to remove. Runs in a command substitution, so it reads the sweep's already
+# fetched QUOTA_JSON and never fetches one of its own - a subshell's fetch would
+# be discarded, making the reading per record rather than per sweep.
 evaluate_record() {  # <record-path> <subject>
-  local rec=\$1 subject=\$2 provider window epoch frozen anchor grace repeat remaining
+  local rec=\$1 subject=\$2 provider window epoch frozen anchor grace remaining
   local f_version f_subject f_kind f_provider f_window f_resets f_epoch f_action f_frozen f_note f_extra
-  { exec 7< "\$rec"; } 2>/dev/null || { printf '%s|unreadable\\n' "\$RESURFACE"; return 0; }
+  { exec 7< "\$rec"; } 2>/dev/null || { printf 'unreadable\\n'; return 0; }
   if ! { IFS= read -r f_version <&7 && IFS= read -r f_subject <&7 && IFS= read -r f_kind <&7 \\
     && IFS= read -r f_provider <&7 && IFS= read -r f_window <&7 \\
     && IFS= read -r f_resets <&7 && IFS= read -r f_epoch <&7 \\
     && IFS= read -r f_action <&7 && IFS= read -r f_frozen <&7 \\
     && IFS= read -r f_note <&7; }; then
     exec 7<&-
-    printf '%s|unreadable\\n' "\$RESURFACE"
+    printf 'unreadable\\n'
     return 0
   fi
   if IFS= read -r f_extra <&7; then
     exec 7<&-
-    printf '%s|unreadable\\n' "\$RESURFACE"
+    printf 'unreadable\\n'
     return 0
   fi
   exec 7<&-
@@ -597,20 +645,20 @@ evaluate_record() {  # <record-path> <subject>
   epoch=\${f_epoch#resets_at_epoch=}
   frozen=\${f_frozen#frozen_at=}
   if [ "\$f_version" != fm-quota-freeze-v1 ] || [ "\$f_subject" != "subject=\$subject" ]; then
-    printf '%s|unreadable\\n' "\$RESURFACE"
+    printf 'unreadable\\n'
     return 0
   fi
   case "\$provider" in
-    ''|*[!a-z0-9._-]*) printf '%s|unreadable\\n' "\$RESURFACE"; return 0 ;;
+    ''|*[!a-z0-9._-]*) printf 'unreadable\\n'; return 0 ;;
   esac
   case "\$window" in
-    ''|*[!A-Za-z0-9._:-]*) printf '%s|unreadable\\n' "\$RESURFACE"; return 0 ;;
+    ''|*[!A-Za-z0-9._:-]*) printf 'unreadable\\n'; return 0 ;;
   esac
   case "\$epoch" in
-    ''|*[!0-9]*) printf '%s|unreadable\\n' "\$RESURFACE"; return 0 ;;
+    ''|*[!0-9]*) printf 'unreadable\\n'; return 0 ;;
   esac
   case "\$frozen" in
-    ''|*[!0-9]*) printf '%s|unreadable\\n' "\$RESURFACE"; return 0 ;;
+    ''|*[!0-9]*) printf 'unreadable\\n'; return 0 ;;
   esac
 
   # When the frozen window carried no usable resetsAt the recorded epoch is 0,
@@ -623,11 +671,9 @@ evaluate_record() {  # <record-path> <subject>
   # hour with nothing having reset.
   anchor=\$epoch
   grace=\$UNVERIFIED_GRACE
-  repeat=\$RESURFACE
   if [ "\$anchor" -le 0 ]; then
     anchor=\$frozen
     grace=\$UNANCHORED_GRACE
-    repeat=\$UNANCHORED_RESURFACE
   fi
 
   remaining=\$(window_remaining "\$provider" "\$window")
@@ -638,16 +684,14 @@ evaluate_record() {  # <record-path> <subject>
       # (grok's weekly cap behind its credits window) surfaces as an explicitly
       # unverified obligation instead of silence forever.
       if [ "\$anchor" -gt 0 ] && [ "\$now" -ge "\$((anchor + grace))" ]; then
-        printf '%s|%s/%s,unverified\\n' "\$repeat" "\$provider" "\$window"
+        printf '%s/%s,unverified\\n' "\$provider" "\$window"
       fi
       ;;
     *)
       # Strictly above the floor: a window sitting exactly at the ceiling a
-      # freeze may be registered on is not evidence that anything reset. A
-      # verified recovery is the answer the fleet is waiting for, so it always
-      # repeats on the standard span.
+      # freeze may be registered on is not evidence that anything reset.
       if awk -v a="\$remaining" -v b="\$FLOOR" 'BEGIN { exit !(a + 0 > b + 0) }'; then
-        printf '%s|%s/%s,recovered\\n' "\$RESURFACE" "\$provider" "\$window"
+        printf '%s/%s,recovered\\n' "\$provider" "\$window"
       fi
       ;;
   esac
@@ -656,7 +700,12 @@ evaluate_record() {  # <record-path> <subject>
 ready=
 to_mark=
 records=0
+pending=
 
+# Two passes, because the reading is the expensive part of a sweep and the
+# watcher runs this whole check under one timeout. The first pass is local only:
+# it counts the registry and drops every obligation still inside its own quiet
+# window, so a fleet of already-surfaced freezes costs nothing at all.
 for rec in "\$DIR"/*; do
   [ -f "\$rec" ] && [ ! -L "\$rec" ] || continue
   subject=\${rec##*/}
@@ -665,29 +714,33 @@ for rec in "\$DIR"/*; do
   esac
   records=\$((records + 1))
 
-  # Evaluated before the marker is consulted, because the record itself carries
-  # how long its own repeat span is. evaluate_record only reads, so ordering
-  # them this way changes nothing but which span the suppression uses.
-  answer=\$(evaluate_record "\$rec" "\$subject")
-  [ -n "\$answer" ] || continue
-  repeat=\${answer%%|*}
-  verdict=\${answer#*|}
-  case "\$repeat" in
-    ''|*[!0-9]*) repeat=\$RESURFACE ;;
-  esac
-
   marker="\$NOTIFIED/\$subject"
   if [ -f "\$marker" ] && [ ! -L "\$marker" ]; then
     marked=\$(cat "\$marker" 2>/dev/null) || marked=
     case "\$marked" in
       ''|*[!0-9]*) marked=\$now ;;
     esac
-    [ "\$((now - marked))" -ge "\$repeat" ] || continue
+    [ "\$((now - marked))" -ge "\$(record_repeat "\$rec")" ] || continue
   fi
-
-  ready="\$ready \$subject(\$verdict)"
-  to_mark="\$to_mark \$subject"
+  pending="\$pending \$subject"
 done
+
+# ONE reading for the whole sweep, taken here in the main shell. Taking it
+# inside evaluate_record would put it in a command substitution, whose subshell
+# discards the memo, so quota-axi would run once per obligation: with a hung
+# provider that walks the sweep past the watcher's own timeout and the wake -
+# including the unverified verdict, whose entire purpose is to surface when
+# quota-axi cannot answer - is lost for as long as the outage lasts. It also
+# keeps every record in one sweep judged against the same reading.
+if [ -n "\$pending" ]; then
+  quota_snapshot
+  for subject in \$pending; do
+    verdict=\$(evaluate_record "\$DIR/\$subject" "\$subject")
+    [ -n "\$verdict" ] || continue
+    ready="\$ready \$subject(\$verdict)"
+    to_mark="\$to_mark \$subject"
+  done
+fi
 
 # Print first, with no preceding side effect that could fail or be interrupted,
 # so a reset event can never be silently lost. The wake line is this poll's
@@ -730,16 +783,24 @@ fm_quota_reset_poll_cleanup() {
 }
 
 # Roll back a half-published poll. This is the commit invariant's one permitted
-# rollback: the two paths below are this mechanism's own check and trust files
-# for the reserved id, never a registry record, so a partly-armed poll is undone
-# without an obligation ever being at risk.
+# rollback, and it is scoped to exactly what THIS attempt published: a poll that
+# was already armed when the attempt began is a committed result of its own,
+# watching the whole registry, so tearing it down over an unrelated publish
+# failure would stop the wakes for every open obligation at once. Anything not
+# renamed into place by this attempt is therefore left alone.
 fm_quota_reset_poll_revoke_final() {
   local failed=0
-  if [ -e "$FM_QUOTA_RESET_POLL_CHECK_DEST" ] || [ -L "$FM_QUOTA_RESET_POLL_CHECK_DEST" ]; then
-    rm -f -- "$FM_QUOTA_RESET_POLL_CHECK_DEST" || failed=1
+  if [ "$FM_QUOTA_RESET_POLL_CHECK_PUBLISHED" -eq 1 ]; then
+    FM_QUOTA_RESET_POLL_CHECK_PUBLISHED=0
+    if [ -e "$FM_QUOTA_RESET_POLL_CHECK_DEST" ] || [ -L "$FM_QUOTA_RESET_POLL_CHECK_DEST" ]; then
+      rm -f -- "$FM_QUOTA_RESET_POLL_CHECK_DEST" || failed=1
+    fi
   fi
-  if [ -e "$FM_QUOTA_RESET_POLL_TRUST_DEST" ] || [ -L "$FM_QUOTA_RESET_POLL_TRUST_DEST" ]; then
-    rm -f -- "$FM_QUOTA_RESET_POLL_TRUST_DEST" || failed=1
+  if [ "$FM_QUOTA_RESET_POLL_TRUST_PUBLISHED" -eq 1 ]; then
+    FM_QUOTA_RESET_POLL_TRUST_PUBLISHED=0
+    if [ -e "$FM_QUOTA_RESET_POLL_TRUST_DEST" ] || [ -L "$FM_QUOTA_RESET_POLL_TRUST_DEST" ]; then
+      rm -f -- "$FM_QUOTA_RESET_POLL_TRUST_DEST" || failed=1
+    fi
   fi
   return "$failed"
 }
@@ -750,6 +811,8 @@ fm_quota_reset_poll_prepare() {
   mkdir -p "$state" || return 1
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
   umask 077
+  FM_QUOTA_RESET_POLL_CHECK_PUBLISHED=0
+  FM_QUOTA_RESET_POLL_TRUST_PUBLISHED=0
   FM_QUOTA_RESET_POLL_STATE=$state
   FM_QUOTA_RESET_POLL_CHECK_DEST="$state/$FM_QUOTA_RESET_POLL_ID.check.sh"
   FM_QUOTA_RESET_POLL_TRUST_DEST="$state/$FM_QUOTA_RESET_POLL_ID.check-trust"
@@ -790,12 +853,14 @@ fm_quota_reset_poll_publish_prepared() {
     return 1
   fi
   FM_QUOTA_RESET_POLL_TRUST_TMP=
+  FM_QUOTA_RESET_POLL_TRUST_PUBLISHED=1
   if ! fm_pr_regular_destination_on_device_or_absent "$FM_QUOTA_RESET_POLL_CHECK_DEST" "$FM_QUOTA_RESET_POLL_STATE_DEVICE" \
     || ! mv -f -- "$FM_QUOTA_RESET_POLL_CHECK_TMP" "$FM_QUOTA_RESET_POLL_CHECK_DEST"; then
     fm_quota_reset_poll_revoke_final || true
     return 1
   fi
   FM_QUOTA_RESET_POLL_CHECK_TMP=
+  FM_QUOTA_RESET_POLL_CHECK_PUBLISHED=1
   if ! fm_custom_check_registered "$FM_QUOTA_RESET_POLL_STATE" "$FM_QUOTA_RESET_POLL_ID"; then
     fm_quota_reset_poll_revoke_final || true
     return 1
@@ -827,16 +892,23 @@ fm_quota_reset_poll_is_ours() {  # <check-path>
 
 # Retire the poll, but only when the armed check is one of ours. The check slot
 # is shared with every other custom check, so a slot some other owner has taken
-# keeps its artifacts.
+# keeps its artifacts. Removing the check IS the retirement - it is what stops
+# the watcher running this poll - so the trust file follows as cleanup and a
+# failure to remove it warns rather than reporting a retirement that did happen
+# as a slot somebody else owns.
 fm_quota_reset_poll_retire() {
   local state=$1 check trust
   check="$state/$FM_QUOTA_RESET_POLL_ID.check.sh"
   trust="$state/$FM_QUOTA_RESET_POLL_ID.check-trust"
-  if [ ! -e "$check" ] && [ ! -L "$check" ]; then
-    rm -f -- "$trust" || return 1
-    return 0
+  if [ -e "$check" ] || [ -L "$check" ]; then
+    fm_quota_reset_poll_is_ours "$check" || return 1
+    rm -f -- "$check" || return 1
+    [ ! -e "$check" ] && [ ! -L "$check" ] || return 1
   fi
-  fm_quota_reset_poll_is_ours "$check" || return 1
-  rm -f -- "$check" "$trust" || return 1
-  [ ! -e "$check" ] && [ ! -L "$check" ]
+  if [ -e "$trust" ] || [ -L "$trust" ]; then
+    rm -f -- "$trust" 2>/dev/null \
+      || printf 'warning: state/%s.check.sh was retired but its trust binding could not be removed\n' \
+        "$FM_QUOTA_RESET_POLL_ID" >&2
+  fi
+  return 0
 }

@@ -611,11 +611,11 @@ test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation() {
   local dir out rc err rearm
   dir=$(make_case arm-failure)
   setup_root "$dir"
-  # Build the registry directories through a real freeze, then discharge it, so
-  # only the poll's own writes into state/ are left to fail below.
+  # An obligation already in the registry, and a poll that is not armed - the
+  # state a firstmate restart can land in after a partly-published arm.
   run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
     || fail "setup freeze failed"
-  run_freeze "$dir" exhausted.json resolve task-a >/dev/null || fail "setup resolve failed"
+  rm -f "$dir/home/state/$POLL_CHECK" "$dir/home/state/$POLL_TRUST"
 
   # Deny state/ any write: the record still lands in the registry subdirectory,
   # but the poll cannot be published. Losing the obligation would be the worse
@@ -630,8 +630,16 @@ test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation() {
 
   [ "$rc" -ne 0 ] || fail "a freeze whose poll could not be armed still reported success"
   err=$(cat "$dir/err")
-  assert_contains "$err" 'NO poll is watching it' \
-    "the failure did not state that an unwatched obligation was left behind"
+  assert_contains "$err" 'is NOT armed' \
+    "the failure did not state that no poll is armed"
+  # The poll is one file for the whole registry, so an unarmed poll leaves EVERY
+  # obligation unwatched. Reporting only the current subject understates it.
+  assert_contains "$err" 'fleet-wide' \
+    "the failure did not say the unarmed poll is fleet-wide"
+  assert_contains "$err" '2 open obligation' \
+    "the failure did not count every obligation the unarmed poll leaves unwatched"
+  assert_contains "$err" ' task-a' \
+    "the failure did not name the other obligation that is equally unwatched"
   [ -f "$dir/home/state/quota-frozen/pm" ] \
     || fail "the obligation was dropped, losing the work the registry exists to protect"
   out=$(run_freeze "$dir" exhausted.json list)
@@ -652,6 +660,128 @@ test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation() {
   out=$(run_freeze "$dir" exhausted.json list)
   assert_contains "$out" "poll: armed state/$POLL_CHECK" "the named command did not actually arm the poll"
   pass "a freeze whose poll cannot be armed keeps the obligation and names a command that fully restores it"
+}
+
+test_an_arming_failure_with_a_live_poll_says_the_wake_is_still_watched() {
+  local dir out rc err
+  dir=$(make_case arm-failure-live-poll)
+  setup_root "$dir"
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "setup freeze failed"
+
+  # The poll enumerates the registry when it runs, so the one already armed
+  # watches obligations recorded after it was written. An arming failure here
+  # means it was not refreshed - not that the new wake is lost.
+  chmod 0500 "$dir/home/state"
+  set +e
+  run_freeze "$dir" exhausted.json add --subject pm --provider claude --action respawn \
+    > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  chmod 0700 "$dir/home/state"
+
+  [ "$rc" -ne 0 ] || fail "a freeze whose poll could not be refreshed reported plain success"
+  err=$(cat "$dir/err")
+  assert_contains "$err" 'is NOT lost' \
+    "the failure claimed the wake was lost while a poll was still watching the registry"
+  fm_custom_check_registered "$dir/home/state" "$FM_QUOTA_RESET_POLL_ID" \
+    || fail "the failed refresh disarmed the poll that was already watching the registry"
+
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'pm(claude/five_hour,recovered)' \
+    "the surviving poll did not wake for the obligation recorded after it was armed"
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' \
+    "the surviving poll stopped waking for the obligation it was armed for"
+  pass "an arming failure that leaves a live poll reports the wake as still watched, not lost"
+}
+
+test_an_arming_failure_never_revokes_a_poll_it_did_not_publish() {
+  local dir out
+  dir=$(make_case revoke-scope)
+  setup_root "$dir"
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "first freeze failed"
+  run_freeze "$dir" exhausted.json add --subject pm --provider claude --action respawn >/dev/null \
+    || fail "second freeze failed"
+  fm_custom_check_registered "$dir/home/state" "$FM_QUOTA_RESET_POLL_ID" \
+    || fail "setup did not arm the poll"
+
+  # A replacement poll is prepared and then abandoned before anything is
+  # published. Rolling that back may reach only what this attempt renamed into
+  # place; the live poll is watching the whole registry, so tearing it down over
+  # an unrelated failure would stop the wakes for every open obligation at once.
+  (
+    fm_quota_reset_poll_prepare "$dir/home/state" || exit 1
+    fm_quota_reset_poll_revoke_final
+    fm_quota_reset_poll_cleanup
+    exit 0
+  ) || fail "preparing a replacement poll failed"
+
+  fm_custom_check_registered "$dir/home/state" "$FM_QUOTA_RESET_POLL_ID" \
+    || fail "an abandoned arming attempt disarmed the poll it never published over"
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' \
+    "the surviving poll no longer wakes for its obligations"
+  assert_contains "$out" 'pm(claude/five_hour,recovered)' \
+    "the surviving poll no longer wakes for its obligations"
+  pass "an arming attempt that publishes nothing leaves the already-armed poll watching the registry"
+}
+
+test_a_discharge_completes_even_when_its_marker_cannot_be_cleared() {
+  local dir out
+  dir=$(make_case discharge-marker)
+  setup_root "$dir"
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "freeze failed"
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' "the setup wake did not fire"
+
+  # The marker path becomes something rm cannot remove. Clearing it is cleanup
+  # AFTER the discharge; it may not turn a completed discharge into "no quota
+  # freeze recorded", which would tell firstmate to keep waiting on work that is
+  # already done, nor skip retiring a poll with nothing left to watch.
+  rm -f "$dir/home/state/quota-frozen/.notified/task-a"
+  mkdir -p "$dir/home/state/quota-frozen/.notified/task-a/occupied" \
+    || fail "could not build the unclearable marker fixture"
+
+  out=$(run_freeze "$dir" exhausted.json resolve task-a) \
+    || fail "a completed discharge was reported as a failure because its marker could not be cleared"
+  assert_contains "$out" 'resolved: task-a' "the completed discharge was not reported as done"
+  assert_contains "$out" "retired: state/$POLL_CHECK" \
+    "the marker failure skipped retiring a poll with an empty registry behind it"
+  [ ! -e "$dir/home/state/quota-frozen/task-a" ] || fail "the obligation was not actually discharged"
+  [ ! -e "$dir/home/state/$POLL_CHECK" ] || fail "the poll stayed armed over an empty registry"
+  pass "a discharge whose marker cannot be cleared still reports as done and still retires the poll"
+}
+
+test_the_poll_reads_quota_axi_once_per_sweep() {
+  local dir out calls
+  dir=$(make_case one-reading)
+  setup_root "$dir"
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "first freeze failed"
+  run_freeze "$dir" exhausted.json add --subject pm --provider claude --action respawn >/dev/null \
+    || fail "second freeze failed"
+
+  # quota-axi is a network call and the watcher runs this whole check under one
+  # timeout, so one invocation per obligation is how a sweep with a hung
+  # provider runs out of budget and loses the wake entirely. It is also what
+  # would let two records in one sweep be judged against different readings.
+  : > "$dir/quota.log"
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' "the sweep did not wake for task-a"
+  assert_contains "$out" 'pm(claude/five_hour,recovered)' "the sweep did not wake for pm"
+  calls=$(wc -l < "$dir/quota.log" | tr -d '[:space:]')
+  [ "$calls" -eq 1 ] || fail "one sweep over two obligations read quota-axi $calls times"
+
+  # Both obligations are now inside their quiet window, so the sweep has nothing
+  # to look at and must not pay for a reading at all.
+  : > "$dir/quota.log"
+  out=$(run_poll "$dir" recovered.json)
+  [ -z "$out" ] || fail "a fully suppressed sweep still woke firstmate: $out"
+  calls=$(wc -l < "$dir/quota.log" | tr -d '[:space:]')
+  [ "$calls" -eq 0 ] || fail "a sweep with every obligation suppressed still read quota-axi $calls times"
+  pass "a sweep reads quota-axi once for the whole registry, and not at all when nothing is due"
 }
 
 test_the_poll_id_cannot_be_taken_by_a_task() {
@@ -715,6 +845,10 @@ test_resolve_removes_one_obligation_and_retires_only_when_empty
 test_a_foreign_check_in_the_slot_is_never_overwritten
 test_our_own_older_poll_is_re_armed_rather_than_refused
 test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation
+test_an_arming_failure_with_a_live_poll_says_the_wake_is_still_watched
+test_an_arming_failure_never_revokes_a_poll_it_did_not_publish
+test_a_discharge_completes_even_when_its_marker_cannot_be_cleared
+test_the_poll_reads_quota_axi_once_per_sweep
 test_the_poll_id_cannot_be_taken_by_a_task
 test_watcher_dispatch_delivers_the_reset_wake
 test_help_documents_usage

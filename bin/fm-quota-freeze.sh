@@ -152,21 +152,44 @@ assert_slot_available() {
   exit 3
 }
 
+# Every subject currently in the registry, one per line, for the arming-failure
+# report. The poll is fleet-wide, so what is or is not watched is never about
+# one subject.
+open_subjects() {
+  local dir rec
+  dir=$(fm_quota_freeze_dir "$STATE")
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  for rec in "$dir"/*; do
+    [ -f "$rec" ] && [ ! -L "$rec" ] || continue
+    printf ' %s' "${rec##*/}"
+  done
+}
+
 # The record is deliberately kept when arming fails: per the commit invariant in
 # bin/fm-quota-freeze-lib.sh's header, nothing after the record lands may undo
 # it. An obligation nobody watches is recoverable, a lost obligation is not.
-# What must not happen is the failure reading as "nothing happened", so it names
-# the unwatched subject and the exact command that arms it again - INCLUDING the
-# note, without which re-arming would overwrite the record with an empty one and
-# discard the only thing that says what resuming actually requires.
+# What must not happen is the failure reading as more or less than what actually
+# happened, so it reports the true state of the fleet-wide poll - which is one
+# file watching the whole registry, not this subject - and names the exact
+# command that arms it again, INCLUDING the note, without which re-arming would
+# overwrite the record with an empty one and discard the only thing that says
+# what resuming actually requires.
 arm_failed() {  # <reason> <subject> <provider> <window> <action> <note>
   local reason=$1 subject=$2 provider=$3 window=$4 action=$5 note=$6 rearm
   printf -v rearm 'fm-quota-freeze.sh add --subject %q --provider %q --window %q --action %q' \
     "$subject" "$provider" "$window" "$action"
   [ -z "$note" ] || printf -v rearm '%s --note %q' "$rearm" "$note"
   printf 'error: %s\n' "$reason" >&2
-  printf 'error: the freeze for %s is recorded in state/quota-frozen/%s but NO poll is watching it, so nothing will wake the fleet when %s/%s recovers\n' \
-    "$subject" "$subject" "$provider" "$window" >&2
+  if fm_quota_reset_poll_armed "$STATE"; then
+    printf 'error: the freeze for %s is recorded in state/quota-frozen/%s and the poll already armed at state/%s.check.sh still watches the whole registry, so the wake for %s/%s is NOT lost; that poll was simply not refreshed\n' \
+      "$subject" "$subject" "$FM_QUOTA_RESET_POLL_ID" "$provider" "$window" >&2
+    printf 'error: refresh it when convenient with: %s\n' "$rearm" >&2
+    exit 1
+  fi
+  printf 'error: the freeze for %s is recorded in state/quota-frozen/%s but state/%s.check.sh is NOT armed\n' \
+    "$subject" "$subject" "$FM_QUOTA_RESET_POLL_ID" >&2
+  printf 'error: that poll is fleet-wide - one check for the whole registry - so nothing is watching ANY of these %s open obligation(s) until it is armed again:%s\n' \
+    "$(fm_quota_freeze_count "$STATE")" "$(open_subjects)" >&2
   printf 'error: re-arm it with: %s\n' "$rearm" >&2
   exit 1
 }
