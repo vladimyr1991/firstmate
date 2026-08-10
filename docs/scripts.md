@@ -88,6 +88,9 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
 | `fm-ci-run-lib.sh`       | Own raw CI-run validation, generated-check rendering, and private atomic run-poll publication plus one-shot retirement |
 | `fm-ci-run-check.sh`     | Arm a private, one-shot watch on a raw GitHub Actions run, independent of any pull request |
+| `fm-quota-freeze-lib.sh` | Own quota-freeze record validation and the fleet-wide reset poll's rendering, publication, and retirement |
+| `fm-quota-freeze.sh`     | Record work frozen on an exhausted model window, arm the reset poll, and discharge an obligation after a confirmed resume |
+| `fm-limit-dialog.sh`     | Answer a worker's usage-limit dialog by selecting the waiting option, never a paid one, and arm the resume |
 | `fm-pr-merge.sh`         | Record PR metadata, then merge a task's canonical full GitHub URL                    |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
 | `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
