@@ -47,13 +47,24 @@ state_snapshot() {
   )
 }
 
+# An ISO-8601 instant <seconds> from now. Fixture reset times must be computed
+# rather than hardcoded: a literal timestamp silently becomes a PAST reset once
+# the wall clock passes it, which flips the poll's unverified-grace path on and
+# turns "stays silent" assertions into failures on a date nobody changed.
+iso_in() {
+  perl -e 'my @t = gmtime(time + $ARGV[0]);
+    printf "%04d-%02d-%02dT%02d:%02d:%02dZ", $t[5]+1900, $t[4]+1, $t[3], $t[2], $t[1], $t[0];' "$1"
+}
+
 # A quota-axi stand-in that prints whichever reading the current step selects,
 # so a "reset" is expressed the way it actually reaches firstmate: a later
 # reading of the same provider.
 make_case() {
-  local name=$1 dir fakebin
+  local name=$1 dir fakebin soon later
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
+  soon=$(iso_in 18000)
+  later=$(iso_in 36000)
   mkdir -p "$dir/home/state" "$fakebin"
   cat > "$fakebin/quota-axi" <<'SH'
 #!/usr/bin/env bash
@@ -63,30 +74,30 @@ cat "$FM_TEST_QUOTA_READING"
 SH
   chmod +x "$fakebin/quota-axi"
 
-  cat > "$dir/exhausted.json" <<'J'
+  cat > "$dir/exhausted.json" <<J
 {"schemaVersion":3,"providers":[
  {"provider":"claude","state":{"stale":false},"windows":[
-   {"id":"five_hour","percentRemaining":0,"resetsAt":"2026-08-10T17:30:00.801838+00:00"},
-   {"id":"seven_day","percentRemaining":55,"resetsAt":"2026-08-14T18:00:00.801858+00:00"}]}]}
+   {"id":"five_hour","percentRemaining":0,"resetsAt":"$soon"},
+   {"id":"seven_day","percentRemaining":55,"resetsAt":"$later"}]}]}
 J
-  cat > "$dir/recovered.json" <<'J'
+  cat > "$dir/recovered.json" <<J
 {"schemaVersion":3,"providers":[
  {"provider":"claude","state":{"stale":false},"windows":[
-   {"id":"five_hour","percentRemaining":100,"resetsAt":"2026-08-10T22:30:00.801838+00:00"},
-   {"id":"seven_day","percentRemaining":54,"resetsAt":"2026-08-14T18:00:00.801858+00:00"}]}]}
+   {"id":"five_hour","percentRemaining":100,"resetsAt":"$later"},
+   {"id":"seven_day","percentRemaining":54,"resetsAt":"$later"}]}]}
 J
   # The window is gone from the reading entirely: quota-axi stopped modelling
   # the axis that froze the work.
-  cat > "$dir/window-gone.json" <<'J'
+  cat > "$dir/window-gone.json" <<J
 {"schemaVersion":3,"providers":[
  {"provider":"claude","state":{"stale":false},"windows":[
-   {"id":"seven_day","percentRemaining":54,"resetsAt":"2026-08-14T18:00:00.801858+00:00"}]}]}
+   {"id":"seven_day","percentRemaining":54,"resetsAt":"$later"}]}]}
 J
-  # Reset time has passed but the reading is stale, so it is not evidence.
-  cat > "$dir/stale.json" <<'J'
+  # Headroom is reported, but the reading is stale, so it is not evidence.
+  cat > "$dir/stale.json" <<J
 {"schemaVersion":3,"providers":[
  {"provider":"claude","state":{"stale":true},"windows":[
-   {"id":"five_hour","percentRemaining":100,"resetsAt":"2026-08-10T22:30:00.801838+00:00"}]}]}
+   {"id":"five_hour","percentRemaining":100,"resetsAt":"$later"}]}]}
 J
   # Every window has headroom: whatever stopped the work is invisible here.
   cat > "$dir/no-exhausted-window.json" <<'J'
@@ -94,6 +105,9 @@ J
  {"provider":"grok","state":{"stale":false},"windows":[
    {"id":"credits","percentRemaining":42,"resetsAt":"2026-09-01T00:00:00Z"}]}]}
 J
+  # Recorded, not recomputed at assertion time: two iso_in calls a second apart
+  # would disagree and turn an exact-value assertion into a rare flake.
+  printf '%s\n' "$soon" > "$dir/soon.iso"
   : > "$dir/quota.log"
   printf '%s\n' "$dir"
 }
@@ -133,7 +147,7 @@ test_add_records_the_obligation_and_arms_the_poll() {
   [ "$(file_mode "$dir/home/state/$POLL_CHECK")" = 700 ] || fail "poll mode was not 0700"
   [ "$(file_mode "$dir/home/state/$POLL_TRUST")" = 600 ] || fail "trust mode was not 0600"
   assert_contains "$(cat "$record")" 'window=five_hour' "record did not select the exhausted window"
-  assert_contains "$(cat "$record")" 'resets_at=2026-08-10T17:30:00.801838+00:00' \
+  assert_contains "$(cat "$record")" "resets_at=$(cat "$dir/soon.iso")" \
     "record did not carry the window's own reset time"
   assert_contains "$(cat "$record")" 'action=nudge' "record did not carry the resume action"
   fm_custom_check_registered "$dir/home/state" "$FM_QUOTA_RESET_POLL_ID" \
