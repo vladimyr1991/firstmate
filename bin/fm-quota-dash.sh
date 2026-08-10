@@ -33,7 +33,7 @@
 set -u
 
 INTERVAL=3600
-PROVIDERS=claude,codex
+PROVIDERS=claude,codex,grok
 ONCE=0
 
 while [ $# -gt 0 ]; do
@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "fm-quota-dash: --provider requires a list" >&2; exit 2; }
       PROVIDERS=$2; shift 2 ;;
     --once) ONCE=1; shift ;;
-    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "fm-quota-dash: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -69,13 +69,18 @@ tone_for() {
     'BEGIN { if (p < 5) printf "%s", r; else if (p < 20) printf "%s", a; else printf "%s", g }'
 }
 
+# Padded to a fixed VISIBLE width here: the colour escapes carry no width, so
+# %-16s applied to the coloured string at the call site would count them and
+# leave the AVAILABILITY column shifting with the pace text.
 pace_label() {
+  local text tone
   case "$1" in
-    on_pace) printf '%son pace%s' "$GREEN" "$R" ;;
-    behind)  printf '%sover-spending%s' "$RED" "$R" ;;
-    ahead)   printf '%sunder budget%s' "$CYAN" "$R" ;;
-    *)       printf '%s-%s' "$D" "$R" ;;
+    on_pace) text='on pace';       tone=$GREEN ;;
+    behind)  text='over-spending'; tone=$RED ;;
+    ahead)   text='under budget';  tone=$CYAN ;;
+    *)       text='-';             tone=$D ;;
   esac
+  printf '%s%-16s%s' "$tone" "$text" "$R"
 }
 
 human_until() {
@@ -100,22 +105,27 @@ collect() {
   json=$(quota-axi --provider "$PROVIDERS" --json 2>/dev/null)
   ROWS=$(printf '%s' "$json" | jq -r '
     .providers[]? | (.provider) as $p | (.plan // "?") as $plan |
-    [ .windows[]? |
+    (if $p == "grok" then "weekly cap unmeasured" else "-" end) as $note |
+    [ .windows[]? ] as $reported |
+    [ $reported[] |
       select(
         if $p == "claude" then .id == "five_hour" or .id == "seven_day"
         elif $p == "codex" then .id == "weekly"
         elif $p == "grok" then .id == "credits"
-        else false
+        else true
         end
       )
     ] as $dispatch_windows |
-    if ($dispatch_windows | length) > 0 then
-      $dispatch_windows[] |
+    (if ($dispatch_windows | length) > 0 then $dispatch_windows else $reported end) as $shown |
+    # bash collapses runs of tabs when IFS is whitespace, so an empty field
+    # would silently shift every later column; no field is ever emitted empty.
+    (if ($shown | length) > 0 then
+      $shown[] |
       [$p, $plan, (.label // .id // "window"),
        ((.percentRemaining // -1) | tostring),
-       (.resetsAt // ""), (.pace.status // "?"),
-       (if $p == "grok" then "weekly cap unmeasured" else "" end)] | @tsv
-    else [$p, $plan, "-", "-1", "", "?", ""] | @tsv end' 2>/dev/null)
+       (.resetsAt // ""), (.pace.status // "?"), $note]
+    else [$p, $plan, "-", "-1", "", "?", $note] end)
+    | map(tostring | if . == "" then "-" else . end) | @tsv' 2>/dev/null)
 
   img=$(image_row) && ROWS="${ROWS}${ROWS:+$'\n'}${img}"
 }
@@ -140,7 +150,7 @@ image_row() {
 gauge() {  # <n> <pct> <model> <window> <availability-note>
   local n=$1 pct=$2 model=$3 win=$4 note=$5 label width=28 filled tone pipes spaces
   label=$win
-  [ -z "$note" ] || label="$label; $note"
+  case "$note" in ''|-) ;; *) label="$label; $note" ;; esac
   filled=$(awk -v p="$pct" -v w="$width" 'BEGIN { f = int(p / 100 * w); if (f < 0) f = 0; if (f > w) f = w; print f }')
   tone=$(tone_for "$pct")
   pipes=$(printf '|%.0s' $(seq 1 "$filled") 2>/dev/null)
