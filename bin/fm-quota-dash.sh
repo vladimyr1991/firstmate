@@ -20,6 +20,11 @@
 # also carry an explicit unmeasured-weekly-cap warning, because a healthy
 # prepaid balance does not prove that Grok can accept another worker.
 #
+# A dispatch provider that answers with quota data but none of those windows
+# gets one explicit "dispatch limit not reported" row carrying no number at
+# all. The uncertainty is disclosed rather than filled in: the provider stays
+# eligible, but nothing on that row may be read as sustainable headroom.
+#
 # The image row reads the same state/image-gen-spend.tsv that bin/fm-image-gen.sh
 # writes, so the dashboard and the tool's own cap can never drift apart.
 #
@@ -46,7 +51,7 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "fm-quota-dash: --provider requires a list" >&2; exit 2; }
       PROVIDERS=$2; shift 2 ;;
     --once) ONCE=1; shift ;;
-    -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "fm-quota-dash: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -106,6 +111,7 @@ collect() {
   ROWS=$(printf '%s' "$json" | jq -r '
     .providers[]? | (.provider) as $p | (.plan // "?") as $plan |
     (if $p == "grok" then "weekly cap unmeasured" else "-" end) as $note |
+    (($p == "claude") or ($p == "codex") or ($p == "grok")) as $dispatch_provider |
     [ .windows[]? ] as $reported |
     [ $reported[] |
       select(
@@ -116,14 +122,15 @@ collect() {
         end
       )
     ] as $dispatch_windows |
-    (if ($dispatch_windows | length) > 0 then $dispatch_windows else $reported end) as $shown |
     # bash collapses runs of tabs when IFS is whitespace, so an empty field
     # would silently shift every later column; no field is ever emitted empty.
-    (if ($shown | length) > 0 then
-      $shown[] |
+    (if ($dispatch_windows | length) > 0 then
+      $dispatch_windows[] |
       [$p, $plan, (.label // .id // "window"),
        ((.percentRemaining // -1) | tostring),
        (.resetsAt // ""), (.pace.status // "?"), $note]
+    elif $dispatch_provider and ($reported | length) > 0 then
+      [$p, $plan, "-", "unknown", "", "?", $note]
     else [$p, $plan, "-", "-1", "", "?", $note] end)
     | map(tostring | if . == "" then "-" else . end) | @tsv' 2>/dev/null)
 
@@ -163,12 +170,16 @@ gauge() {  # <n> <pct> <model> <window> <availability-note>
 # Renders the full dashboard to stdout. draw() then shows it through a
 # viewport, so nothing can be pushed off the top of a short terminal.
 render_all() {
-  local n=0
+  local n=0 caveat
 
   while IFS=$'\t' read -r prov plan win pct resets pace note; do
     [ -n "$prov" ] || continue
     n=$(( n + 1 ))
-    if awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
+    if [ "$pct" = unknown ]; then
+      case "$note" in ''|-) caveat= ;; *) caveat=" $D($note)$R" ;; esac
+      printf '%s%2d%s [%sUNKNOWN - dispatch limit not reported%s] %s%s%s%s\n' \
+        "$CYAN" "$n" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
+    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
       printf '%s%2d%s [%sUNREADABLE - run: quota-axi --allow-keychain-prompt%s] %s%s%s\n' \
         "$CYAN" "$n" "$R" "$AMBER" "$R" "$B" "$prov" "$R"
     else
@@ -189,7 +200,12 @@ EOF
   while IFS=$'\t' read -r prov plan win pct resets pace note; do
     [ -n "$prov" ] || continue
     n=$(( n + 1 ))
-    if awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
+    if [ "$pct" = unknown ]; then
+      caveat='dispatch limit not reported'
+      case "$note" in ''|-) ;; *) caveat="$caveat; $note" ;; esac
+      printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s %-20s\n' \
+        "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "unknown" "$R" "-" "$(pace_label "$pace")" "$caveat"
+    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
       printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s %-20s\n' \
         "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "n/a" "$R" "-" "$(pace_label "$pace")" "${note:--}"
     else
