@@ -136,7 +136,7 @@ family_for_basename() {
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
-    fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|\
+    fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|fm-limit-dialog.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
@@ -149,7 +149,7 @@ family_for_basename() {
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
-    fm-session-lock-ancestry.test.sh|\
+    fm-quota-freeze.test.sh|fm-session-lock-ancestry.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-triage.test.sh|\
     fm-watcher-lock.test.sh)
@@ -866,6 +866,14 @@ families_for_changed_path() {
     bin/fm-watch*|bin/fm-wake*|\
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
       printf '%s\n' watcher-wake-lock
+      ;;
+    bin/fm-quota-freeze*)
+      printf '%s\n' watcher-wake-lock
+      printf '%s\n' pure-contract-unit
+      ;;
+    bin/fm-limit-dialog.sh)
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' backend-dispatch
       ;;
     bin/fm-afk*)
       printf '%s\n' afk

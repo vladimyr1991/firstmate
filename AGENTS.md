@@ -106,6 +106,7 @@ state/               volatile runtime signals; gitignored
   .pr-check-migration.log  private per-task outcomes distinguishing rebuilt or canonically registered replacement polls, quarantined unarmed polls, and incomplete migrations
   .pr-check-migration-scan-v1  private marker proving the non-executing scan disabled every unsafe legacy check; .pr-check-migration-v1 separately records completed private repairs
   x-watch.check.sh   generated X-mode relay poll shim; present only when opted in (section 14)
+  quota-frozen/      durable obligations for work stopped by an exhausted model window, one private record per frozen task or role plus private `.notified/` wake markers; written only by bin/fm-quota-freeze.sh and removed only after a confirmed resume, so the obligation outlives the conversation and the wake it produced (section 13's quota-autoresume; bin/fm-quota-freeze-lib.sh)
   pending-replies/   parent-owned secondmate pending-reply records (correlation id, delivery vs reply, recovery, escalation); fm-pending-reply-lib.sh
   procevent/         registered process-to-event sources, one private record per canonical source id; written only by bin/fm-procevent.sh, and their presence alone keeps supervision required (section 13)
   procevent-inbox/   private captured results and their durable handled-acknowledgement markers; source output lives here and never in an event line
@@ -184,6 +185,7 @@ When every candidate is tight, preserve the captain's strongest-reasoning class 
 Break genuine evidence ties without array-order or harness bias.
 `quota-axi` owns how model or product windows relate to bounding account windows and remains data-only.
 Load `quota-array-dispatch` before choosing among a matched profile array; that skill is the single owner of the completion-aware selection procedure.
+Work stopped by an exhausted window never ends the turn on an unarmed intention: nothing wakes firstmate when a window resets unless the obligation is recorded, so load `quota-autoresume` before deferring, parking, or abandoning that work.
 The generic effort fallback and its precedence are owned by `harness-adapters`: explicit captain and standing configured effort win; otherwise use low for well-understood explicit work, xhigh for ambiguous investigation or design, intermediate levels proportionally, and never max without explicit captain preference.
 Do not add model-specific versions of that policy.
 
@@ -504,6 +506,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
 - `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current quota-axi output.
+- `quota-autoresume` - load before ending any turn that defers, parks, or abandons work because a quota or usage limit is exhausted, on a `quota reset ready: ...` check wake, and whenever a worker is found parked on a usage-limit dialog.
 - `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
 - `firstmate-orca` - load before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
 - `project-management` - load before adding, creating, removing, or initializing a project.

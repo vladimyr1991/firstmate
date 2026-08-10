@@ -103,10 +103,21 @@ fm_pr_task_id_valid() {
   fm_task_id_path_safe "$id"
 }
 
+# Check-slot ids held by fleet-level polls that are not tasks. state/<id>.check.sh
+# is one slot per id, so a task allowed to take one of these names could silently
+# evict a poll whose entire purpose is that a wake is never missed. Reserving the
+# name at task creation removes that race instead of detecting it afterwards.
+# bin/fm-quota-freeze-lib.sh owns the quota-reset poll behind this entry, and
+# binds the two together through FM_QUOTA_RESET_POLL_ID in its own tests.
+FM_RESERVED_CHECK_SLOT_IDS="fm-quota-reset"
+
 fm_task_id_creation_valid() {
-  local id=${1-}
+  local id=${1-} reserved
   fm_pr_task_id_valid "$id" || return 1
-  [ "${#id}" -le 64 ]
+  [ "${#id}" -le 64 ] || return 1
+  for reserved in $FM_RESERVED_CHECK_SLOT_IDS; do
+    [ "$id" != "$reserved" ] || return 1
+  done
 }
 
 # GitLab serves self-hosted instances, so the host is part of the identity
