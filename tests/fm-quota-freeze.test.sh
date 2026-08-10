@@ -93,6 +93,27 @@ J
  {"provider":"claude","state":{"stale":false},"windows":[
    {"id":"seven_day","percentRemaining":54,"resetsAt":"$later"}]}]}
 J
+  # Exactly at the ceiling a freeze may be registered on. Recovery must need
+  # strictly more than this, or one reading would justify both the freeze and
+  # the wake that says it is over.
+  cat > "$dir/at-floor.json" <<J
+{"schemaVersion":3,"providers":[
+ {"provider":"claude","state":{"stale":false},"windows":[
+   {"id":"five_hour","percentRemaining":10,"resetsAt":"$soon"}]}]}
+J
+  # A credits-style window at zero that carries no resetsAt at all, so the
+  # record has no clock evidence to anchor anything on.
+  cat > "$dir/no-reset.json" <<'J'
+{"schemaVersion":3,"providers":[
+ {"provider":"grok","state":{"stale":false},"windows":[
+   {"id":"credits","percentRemaining":0}]}]}
+J
+  # The same provider once quota-axi stops modelling that window.
+  cat > "$dir/no-reset-gone.json" <<'J'
+{"schemaVersion":3,"providers":[
+ {"provider":"grok","state":{"stale":false},"windows":[
+   {"id":"other","percentRemaining":42}]}]}
+J
   # Headroom is reported, but the reading is stale, so it is not evidence.
   cat > "$dir/stale.json" <<J
 {"schemaVersion":3,"providers":[
@@ -265,8 +286,9 @@ test_poll_is_silent_until_headroom_actually_returns() {
   out=$(run_poll "$dir" exhausted.json)
   [ -z "$out" ] || fail "the poll woke firstmate while the window was still exhausted: $out"
 
-  # The clock has passed the recorded reset, but the reading is stale, so it is
-  # not evidence that capacity came back.
+  # Headroom is reported, but the reading is stale, so it is not evidence that
+  # capacity came back. The recorded reset is still ahead, so this is simply
+  # unknown and the poll stays quiet.
   out=$(run_poll "$dir" stale.json)
   [ -z "$out" ] || fail "a stale reading was treated as recovery: $out"
 
@@ -274,7 +296,88 @@ test_poll_is_silent_until_headroom_actually_returns() {
   [ -z "$out" ] || fail "an unreadable quota reading produced a wake: $out"
 
   [ -f "$dir/home/state/$POLL_CHECK" ] || fail "the poll retired itself while an obligation was open"
+
+  # Once the recorded reset is long past and the reading is STILL stale, staying
+  # quiet would be the stall this mechanism removes: the same reading now
+  # surfaces as explicitly unverified, never as recovery.
+  perl -i -pe 's/^resets_at_epoch=.*$/"resets_at_epoch=" . (time - 10_000)/e' \
+    "$dir/home/state/quota-frozen/task-a"
+  out=$(run_poll "$dir" stale.json)
+  [ "$out" = 'quota reset ready: task-a(claude/five_hour,unverified)' ] \
+    || fail "a stale reading past the recorded reset did not surface as unverified: [$out]"
   pass "the poll stays silent while the window is exhausted, stale, or unreadable"
+}
+
+test_a_freeze_at_the_floor_is_not_immediately_declared_recovered() {
+  local dir out
+  dir=$(make_case at-floor)
+  setup_root "$dir"
+  out=$(run_freeze "$dir" at-floor.json add --subject task-a --provider claude --action nudge) \
+    || fail "a window exactly at the freeze ceiling was refused"
+  assert_contains "$out" 'frozen: task-a (task) on claude/five_hour' \
+    "the freeze did not record the window sitting at the ceiling"
+
+  # One reading must never satisfy both "exhausted enough to freeze" and
+  # "recovered": a wake here costs a firstmate turn with no reset behind it.
+  out=$(run_poll "$dir" at-floor.json)
+  [ -z "$out" ] || fail "the reading that justified the freeze immediately declared recovery: $out"
+
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' \
+    "genuine headroom above the floor did not wake firstmate"
+  pass "a freeze at the floor is not declared recovered by the very reading that justified it"
+}
+
+test_an_obligation_with_no_recorded_reset_still_surfaces() {
+  local dir out record
+  dir=$(make_case no-reset)
+  setup_root "$dir"
+  run_freeze "$dir" no-reset.json add --subject task-a --provider grok --action nudge >/dev/null \
+    || fail "a window with no reset time was refused"
+  record="$dir/home/state/quota-frozen/task-a"
+  assert_contains "$(cat "$record")" 'resets_at=unknown' \
+    "the fixture did not produce the no-clock-evidence case it is here to cover"
+
+  # Nothing to verify from, and no recorded reset to measure a grace against.
+  # While the freeze is recent that is simply unknown, so the poll stays quiet.
+  out=$(run_poll "$dir" no-reset-gone.json)
+  [ -z "$out" ] || fail "an obligation with no recorded reset woke firstmate immediately: $out"
+
+  # Long after the freeze, with quota-axi no longer modelling the window, the
+  # freeze time is the only anchor there is - and silence here would be forever.
+  perl -i -pe 's/^frozen_at=.*$/"frozen_at=" . (time - 10_000)/e' "$record"
+  out=$(run_poll "$dir" no-reset-gone.json)
+  [ "$out" = 'quota reset ready: task-a(grok/credits,unverified)' ] \
+    || fail "an obligation with no recorded reset never surfaced as unverified: [$out]"
+  pass "an obligation frozen on a window with no reset time still surfaces as explicitly unverified"
+}
+
+test_a_re_freeze_is_not_suppressed_by_the_earlier_wake() {
+  local dir out marker
+  dir=$(make_case refreeze)
+  setup_root "$dir"
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "freeze failed"
+  marker="$dir/home/state/quota-frozen/.notified/task-a"
+
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' "the first recovery did not wake firstmate"
+  [ -f "$marker" ] || fail "the first wake was not marked"
+
+  # The resume did not hold - the window is exhausted again and the obligation
+  # is re-registered. The marker now describes a wake for an obligation that no
+  # longer exists, and leaving it would silence the next recovery for a full
+  # quiet window: the same idle stall this mechanism exists to remove.
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "re-freeze failed"
+  [ ! -e "$marker" ] || fail "re-freezing left the earlier wake's marker in place"
+  out=$(run_freeze "$dir" exhausted.json list)
+  assert_contains "$out" 'surfaced=no' "the re-frozen obligation was still reported as already surfaced"
+
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' \
+    "the re-frozen obligation was skipped until the earlier wake's quiet window expired"
+  pass "re-freezing a subject clears the earlier wake so a recovery inside the quiet window still fires"
 }
 
 test_recovery_wakes_exactly_once_then_resurfaces_only_after_the_quiet_window() {
@@ -413,6 +516,81 @@ test_a_foreign_check_in_the_slot_is_never_overwritten() {
   pass "a check slot owned by something else is refused loudly rather than replaced"
 }
 
+test_our_own_older_poll_is_re_armed_rather_than_refused() {
+  local dir out rc
+  dir=$(make_case own-older-poll)
+  setup_root "$dir"
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "first freeze failed"
+
+  # A poll armed by an earlier firstmate: same provenance, different bytes.
+  # It is ours, so a new freeze re-arms over it. Reading it as a sibling watch
+  # and refusing would leave the newly frozen work with no wake at all - the
+  # exact silent stall this mechanism exists to remove.
+  printf '# an earlier render left this line behind\n' >> "$dir/home/state/$POLL_CHECK"
+  if fm_custom_check_registered "$dir/home/state" "$FM_QUOTA_RESET_POLL_ID"; then
+    fail "the altered poll still matched its trust binding, so this fixture proves nothing"
+  fi
+
+  set +e
+  out=$(run_freeze "$dir" exhausted.json add --subject pm --provider claude --action respawn \
+    2> "$dir/err")
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "a freeze was refused because our own older poll held the slot: $(cat "$dir/err")"
+  assert_contains "$out" "armed: state/$POLL_CHECK" "the poll was not re-armed over our own older one"
+  fm_custom_check_registered "$dir/home/state" "$FM_QUOTA_RESET_POLL_ID" \
+    || fail "the re-armed poll is not a properly registered custom check"
+  [ -f "$dir/home/state/quota-frozen/pm" ] || fail "the new obligation was not recorded"
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'pm(claude/five_hour,recovered)' \
+    "the re-armed poll does not watch the obligation it was armed for"
+
+  # Retirement recognizes ownership the same way, so an older render is never
+  # left armed with an empty registry behind it.
+  printf '# and another one\n' >> "$dir/home/state/$POLL_CHECK"
+  run_freeze "$dir" exhausted.json resolve task-a >/dev/null || fail "resolve failed"
+  out=$(run_freeze "$dir" exhausted.json resolve pm)
+  assert_contains "$out" "retired: state/$POLL_CHECK" "our own older poll was not retired"
+  [ ! -e "$dir/home/state/$POLL_CHECK" ] || fail "the older poll stayed armed after the registry emptied"
+  pass "a poll this mechanism generated is re-armed and retired even when its bytes have changed"
+}
+
+test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation() {
+  local dir out rc err
+  dir=$(make_case arm-failure)
+  setup_root "$dir"
+  # Build the registry directories through a real freeze, then discharge it, so
+  # only the poll's own writes into state/ are left to fail below.
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "setup freeze failed"
+  run_freeze "$dir" exhausted.json resolve task-a >/dev/null || fail "setup resolve failed"
+
+  # Deny state/ any write: the record still lands in the registry subdirectory,
+  # but the poll cannot be published. Losing the obligation would be the worse
+  # failure, so it is kept - and must not read as "nothing happened".
+  chmod 0500 "$dir/home/state"
+  set +e
+  run_freeze "$dir" exhausted.json add --subject pm --provider claude --action respawn \
+    > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  chmod 0700 "$dir/home/state"
+
+  [ "$rc" -ne 0 ] || fail "a freeze whose poll could not be armed still reported success"
+  err=$(cat "$dir/err")
+  assert_contains "$err" 'NO poll is watching it' \
+    "the failure did not state that an unwatched obligation was left behind"
+  assert_contains "$err" 'fm-quota-freeze.sh add --subject pm --provider claude --window five_hour --action respawn' \
+    "the failure did not name the exact command that re-arms the obligation"
+  [ -f "$dir/home/state/quota-frozen/pm" ] \
+    || fail "the obligation was dropped, losing the work the registry exists to protect"
+  out=$(run_freeze "$dir" exhausted.json list)
+  assert_contains "$out" 'subject=pm' "list did not report the surviving obligation"
+  assert_contains "$out" 'poll: not armed' "list did not report that nothing is watching it"
+  pass "a freeze whose poll cannot be armed keeps the obligation and says exactly how to re-arm it"
+}
+
 test_the_poll_id_cannot_be_taken_by_a_task() {
   # The poll and the task-id validator must agree about the reserved name, or a
   # task could silently evict the poll from the shared check slot.
@@ -462,12 +640,17 @@ test_the_explicit_window_and_role_subjects_are_accepted
 test_a_limit_quota_axi_cannot_observe_is_refused
 test_invalid_input_is_refused_with_no_side_effect
 test_poll_is_silent_until_headroom_actually_returns
+test_a_freeze_at_the_floor_is_not_immediately_declared_recovered
+test_an_obligation_with_no_recorded_reset_still_surfaces
 test_recovery_wakes_exactly_once_then_resurfaces_only_after_the_quiet_window
+test_a_re_freeze_is_not_suppressed_by_the_earlier_wake
 test_an_unverifiable_window_surfaces_late_rather_than_never
 test_an_unreadable_obligation_is_surfaced_not_stepped_over
 test_the_obligation_survives_a_firstmate_restart
 test_resolve_removes_one_obligation_and_retires_only_when_empty
 test_a_foreign_check_in_the_slot_is_never_overwritten
+test_our_own_older_poll_is_re_armed_rather_than_refused
+test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation
 test_the_poll_id_cannot_be_taken_by_a_task
 test_watcher_dispatch_delivers_the_reset_wake
 test_help_documents_usage

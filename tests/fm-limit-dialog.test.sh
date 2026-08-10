@@ -22,6 +22,15 @@ OBSERVED_DIALOG='│ Claude usage limit reached. Your limit will reset at 5:30pm
 │ ❯ 1. Stop and wait for the limit to reset                      │
 │   2. Upgrade to Max for higher limits                          │'
 
+# An ISO-8601 instant <seconds> from now. Fixture reset times must be computed
+# rather than hardcoded: a literal timestamp silently becomes a PAST reset once
+# the wall clock passes it, which changes which branch of the freeze registry's
+# time-dependent logic the fixture exercises on a date nobody changed.
+iso_in() {
+  perl -e 'my @t = gmtime(time + $ARGV[0]);
+    printf "%04d-%02d-%02dT%02d:%02d:%02dZ", $t[5]+1900, $t[4]+1, $t[3], $t[2], $t[1], $t[0];' "$1"
+}
+
 make_case() {  # <name> -> echoes case dir
   local name=$1 dir fakebin
   dir="$TMP_ROOT/$name"
@@ -58,7 +67,9 @@ case "${1:-}" in
         exit 0
       fi
     done
-    if [ -e "$FM_TMUX_ANSWERED" ]; then
+    # FM_TMUX_STICKY models a pane that has not repainted yet: the dialog is
+    # still on screen even though the selection was sent and confirmed.
+    if [ -e "$FM_TMUX_ANSWERED" ] && [ -z "${FM_TMUX_STICKY:-}" ]; then
       printf 'ready\n> \n'
     else
       cat "$FM_TMUX_SCREEN"
@@ -85,13 +96,14 @@ SH
 
   # quota-axi reporting the exhausted window the dialog is about, so the freeze
   # this path arms has something real to watch.
-  cat > "$fakebin/quota-axi" <<'SH'
-#!/usr/bin/env bash
-cat <<'J'
+  cat > "$dir/quota.json" <<J
 {"schemaVersion":3,"providers":[
  {"provider":"claude","state":{"stale":false},"windows":[
-   {"id":"five_hour","percentRemaining":0,"resetsAt":"2026-08-10T17:30:00.801838+00:00"}]}]}
+   {"id":"five_hour","percentRemaining":0,"resetsAt":"$(iso_in 18000)"}]}]}
 J
+  cat > "$fakebin/quota-axi" <<SH
+#!/usr/bin/env bash
+cat $(printf '%q' "$dir/quota.json")
 SH
   chmod +x "$fakebin/quota-axi"
 
@@ -233,6 +245,51 @@ test_answering_selects_wait_and_never_upgrade() {
   pass "answering a limit dialog selects the waiting option, never the paid one, and arms the resume"
 }
 
+test_a_pane_that_has_not_repainted_is_a_warning_not_a_failed_answer() {
+  local dir rc
+  dir=$(make_case sticky-pane)
+  printf '%s\n' "$OBSERVED_DIALOG" > "$dir/screen.txt"
+
+  set +e
+  FM_TMUX_STICKY=1 run_live "$dir" --provider claude > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  # The key was sent, the submit was confirmed, and the freeze is recorded.
+  # Reporting failure here would tell the caller to re-answer an answered
+  # dialog, which types another selection into a live worker's composer.
+  [ "$rc" -eq 0 ] || fail "a pane still showing the answered dialog was reported as a failed answer (exit $rc)"
+  [ "$(cat "$dir/typed.txt")" = 1 ] || fail "the waiting option was not the key typed"
+  assert_contains "$(cat "$dir/err")" 'still on the visible pane' \
+    "the unrepainted pane was not reported at all"
+  assert_contains "$(cat "$dir/err")" 'rather than re-answering' \
+    "the warning did not steer away from answering the dialog twice"
+  [ -f "$dir/home/state/quota-frozen/task-a" ] || fail "the freeze was not recorded"
+  [ -f "$dir/home/state/fm-quota-reset.check.sh" ] || fail "the resume was not armed"
+  pass "a dialog still visible after a confirmed answer warns instead of reporting the answer as failed"
+}
+
+test_a_freeze_that_cannot_be_recorded_reports_no_resume_not_the_child_code() {
+  local dir rc
+  dir=$(make_case freeze-refused)
+  printf '%s\n' "$OBSERVED_DIALOG" > "$dir/screen.txt"
+  # A foreign check owns the reserved slot, so fm-quota-freeze.sh refuses with
+  # ITS exit 3 - a code that means "ambiguous dialog, nothing sent" in this
+  # script's own table. Propagating it would tell the caller no key was sent
+  # while the pane has in fact been answered.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/home/state/fm-quota-reset.check.sh"
+  chmod 0700 "$dir/home/state/fm-quota-reset.check.sh"
+
+  set +e
+  run_live "$dir" --provider claude > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 4 ] || fail "a failed freeze was not reported as an answered dialog with no resume (exit $rc)"
+  [ "$(cat "$dir/typed.txt")" = 1 ] || fail "the dialog was not answered"
+  assert_contains "$(cat "$dir/err")" 'no resume was armed' "the missing resume was not reported"
+  [ ! -e "$dir/home/state/quota-frozen/task-a" ] || fail "a freeze was recorded despite the refusal"
+  pass "a dialog answered while the freeze is refused exits 4, never the freeze script's own code"
+}
+
 test_answering_without_a_provider_still_answers_but_reports_no_resume() {
   local dir rc
   dir=$(make_case no-provider)
@@ -305,6 +362,8 @@ test_invalid_arguments_are_refused() {
 task-a --action explode
 task-a --lines 0
 task-a --provider
+task-a --provider CLAUDE
+task-a --provider bad/provider
 task-a --nonsense
 ARGS
   [ ! -s "$dir/typed.txt" ] || fail "invalid arguments still produced a keystroke"
@@ -326,6 +385,8 @@ test_an_ordinary_numbered_menu_is_not_a_limit_dialog
 test_a_repainted_dialog_is_still_one_dialog
 test_ambiguous_dialogs_send_nothing
 test_answering_selects_wait_and_never_upgrade
+test_a_pane_that_has_not_repainted_is_a_warning_not_a_failed_answer
+test_a_freeze_that_cannot_be_recorded_reports_no_resume_not_the_child_code
 test_answering_without_a_provider_still_answers_but_reports_no_resume
 test_a_paywall_dialog_never_reaches_the_endpoint
 test_a_saved_capture_cannot_answer_a_live_dialog

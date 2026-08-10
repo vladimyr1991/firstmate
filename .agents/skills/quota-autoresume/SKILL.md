@@ -99,6 +99,7 @@ Two boundaries hold absolutely:
 Choosing to wait only unparks the pane; it does not make the work continue when the limit lifts.
 That is why the freeze is armed as part of answering the dialog rather than left as a separate step to remember.
 If the tool exits 4, the dialog was answered but nothing was armed - record the freeze before ending the turn.
+A warning that the dialog is still on the visible pane is not a failed answer: the selection was sent, confirmed, and recorded, so read the pane rather than running the tool again, which would type a second selection into a live composer.
 
 ## What the captain hears
 

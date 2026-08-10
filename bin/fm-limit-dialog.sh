@@ -113,6 +113,20 @@ case "$ACTION" in
   nudge|respawn|repeat) ;;
   *) usage_error "invalid action: $ACTION" ;;
 esac
+# The provider is validated here rather than left to fm-quota-freeze.sh, which
+# only sees it after the keystroke has already been sent: a usage error
+# discovered then would leave an answered dialog with no resume armed. Same
+# shape as fm_quota_freeze_provider_valid, which is the consumer of this value.
+if [ -n "$PROVIDER" ]; then
+  [ "${#PROVIDER}" -le 64 ] || usage_error "invalid provider: $PROVIDER"
+  case "$PROVIDER" in
+    [a-z0-9]*) ;;
+    *) usage_error "invalid provider: $PROVIDER" ;;
+  esac
+  case "$PROVIDER" in
+    *[!a-z0-9._-]*) usage_error "invalid provider: $PROVIDER" ;;
+  esac
+fi
 
 # Normalize one captured pane into plain text: drop terminal escape sequences
 # and the right-hand frame glyph harnesses draw their dialogs with, so option
@@ -154,8 +168,8 @@ CAPTURE2=$(mktemp "${TMPDIR:-/tmp}/fm-limit-dialog.XXXXXX")
 trap 'rm -f -- "$CAPTURE" "$CAPTURE2"' EXIT
 trap 'exit 1' HUP INT TERM
 
-capture_pane() {  # <destination>
-  local dest=$1 target backend label raw
+capture_pane() {  # <destination> [lines]
+  local dest=$1 lines=${2:-$LINES} target backend label raw
   if [ -n "$FROM_CAPTURE" ]; then
     [ -f "$FROM_CAPTURE" ] || die "capture file does not exist: $FROM_CAPTURE"
     normalize < "$FROM_CAPTURE" > "$dest"
@@ -165,7 +179,7 @@ capture_pane() {  # <destination>
     || die "could not resolve the worker's endpoint for $ID"
   backend=$(fm_backend_of_selector "$ID" "$target" "$STATE")
   label=$(fm_backend_expected_label_of_selector "$ID" "$STATE")
-  raw=$(fm_backend_capture "$backend" "$target" "$LINES" "$label" 2>/dev/null) \
+  raw=$(fm_backend_capture "$backend" "$target" "$lines" "$label" 2>/dev/null) \
     || die "could not read the worker's screen for $ID"
   printf '%s\n' "$raw" | normalize > "$dest"
 }
@@ -266,20 +280,39 @@ if [ "$SEND_RC" -ne 0 ]; then
   exit 1
 fi
 
-# Only now, after the durable part is done, confirm the dialog actually cleared.
-capture_pane "$CAPTURE2"
+# Only now, after the durable part is done, look at whether the dialog cleared.
+# The VISIBLE pane, not the scrollback the detection pass reads: scrollback
+# still holds the pre-answer render of the very dialog just answered (which is
+# why scan() dedupes repaints at all), so asking it whether the dialog is gone
+# can only ever answer "no".
+#
+# And the answer is reported, never acted on. By this point the key was sent,
+# the submit was confirmed by the worker runtime, and the freeze is recorded, so
+# a pane that has not repainted yet is a stale screen, not a failed answer -
+# failing here would tell the caller to re-answer a dialog that is already
+# answered, and typing another selection into a live composer is the worse
+# outcome by far.
+capture_pane "$CAPTURE2" 0
 set +e
 scan "$CAPTURE2"
 CLEARED_RC=$?
 set -e
 if [ "$CLEARED_RC" -ne 1 ]; then
-  printf 'warning: the limit dialog is still on screen; it was not answered\n' >&2
-  exit 1
+  printf 'warning: the limit dialog is still on the visible pane; the selection was sent and the freeze recorded, so verify the pane rather than re-answering it\n' >&2
 fi
 
 if [ -z "$PROVIDER" ]; then
   printf 'note: no resume was armed; record the freeze with fm-quota-freeze.sh add once the exhausted provider is established\n' >&2
   exit 4
 fi
-[ "$FREEZE_RC" -eq 0 ] || exit "$FREEZE_RC"
+# The freeze script has its own exit table (a contested check slot is 3 there,
+# an ambiguous dialog is 3 here), so its code is never propagated verbatim: a
+# caller reading 3 would believe no keystroke was sent. Every failure to arm is
+# reported as the one thing that actually happened - the dialog was answered and
+# no resume was armed - with the child's own error already on stderr.
+if [ "$FREEZE_RC" -ne 0 ]; then
+  printf 'note: the dialog was answered but recording the freeze failed (fm-quota-freeze.sh add exited %s); no resume was armed\n' \
+    "$FREEZE_RC" >&2
+  exit 4
+fi
 exit 0
