@@ -14,10 +14,19 @@
 # provider's endpoint. No countdown is shown: a ticking number invites watching
 # a clock instead of reading the gauges, and press `r` when you cannot wait.
 #
-# Three resources, not two: Claude tokens, Codex tokens, and money spent on
-# image generation. The image row reads the same state/image-gen-spend.tsv that
-# bin/fm-image-gen.sh writes, so the dashboard and the tool's own cap can never
-# drift apart.
+# The dashboard shows only the quota windows that drive dispatch: Claude's
+# session and week, Codex's week, and Grok's shared credits. Product windows
+# stay in quota-axi's source data but are not dashboard resources. Grok credits
+# also carry an explicit unmeasured-weekly-cap warning, because a healthy
+# prepaid balance does not prove that Grok can accept another worker.
+#
+# A dispatch provider that answers with quota data but none of those windows
+# gets one explicit "dispatch limit not reported" row carrying no number at
+# all. The uncertainty is disclosed rather than filled in: the provider stays
+# eligible, but nothing on that row may be read as sustainable headroom.
+#
+# The image row reads the same state/image-gen-spend.tsv that bin/fm-image-gen.sh
+# writes, so the dashboard and the tool's own cap can never drift apart.
 #
 # A provider whose quota cannot be read is shown as UNREADABLE, never as 0%.
 # Zero would claim "quota exhausted" - a different and far more alarming fact
@@ -29,7 +38,7 @@
 set -u
 
 INTERVAL=3600
-PROVIDERS=claude,codex
+PROVIDERS=claude,codex,grok
 ONCE=0
 
 while [ $# -gt 0 ]; do
@@ -42,7 +51,7 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "fm-quota-dash: --provider requires a list" >&2; exit 2; }
       PROVIDERS=$2; shift 2 ;;
     --once) ONCE=1; shift ;;
-    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "fm-quota-dash: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -65,13 +74,18 @@ tone_for() {
     'BEGIN { if (p < 5) printf "%s", r; else if (p < 20) printf "%s", a; else printf "%s", g }'
 }
 
+# Padded to a fixed VISIBLE width here: the colour escapes carry no width, so
+# %-16s applied to the coloured string at the call site would count them and
+# leave the AVAILABILITY column shifting with the pace text.
 pace_label() {
+  local text tone
   case "$1" in
-    on_pace) printf '%son pace%s' "$GREEN" "$R" ;;
-    behind)  printf '%sover-spending%s' "$RED" "$R" ;;
-    ahead)   printf '%sunder budget%s' "$CYAN" "$R" ;;
-    *)       printf '%s-%s' "$D" "$R" ;;
+    on_pace) text='on pace';       tone=$GREEN ;;
+    behind)  text='over-spending'; tone=$RED ;;
+    ahead)   text='under budget';  tone=$CYAN ;;
+    *)       text='-';             tone=$D ;;
   esac
+  printf '%s%-16s%s' "$tone" "$text" "$R"
 }
 
 human_until() {
@@ -96,11 +110,29 @@ collect() {
   json=$(quota-axi --provider "$PROVIDERS" --json 2>/dev/null)
   ROWS=$(printf '%s' "$json" | jq -r '
     .providers[]? | (.provider) as $p | (.plan // "?") as $plan |
-    if (.windows | length) > 0 then
-      .windows[] | [$p, $plan, (.label // .id // "window"),
-                    ((.percentRemaining // -1) | tostring),
-                    (.resetsAt // ""), (.pace.status // "?")] | @tsv
-    else [$p, $plan, "-", "-1", "", "?"] | @tsv end' 2>/dev/null)
+    (if $p == "grok" then "weekly cap unmeasured" else "-" end) as $note |
+    (($p == "claude") or ($p == "codex") or ($p == "grok")) as $dispatch_provider |
+    [ .windows[]? ] as $reported |
+    [ $reported[] |
+      select(
+        if $p == "claude" then .id == "five_hour" or .id == "seven_day"
+        elif $p == "codex" then .id == "weekly"
+        elif $p == "grok" then .id == "credits"
+        else true
+        end
+      )
+    ] as $dispatch_windows |
+    # bash collapses runs of tabs when IFS is whitespace, so an empty field
+    # would silently shift every later column; no field is ever emitted empty.
+    (if ($dispatch_windows | length) > 0 then
+      $dispatch_windows[] |
+      [$p, $plan, (.label // .id // "window"),
+       ((.percentRemaining // -1) | tostring),
+       (.resetsAt // ""), (.pace.status // "?"), $note]
+    elif $dispatch_provider and ($reported | length) > 0 then
+      [$p, $plan, "-", "unknown", "", "?", $note]
+    else [$p, $plan, "-", "-1", "", "?", $note] end)
+    | map(tostring | if . == "" then "-" else . end) | @tsv' 2>/dev/null)
 
   img=$(image_row) && ROWS="${ROWS}${ROWS:+$'\n'}${img}"
 }
@@ -118,34 +150,40 @@ image_row() {
   pct=$(awk -v s="$spent" -v c="$cap" 'BEGIN { r = (c > 0) ? (1 - s / c) * 100 : 0; if (r < 0) r = 0; printf "%.1f", r }')
   # Midnight UTC is a known reset, not an unknown one; emitting it as an ISO
   # timestamp lets the same human_until() render it as every other row.
-  printf 'images\tnano-banana\tDaily $%s/$%s\t%s\t%sT00:00:00\tn/a' \
+  printf 'images\tnano-banana\tDaily $%s/$%s\t%s\t%sT00:00:00\tn/a\t' \
     "$spent" "$cap" "$pct" "$(date -u -v+1d +%Y-%m-%d 2>/dev/null || date -u -d tomorrow +%Y-%m-%d)"
 }
 
-gauge() {  # <n> <pct> <model> <window>
-  local n=$1 pct=$2 model=$3 win=$4 width=28 filled tone pipes spaces
+gauge() {  # <n> <pct> <model> <window> <availability-note>
+  local n=$1 pct=$2 model=$3 win=$4 note=$5 label width=28 filled tone pipes spaces
+  label=$win
+  case "$note" in ''|-) ;; *) label="$label; $note" ;; esac
   filled=$(awk -v p="$pct" -v w="$width" 'BEGIN { f = int(p / 100 * w); if (f < 0) f = 0; if (f > w) f = w; print f }')
   tone=$(tone_for "$pct")
   pipes=$(printf '|%.0s' $(seq 1 "$filled") 2>/dev/null)
   spaces=$(printf ' %.0s' $(seq 1 $(( width - filled ))) 2>/dev/null)
   printf '%s%2d%s [%s%s%s%s %s%s%5.1f%%%s%s]%s %s%s%s %s(%s)%s\n' \
     "$CYAN" "$n" "$R" "$tone" "$pipes" "$R" "$spaces" "$B" "$tone" "$pct" "$R" "$CYAN" "$R" \
-    "$B" "$model" "$R" "$D" "$win" "$R"
+    "$B" "$model" "$R" "$D" "$label" "$R"
 }
 
 # Renders the full dashboard to stdout. draw() then shows it through a
 # viewport, so nothing can be pushed off the top of a short terminal.
 render_all() {
-  local n=0
+  local n=0 caveat
 
-  while IFS=$'\t' read -r prov plan win pct resets pace; do
+  while IFS=$'\t' read -r prov plan win pct resets pace note; do
     [ -n "$prov" ] || continue
     n=$(( n + 1 ))
-    if awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
+    if [ "$pct" = unknown ]; then
+      case "$note" in ''|-) caveat= ;; *) caveat=" $D($note)$R" ;; esac
+      printf '%s%2d%s [%sUNKNOWN - dispatch limit not reported%s] %s%s%s%s\n' \
+        "$CYAN" "$n" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
+    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
       printf '%s%2d%s [%sUNREADABLE - run: quota-axi --allow-keychain-prompt%s] %s%s%s\n' \
         "$CYAN" "$n" "$R" "$AMBER" "$R" "$B" "$prov" "$R"
     else
-      gauge "$n" "$pct" "$prov" "$win"
+      gauge "$n" "$pct" "$prov" "$win" "$note"
     fi
   done <<EOF
 $ROWS
@@ -156,19 +194,24 @@ EOF
   # printf pads by BYTES and Cyrillic is two bytes per character, so %-8s on a
   # Russian header yields half the intended column. The header is padded by
   # hand to match the ASCII data columns below it.
-  printf '%s%s%s\n' "$HDR" " ID MODEL    PLAN         WINDOW           REMAINING   RESETS     PACE        " "$R"
+  printf '%s%s%s\n' "$HDR" " ID MODEL    PLAN         WINDOW           REMAINING   RESETS     PACE             AVAILABILITY" "$R"
 
   n=0
-  while IFS=$'\t' read -r prov plan win pct resets pace; do
+  while IFS=$'\t' read -r prov plan win pct resets pace note; do
     [ -n "$prov" ] || continue
     n=$(( n + 1 ))
-    if awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
-      printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s\n' \
-        "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "n/a" "$R" "-" "$(pace_label "$pace")"
+    if [ "$pct" = unknown ]; then
+      caveat='dispatch limit not reported'
+      case "$note" in ''|-) ;; *) caveat="$caveat; $note" ;; esac
+      printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s %-20s\n' \
+        "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "unknown" "$R" "-" "$(pace_label "$pace")" "$caveat"
+    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
+      printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s %-20s\n' \
+        "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "n/a" "$R" "-" "$(pace_label "$pace")" "${note:--}"
     else
-      printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%8.1f%%%s   %s%-10s%s %s\n' \
+      printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%8.1f%%%s   %s%-10s%s %s %-20s\n' \
         "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "$win" \
-        "$(tone_for "$pct")" "$pct" "$R" "$D" "$(human_until "$resets")" "$R" "$(pace_label "$pace")"
+        "$(tone_for "$pct")" "$pct" "$R" "$D" "$(human_until "$resets")" "$R" "$(pace_label "$pace")" "${note:--}"
     fi
   done <<EOF
 $ROWS
