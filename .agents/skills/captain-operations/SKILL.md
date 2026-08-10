@@ -112,7 +112,9 @@ captain's decision, and an agent editing its own limit has no limit.
 
 ## Tools worth knowing
 
-- `bin/fm-quota-dash.sh` — live gauges for Claude, Codex and image spend.
+- `bin/fm-quota-dash.sh` — live gauges for the dispatch-driving windows only
+  (Claude, Codex, Grok) plus image spend; Grok's separate weekly cap is
+  unmeasured and flagged rather than scored. The script header owns the rest.
 - `bin/fm-image-gen.sh` — creative generation; `--size` defaults to 1K because
   pro returns 4K unasked and triples the price.
 - `bin/fm-version.sh`, `bin/fm-sprint-poll.sh`, `bin/fm-crew-state.sh`.
