@@ -67,6 +67,13 @@ case "${1:-}" in
         exit 0
       fi
     done
+    # FM_TMUX_CAPTURE_FAILS models the endpoint becoming unreadable once the
+    # selection has been submitted - the harness exits on "wait" and the window
+    # closes - which is only ever observed by the post-answer confirmation.
+    if [ -e "$FM_TMUX_ANSWERED" ] && [ -n "${FM_TMUX_CAPTURE_FAILS:-}" ]; then
+      printf 'no such pane\n' >&2
+      exit 1
+    fi
     # FM_TMUX_STICKY models a pane that has not repainted yet: the dialog is
     # still on screen even though the selection was sent and confirmed.
     if [ -e "$FM_TMUX_ANSWERED" ] && [ -z "${FM_TMUX_STICKY:-}" ]; then
@@ -259,13 +266,37 @@ test_a_pane_that_has_not_repainted_is_a_warning_not_a_failed_answer() {
   # dialog, which types another selection into a live worker's composer.
   [ "$rc" -eq 0 ] || fail "a pane still showing the answered dialog was reported as a failed answer (exit $rc)"
   [ "$(cat "$dir/typed.txt")" = 1 ] || fail "the waiting option was not the key typed"
-  assert_contains "$(cat "$dir/err")" 'still on the visible pane' \
+  assert_contains "$(cat "$dir/err")" 'still in the pane output' \
     "the unrepainted pane was not reported at all"
   assert_contains "$(cat "$dir/err")" 'rather than re-answering' \
     "the warning did not steer away from answering the dialog twice"
   [ -f "$dir/home/state/quota-frozen/task-a" ] || fail "the freeze was not recorded"
   [ -f "$dir/home/state/fm-quota-reset.check.sh" ] || fail "the resume was not armed"
   pass "a dialog still visible after a confirmed answer warns instead of reporting the answer as failed"
+}
+
+test_an_unreadable_pane_after_a_confirmed_answer_is_a_warning_not_a_failure() {
+  local dir rc
+  dir=$(make_case unreadable-after-answer)
+  printf '%s\n' "$OBSERVED_DIALOG" > "$dir/screen.txt"
+
+  set +e
+  FM_TMUX_CAPTURE_FAILS=1 run_live "$dir" --provider claude > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  # The endpoint went away because the worker acted on the answer. Reporting
+  # that as "no dialog detected, or answering it failed" would invite the caller
+  # to answer an already-answered dialog.
+  [ "$rc" -eq 0 ] || fail "an unreadable pane after a confirmed answer was reported as a failure (exit $rc)"
+  [ "$(cat "$dir/typed.txt")" = 1 ] || fail "the waiting option was not the key typed"
+  assert_contains "$(cat "$dir/err")" 'could not re-read the pane' \
+    "the unreadable confirmation was not reported at all"
+  assert_contains "$(cat "$dir/err")" 'the freeze recorded regardless' \
+    "the warning did not say the durable part was already done"
+  assert_contains "$(cat "$dir/home/state/quota-frozen/task-a")" 'window=five_hour' \
+    "the freeze recorded before the confirmation did not survive it"
+  [ -f "$dir/home/state/fm-quota-reset.check.sh" ] || fail "the resume was not armed"
+  pass "a pane that cannot be re-read after a confirmed answer warns and keeps the recorded freeze"
 }
 
 test_a_freeze_that_cannot_be_recorded_reports_no_resume_not_the_child_code() {
@@ -386,6 +417,7 @@ test_a_repainted_dialog_is_still_one_dialog
 test_ambiguous_dialogs_send_nothing
 test_answering_selects_wait_and_never_upgrade
 test_a_pane_that_has_not_repainted_is_a_warning_not_a_failed_answer
+test_an_unreadable_pane_after_a_confirmed_answer_is_a_warning_not_a_failure
 test_a_freeze_that_cannot_be_recorded_reports_no_resume_not_the_child_code
 test_answering_without_a_provider_still_answers_but_reports_no_resume
 test_a_paywall_dialog_never_reaches_the_endpoint

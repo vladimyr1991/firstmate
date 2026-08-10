@@ -56,6 +56,27 @@
 # then is the notified marker written. An interruption in between costs one
 # duplicate wake; the opposite ordering could silently lose the reset event
 # forever, which is the failure this whole mechanism exists to prevent.
+#
+# THE COMMIT INVARIANT, which governs every path in this feature:
+#
+#   Once a durable result is committed - the record file renamed into place, or
+#   the poll's wake line printed - NO later step may die, roll back, or
+#   overwrite it. A later failure warns and leaves the committed result intact.
+#
+# It is stated here, once, because the two failures it forbids are the only two
+# ways this mechanism can betray its purpose, and both have been reintroduced by
+# well-meaning cleanup code: an obligation destroyed by a later step means
+# nothing will ever wake that work again, and a completed action reported as a
+# failure invites the caller to redo something already done. What follows from
+# it: every fallible check that can still reject a record runs against the
+# TEMPORARY file, so the rename is the last fallible step in
+# fm_quota_freeze_record_write; the notified-marker clear, the poll arming in
+# bin/fm-quota-freeze.sh, and the pane confirmation in bin/fm-limit-dialog.sh
+# are all after-the-commit steps and therefore warn rather than undo; and
+# everything the generated poll does after printing its wake line is best
+# effort and silent on failure. Rolling back artifacts this mechanism has not
+# yet published (an unpublished poll's own temporaries) is the one exception,
+# and it may never reach a registry record.
 
 # The reserved check id this poll publishes under. Not a task id: see
 # fm_task_id_creation_valid in bin/fm-pr-lib.sh, which refuses it at task
@@ -88,6 +109,19 @@ FM_QUOTA_RESET_RESURFACE_SECS=1800
 # quota-axi stopped modelling that window (or stopped answering), which must
 # surface as an explicitly unverified obligation rather than as silence.
 FM_QUOTA_RESET_UNVERIFIED_GRACE_SECS=900
+
+# The same two spans for an obligation whose window carried NO resetsAt, where
+# the freeze time is the only anchor there is. Both are deliberately much
+# longer than the pair above, and for the same reason: a recorded reset says
+# when capacity is actually due back, so 15 minutes past it is real evidence
+# that something is wrong, while a freeze time says only when the work stopped
+# and predicts nothing. Reusing the shorter spans there turns any quota-axi
+# outage in the first hour into a wake, and then into another one every half
+# hour forever, with nothing having reset. These stay finite rather than silent
+# because under-notifying is the worse failure: dead time after limits returned
+# is the incident this whole mechanism exists to prevent.
+FM_QUOTA_RESET_UNANCHORED_GRACE_SECS=21600
+FM_QUOTA_RESET_UNANCHORED_RESURFACE_SECS=21600
 
 # Roles that freeze without being a task: firstmate's own deferred work, and
 # the board PM, which exists only while firstmate spawns it and so can never
@@ -273,9 +307,14 @@ fm_quota_freeze_record_render() {
   printf 'note=%s\n' "$note"
 }
 
-fm_quota_freeze_record_parse() {
-  local file=$1 version subject kind provider window resets_at resets_epoch \
-    action frozen_at note
+# Parse and validate one record. <expected-subject> defaults to the file's own
+# name, which is the check that a published record always matches the subject it
+# is filed under. It is passed explicitly when validating a record still in its
+# temporary file, so the same parser can vet the bytes BEFORE they are committed.
+fm_quota_freeze_record_parse() {  # <file> [expected-subject]
+  local file=$1 expected=${2-} version subject kind provider window resets_at \
+    resets_epoch action frozen_at note
+  [ -n "$expected" ] || expected=$(basename "$file")
   FM_QUOTA_FREEZE_SUBJECT=
   FM_QUOTA_FREEZE_KIND=
   FM_QUOTA_FREEZE_PROVIDER=
@@ -313,7 +352,7 @@ fm_quota_freeze_record_parse() {
   note=${note#note=}
 
   fm_quota_freeze_subject_valid "$subject" "$kind" || return 1
-  [ "$subject" = "$(basename "$file")" ] || return 1
+  [ "$subject" = "$expected" ] || return 1
   fm_quota_freeze_provider_valid "$provider" || return 1
   fm_quota_freeze_window_valid "$window" || return 1
   fm_quota_freeze_resets_at_valid "$resets_at" || return 1
@@ -359,11 +398,28 @@ fm_quota_freeze_dir_ensure() {
   chmod 0700 "$notified" || return 1
 }
 
-# Write one record atomically, then read it back through the same parser that
-# the poll uses, so a record that cannot be parsed is never published.
+# Clear the marker that says this subject's wake was already surfaced. Only
+# ever meaningful relative to the record that produced it, so publishing a new
+# record - including overwriting one after a resume that did not hold - makes
+# any existing marker a statement about an obligation that no longer exists.
+fm_quota_freeze_notified_clear() {
+  local state=$1 subject=$2 marker
+  fm_task_id_path_safe "$subject" || return 1
+  marker="$(fm_quota_freeze_notified_dir "$state")/$subject"
+  [ -e "$marker" ] || [ -L "$marker" ] || return 0
+  rm -f -- "$marker" 2>/dev/null || return 1
+  [ ! -e "$marker" ] && [ ! -L "$marker" ]
+}
+
+# Write one record atomically. Everything that can reject the record - the
+# rendered bytes, their mode, their device, and a full parse through the same
+# parser the poll uses - is checked against the TEMPORARY file, so the rename
+# into place is the last fallible step and nothing after it can undo it. See the
+# commit invariant in this file's header: a record destroyed by a later cleanup
+# step is an obligation nobody will ever be woken for.
 fm_quota_freeze_record_write() {
   local state=$1 subject=$2 kind=$3 provider=$4 window=$5 resets_at=$6 \
-    resets_epoch=$7 action=$8 frozen_at=$9 note=${10} dir dest tmp device rc=0
+    resets_epoch=$7 action=$8 frozen_at=$9 note=${10} dir dest tmp device
   fm_quota_freeze_subject_valid "$subject" "$kind" || return 1
   fm_quota_freeze_provider_valid "$provider" || return 1
   fm_quota_freeze_window_valid "$window" || return 1
@@ -382,22 +438,19 @@ fm_quota_freeze_record_write() {
   if ! fm_quota_freeze_record_render "$subject" "$kind" "$provider" "$window" \
       "$resets_at" "$resets_epoch" "$action" "$frozen_at" "$note" > "$tmp" \
     || ! chmod 0600 "$tmp" \
-    || ! fm_pr_private_file_valid "$tmp" 600 "$device"; then
+    || ! fm_pr_private_file_valid "$tmp" 600 "$device" \
+    || ! fm_quota_freeze_record_parse "$tmp" "$subject"; then
     rm -f -- "$tmp"
     return 1
   fi
+  # Before the commit, so a marker that cannot be removed can never decide the
+  # record's fate. Failing to clear it costs at most one delayed wake; refusing
+  # the write over it would cost the obligation itself.
+  fm_quota_freeze_notified_clear "$state" "$subject" \
+    || printf 'warning: could not clear the surfaced marker for %s; its next wake may be delayed\n' \
+      "$subject" >&2
   fm_pr_regular_destination_on_device_or_absent "$dest" "$device" || { rm -f -- "$tmp"; return 1; }
   mv -f -- "$tmp" "$dest" || { rm -f -- "$tmp"; return 1; }
-  fm_pr_private_file_valid "$dest" 600 "$device" || rc=1
-  fm_quota_freeze_record_parse "$dest" || rc=1
-  # The notified marker only ever means "THIS obligation was already surfaced".
-  # Publishing a record - including overwriting one after a resume that did not
-  # hold - makes any existing marker a statement about an obligation that no
-  # longer exists, and leaving it would suppress the next wake for a full
-  # resurface window. Clearing it is part of publishing, not a separate step.
-  rm -f -- "$(fm_quota_freeze_notified_dir "$state")/$subject" || rc=1
-  [ "$rc" -eq 0 ] || rm -f -- "$dest"
-  return "$rc"
 }
 
 fm_quota_freeze_count() {
@@ -424,7 +477,7 @@ fm_quota_freeze_record_remove() {
 }
 
 # Render the generated, self-contained poll. Only the state directory and the
-# three tuning constants are baked in as %q-quoted literals: fm-watch.sh's
+# tuning constants are baked in as %q-quoted literals: fm-watch.sh's
 # custom-check dispatch runs an armed check with no arguments and no reliable
 # "$0", so the poll has nowhere else to learn where its own registry lives. The
 # obligations themselves are read from disk and revalidated on every execution,
@@ -452,6 +505,8 @@ POLL_ID=$qid
 FLOOR=$FM_QUOTA_RESET_FLOOR
 RESURFACE=$FM_QUOTA_RESET_RESURFACE_SECS
 UNVERIFIED_GRACE=$FM_QUOTA_RESET_UNVERIFIED_GRACE_SECS
+UNANCHORED_GRACE=$FM_QUOTA_RESET_UNANCHORED_GRACE_SECS
+UNANCHORED_RESURFACE=$FM_QUOTA_RESET_UNANCHORED_RESURFACE_SECS
 DIR="\$STATE_DIR/quota-frozen"
 NOTIFIED="\$DIR/.notified"
 CHECK="\$STATE_DIR/\$POLL_ID.check.sh"
@@ -511,27 +566,28 @@ window_remaining() {
 }
 
 # Read one record and decide what, if anything, firstmate should be told about
-# it. Echoes "<provider>/<window>,<verdict>" when it should be surfaced and
-# nothing when it should stay quiet. A record this cannot parse is surfaced as
-# unreadable rather than skipped: an obligation nobody can read is still an
-# obligation, and silently stepping over it is the exact stall this poll exists
-# to remove.
+# it. Echoes "<repeat-secs>|<provider>/<window>,<verdict>" when it should be
+# surfaced and nothing when it should stay quiet; the repeat span travels with
+# the verdict because it depends on which anchor the record could offer. A
+# record this cannot parse is surfaced as unreadable rather than skipped: an
+# obligation nobody can read is still an obligation, and silently stepping over
+# it is the exact stall this poll exists to remove.
 evaluate_record() {  # <record-path> <subject>
-  local rec=\$1 subject=\$2 provider window epoch frozen anchor remaining
+  local rec=\$1 subject=\$2 provider window epoch frozen anchor grace repeat remaining
   local f_version f_subject f_kind f_provider f_window f_resets f_epoch f_action f_frozen f_note f_extra
-  { exec 7< "\$rec"; } 2>/dev/null || { printf 'unreadable\\n'; return 0; }
+  { exec 7< "\$rec"; } 2>/dev/null || { printf '%s|unreadable\\n' "\$RESURFACE"; return 0; }
   if ! { IFS= read -r f_version <&7 && IFS= read -r f_subject <&7 && IFS= read -r f_kind <&7 \\
     && IFS= read -r f_provider <&7 && IFS= read -r f_window <&7 \\
     && IFS= read -r f_resets <&7 && IFS= read -r f_epoch <&7 \\
     && IFS= read -r f_action <&7 && IFS= read -r f_frozen <&7 \\
     && IFS= read -r f_note <&7; }; then
     exec 7<&-
-    printf 'unreadable\\n'
+    printf '%s|unreadable\\n' "\$RESURFACE"
     return 0
   fi
   if IFS= read -r f_extra <&7; then
     exec 7<&-
-    printf 'unreadable\\n'
+    printf '%s|unreadable\\n' "\$RESURFACE"
     return 0
   fi
   exec 7<&-
@@ -541,29 +597,38 @@ evaluate_record() {  # <record-path> <subject>
   epoch=\${f_epoch#resets_at_epoch=}
   frozen=\${f_frozen#frozen_at=}
   if [ "\$f_version" != fm-quota-freeze-v1 ] || [ "\$f_subject" != "subject=\$subject" ]; then
-    printf 'unreadable\\n'
+    printf '%s|unreadable\\n' "\$RESURFACE"
     return 0
   fi
   case "\$provider" in
-    ''|*[!a-z0-9._-]*) printf 'unreadable\\n'; return 0 ;;
+    ''|*[!a-z0-9._-]*) printf '%s|unreadable\\n' "\$RESURFACE"; return 0 ;;
   esac
   case "\$window" in
-    ''|*[!A-Za-z0-9._:-]*) printf 'unreadable\\n'; return 0 ;;
+    ''|*[!A-Za-z0-9._:-]*) printf '%s|unreadable\\n' "\$RESURFACE"; return 0 ;;
   esac
   case "\$epoch" in
-    ''|*[!0-9]*) printf 'unreadable\\n'; return 0 ;;
+    ''|*[!0-9]*) printf '%s|unreadable\\n' "\$RESURFACE"; return 0 ;;
   esac
   case "\$frozen" in
-    ''|*[!0-9]*) printf 'unreadable\\n'; return 0 ;;
+    ''|*[!0-9]*) printf '%s|unreadable\\n' "\$RESURFACE"; return 0 ;;
   esac
 
   # When the frozen window carried no usable resetsAt the recorded epoch is 0,
-  # the explicit "no clock evidence" sentinel. Anchoring the grace on the freeze
-  # time instead is what keeps such an obligation from being skipped forever:
+  # the explicit "no clock evidence" sentinel. The freeze time is then the only
+  # anchor there is, which keeps such an obligation from being skipped forever -
   # a credits-style window at zero with no reset time is exactly the case that
-  # most needs to surface.
+  # most needs to surface - but it predicts nothing about when capacity returns,
+  # so it carries its own much longer grace and repeat span. Reusing the
+  # reset-anchored ones would turn any quota-axi outage into a wake every half
+  # hour with nothing having reset.
   anchor=\$epoch
-  [ "\$anchor" -gt 0 ] || anchor=\$frozen
+  grace=\$UNVERIFIED_GRACE
+  repeat=\$RESURFACE
+  if [ "\$anchor" -le 0 ]; then
+    anchor=\$frozen
+    grace=\$UNANCHORED_GRACE
+    repeat=\$UNANCHORED_RESURFACE
+  fi
 
   remaining=\$(window_remaining "\$provider" "\$window")
   case "\$remaining" in
@@ -572,15 +637,17 @@ evaluate_record() {  # <record-path> <subject>
       # obligation's own anchor is well past, so a limit quota-axi cannot see
       # (grok's weekly cap behind its credits window) surfaces as an explicitly
       # unverified obligation instead of silence forever.
-      if [ "\$anchor" -gt 0 ] && [ "\$now" -ge "\$((anchor + UNVERIFIED_GRACE))" ]; then
-        printf '%s/%s,unverified\\n' "\$provider" "\$window"
+      if [ "\$anchor" -gt 0 ] && [ "\$now" -ge "\$((anchor + grace))" ]; then
+        printf '%s|%s/%s,unverified\\n' "\$repeat" "\$provider" "\$window"
       fi
       ;;
     *)
       # Strictly above the floor: a window sitting exactly at the ceiling a
-      # freeze may be registered on is not evidence that anything reset.
+      # freeze may be registered on is not evidence that anything reset. A
+      # verified recovery is the answer the fleet is waiting for, so it always
+      # repeats on the standard span.
       if awk -v a="\$remaining" -v b="\$FLOOR" 'BEGIN { exit !(a + 0 > b + 0) }'; then
-        printf '%s/%s,recovered\\n' "\$provider" "\$window"
+        printf '%s|%s/%s,recovered\\n' "\$RESURFACE" "\$provider" "\$window"
       fi
       ;;
   esac
@@ -598,24 +665,35 @@ for rec in "\$DIR"/*; do
   esac
   records=\$((records + 1))
 
+  # Evaluated before the marker is consulted, because the record itself carries
+  # how long its own repeat span is. evaluate_record only reads, so ordering
+  # them this way changes nothing but which span the suppression uses.
+  answer=\$(evaluate_record "\$rec" "\$subject")
+  [ -n "\$answer" ] || continue
+  repeat=\${answer%%|*}
+  verdict=\${answer#*|}
+  case "\$repeat" in
+    ''|*[!0-9]*) repeat=\$RESURFACE ;;
+  esac
+
   marker="\$NOTIFIED/\$subject"
   if [ -f "\$marker" ] && [ ! -L "\$marker" ]; then
     marked=\$(cat "\$marker" 2>/dev/null) || marked=
     case "\$marked" in
       ''|*[!0-9]*) marked=\$now ;;
     esac
-    [ "\$((now - marked))" -ge "\$RESURFACE" ] || continue
+    [ "\$((now - marked))" -ge "\$repeat" ] || continue
   fi
 
-  verdict=\$(evaluate_record "\$rec" "\$subject")
-  [ -n "\$verdict" ] || continue
   ready="\$ready \$subject(\$verdict)"
   to_mark="\$to_mark \$subject"
 done
 
 # Print first, with no preceding side effect that could fail or be interrupted,
-# so a reset event can never be silently lost. Marking is best effort after it;
-# at worst an interruption here costs one duplicate wake next cycle.
+# so a reset event can never be silently lost. The wake line is this poll's
+# committed durable result: everything below it - the markers, the retirement -
+# is best effort, silent on failure, and touches no registry record. At worst an
+# interruption here costs one duplicate wake next cycle.
 if [ -n "\$ready" ]; then
   printf 'quota reset ready:%s\\n' "\$ready"
   umask 077
@@ -635,7 +713,7 @@ if [ -n "\$ready" ]; then
 fi
 
 # Retire only when nothing is owed. An obligation that was surfaced but never
-# discharged keeps this poll armed, so it re-surfaces every RESURFACE seconds
+# discharged keeps this poll armed, so it re-surfaces on its own repeat span
 # instead of going quiet after one wake.
 if [ "\$records" -eq 0 ]; then
   rm -f -- "\$CHECK" "\$TRUST" 2>/dev/null
@@ -651,6 +729,10 @@ fm_quota_reset_poll_cleanup() {
   FM_QUOTA_RESET_POLL_TRUST_TMP=
 }
 
+# Roll back a half-published poll. This is the commit invariant's one permitted
+# rollback: the two paths below are this mechanism's own check and trust files
+# for the reserved id, never a registry record, so a partly-armed poll is undone
+# without an obligation ever being at risk.
 fm_quota_reset_poll_revoke_final() {
   local failed=0
   if [ -e "$FM_QUOTA_RESET_POLL_CHECK_DEST" ] || [ -L "$FM_QUOTA_RESET_POLL_CHECK_DEST" ]; then

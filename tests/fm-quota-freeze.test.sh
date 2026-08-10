@@ -329,12 +329,13 @@ test_a_freeze_at_the_floor_is_not_immediately_declared_recovered() {
 }
 
 test_an_obligation_with_no_recorded_reset_still_surfaces() {
-  local dir out record
+  local dir out record marker
   dir=$(make_case no-reset)
   setup_root "$dir"
   run_freeze "$dir" no-reset.json add --subject task-a --provider grok --action nudge >/dev/null \
     || fail "a window with no reset time was refused"
   record="$dir/home/state/quota-frozen/task-a"
+  marker="$dir/home/state/quota-frozen/.notified/task-a"
   assert_contains "$(cat "$record")" 'resets_at=unknown' \
     "the fixture did not produce the no-clock-evidence case it is here to cover"
 
@@ -343,13 +344,63 @@ test_an_obligation_with_no_recorded_reset_still_surfaces() {
   out=$(run_poll "$dir" no-reset-gone.json)
   [ -z "$out" ] || fail "an obligation with no recorded reset woke firstmate immediately: $out"
 
-  # Long after the freeze, with quota-axi no longer modelling the window, the
-  # freeze time is the only anchor there is - and silence here would be forever.
-  perl -i -pe 's/^frozen_at=.*$/"frozen_at=" . (time - 10_000)/e' "$record"
+  # Well past the grace a RECORDED reset would use, and still quiet. A recorded
+  # reset says when capacity is actually due back, so 15 minutes past it is
+  # evidence; a freeze time says only when the work stopped and predicts
+  # nothing, so treating the two alike turns every quota-axi outage into a wake.
+  perl -i -pe 's/^frozen_at=.*$/"frozen_at=" . (time - 3600)/e' "$record"
+  out=$(run_poll "$dir" no-reset-gone.json)
+  [ -z "$out" ] \
+    || fail "an unanchored obligation nagged on the reset-anchored grace: $out"
+
+  # Long past its own much longer grace, with quota-axi still not modelling the
+  # window, the freeze time is the only anchor there is - and silence here would
+  # be forever, which is the stall this whole mechanism exists to remove.
+  perl -i -pe 's/^frozen_at=.*$/"frozen_at=" . (time - 30_000)/e' "$record"
   out=$(run_poll "$dir" no-reset-gone.json)
   [ "$out" = 'quota reset ready: task-a(grok/credits,unverified)' ] \
     || fail "an obligation with no recorded reset never surfaced as unverified: [$out]"
-  pass "an obligation frozen on a window with no reset time still surfaces as explicitly unverified"
+
+  # It repeats on its own much longer span too: a fixed short repeat would cost
+  # a firstmate turn every half hour forever with nothing having reset.
+  printf '%s\n' "$(( $(date +%s) - FM_QUOTA_RESET_RESURFACE_SECS - 60 ))" > "$marker"
+  out=$(run_poll "$dir" no-reset-gone.json)
+  [ -z "$out" ] || fail "an unanchored obligation re-surfaced on the reset-anchored repeat span: $out"
+  printf '%s\n' "$(( $(date +%s) - FM_QUOTA_RESET_UNANCHORED_RESURFACE_SECS - 60 ))" > "$marker"
+  out=$(run_poll "$dir" no-reset-gone.json)
+  assert_contains "$out" 'task-a(grok/credits,unverified)' \
+    "an unanchored obligation went quiet forever once its own repeat span elapsed"
+  pass "an obligation frozen on a window with no reset time surfaces as unverified on its own longer spans"
+}
+
+test_a_record_survives_a_marker_clear_it_cannot_perform() {
+  local dir out record marker rc
+  dir=$(make_case marker-unclearable)
+  setup_root "$dir"
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge \
+    --note "first freeze" >/dev/null || fail "first freeze failed"
+  record="$dir/home/state/quota-frozen/task-a"
+  marker="$dir/home/state/quota-frozen/.notified/task-a"
+
+  # The marker path is occupied by something rm cannot remove. Clearing it is
+  # only an optimisation - at worst one delayed wake - so it must never be able
+  # to decide the record's fate. Destroying the obligation over it would be the
+  # worst outcome this registry has: nothing would ever wake that work again.
+  mkdir -p "$marker/occupied" || fail "could not build the unclearable marker fixture"
+
+  set +e
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge \
+    --note "second freeze" > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "a freeze failed because its marker could not be cleared: $(cat "$dir/err")"
+  [ -f "$record" ] || fail "the record was destroyed by a cleanup step that ran after it was committed"
+  assert_contains "$(cat "$record")" 'note=second freeze' \
+    "the overwriting record did not land, so the write was not the committed result"
+
+  out=$(run_freeze "$dir" exhausted.json list)
+  assert_contains "$out" 'subject=task-a' "the surviving obligation is not in the registry"
+  pass "a notified-marker clear that cannot succeed never destroys the record it was clearing for"
 }
 
 test_a_re_freeze_is_not_suppressed_by_the_earlier_wake() {
@@ -557,7 +608,7 @@ test_our_own_older_poll_is_re_armed_rather_than_refused() {
 }
 
 test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation() {
-  local dir out rc err
+  local dir out rc err rearm
   dir=$(make_case arm-failure)
   setup_root "$dir"
   # Build the registry directories through a real freeze, then discharge it, so
@@ -572,7 +623,7 @@ test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation() {
   chmod 0500 "$dir/home/state"
   set +e
   run_freeze "$dir" exhausted.json add --subject pm --provider claude --action respawn \
-    > "$dir/out" 2> "$dir/err"
+    --note "board left unattended" > "$dir/out" 2> "$dir/err"
   rc=$?
   set -e
   chmod 0700 "$dir/home/state"
@@ -581,14 +632,26 @@ test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation() {
   err=$(cat "$dir/err")
   assert_contains "$err" 'NO poll is watching it' \
     "the failure did not state that an unwatched obligation was left behind"
-  assert_contains "$err" 'fm-quota-freeze.sh add --subject pm --provider claude --window five_hour --action respawn' \
-    "the failure did not name the exact command that re-arms the obligation"
   [ -f "$dir/home/state/quota-frozen/pm" ] \
     || fail "the obligation was dropped, losing the work the registry exists to protect"
   out=$(run_freeze "$dir" exhausted.json list)
   assert_contains "$out" 'subject=pm' "list did not report the surviving obligation"
   assert_contains "$out" 'poll: not armed' "list did not report that nothing is watching it"
-  pass "a freeze whose poll cannot be armed keeps the obligation and says exactly how to re-arm it"
+
+  # The named command is the whole point, so run exactly it. The note is what
+  # tells firstmate on the wake what resuming actually requires - a re-arm that
+  # silently drops it leaves an obligation nobody can act on.
+  rearm=$(sed -n 's/^error: re-arm it with: fm-quota-freeze\.sh //p' "$dir/err")
+  [ -n "$rearm" ] || fail "the failure did not name a command that re-arms the obligation"
+  eval "run_freeze \"\$dir\" exhausted.json $rearm" > "$dir/rearm.out" 2> "$dir/rearm.err" \
+    || fail "the command the failure named did not re-arm the obligation: $(cat "$dir/rearm.err")"
+  out=$(run_freeze "$dir" exhausted.json show pm)
+  assert_contains "$out" 'note=board left unattended' \
+    "re-arming through the named command discarded the recorded note"
+  assert_contains "$out" 'action=respawn' "re-arming through the named command changed the resume action"
+  out=$(run_freeze "$dir" exhausted.json list)
+  assert_contains "$out" "poll: armed state/$POLL_CHECK" "the named command did not actually arm the poll"
+  pass "a freeze whose poll cannot be armed keeps the obligation and names a command that fully restores it"
 }
 
 test_the_poll_id_cannot_be_taken_by_a_task() {
@@ -642,6 +705,7 @@ test_invalid_input_is_refused_with_no_side_effect
 test_poll_is_silent_until_headroom_actually_returns
 test_a_freeze_at_the_floor_is_not_immediately_declared_recovered
 test_an_obligation_with_no_recorded_reset_still_surfaces
+test_a_record_survives_a_marker_clear_it_cannot_perform
 test_recovery_wakes_exactly_once_then_resurfaces_only_after_the_quiet_window
 test_a_re_freeze_is_not_suppressed_by_the_earlier_wake
 test_an_unverifiable_window_surfaces_late_rather_than_never

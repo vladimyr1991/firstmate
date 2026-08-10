@@ -152,28 +152,33 @@ assert_slot_available() {
   exit 3
 }
 
-# The record is deliberately kept when arming fails: an obligation nobody
-# watches is recoverable, a lost obligation is not. What must not happen is the
-# failure reading as "nothing happened", so it names the unwatched subject and
-# the exact command that arms it again.
-arm_failed() {  # <reason> <subject> <provider> <window> <action>
-  local reason=$1 subject=$2 provider=$3 window=$4 action=$5
+# The record is deliberately kept when arming fails: per the commit invariant in
+# bin/fm-quota-freeze-lib.sh's header, nothing after the record lands may undo
+# it. An obligation nobody watches is recoverable, a lost obligation is not.
+# What must not happen is the failure reading as "nothing happened", so it names
+# the unwatched subject and the exact command that arms it again - INCLUDING the
+# note, without which re-arming would overwrite the record with an empty one and
+# discard the only thing that says what resuming actually requires.
+arm_failed() {  # <reason> <subject> <provider> <window> <action> <note>
+  local reason=$1 subject=$2 provider=$3 window=$4 action=$5 note=$6 rearm
+  printf -v rearm 'fm-quota-freeze.sh add --subject %q --provider %q --window %q --action %q' \
+    "$subject" "$provider" "$window" "$action"
+  [ -z "$note" ] || printf -v rearm '%s --note %q' "$rearm" "$note"
   printf 'error: %s\n' "$reason" >&2
   printf 'error: the freeze for %s is recorded in state/quota-frozen/%s but NO poll is watching it, so nothing will wake the fleet when %s/%s recovers\n' \
     "$subject" "$subject" "$provider" "$window" >&2
-  printf 'error: re-arm it with: fm-quota-freeze.sh add --subject %s --provider %s --window %s --action %s\n' \
-    "$subject" "$provider" "$window" "$action" >&2
+  printf 'error: re-arm it with: %s\n' "$rearm" >&2
   exit 1
 }
 
-arm_poll() {  # <subject> <provider> <window> <action>
-  local subject=$1 provider=$2 window=$3 action=$4
+arm_poll() {  # <subject> <provider> <window> <action> <note>
+  local subject=$1 provider=$2 window=$3 action=$4 note=$5
   trap fm_quota_reset_poll_cleanup EXIT
   trap 'exit 1' HUP INT TERM
   fm_quota_reset_poll_prepare "$STATE" \
-    || arm_failed "could not prepare the quota reset poll" "$subject" "$provider" "$window" "$action"
+    || arm_failed "could not prepare the quota reset poll" "$subject" "$provider" "$window" "$action" "$note"
   fm_quota_reset_poll_publish_prepared \
-    || arm_failed "could not publish the quota reset poll" "$subject" "$provider" "$window" "$action"
+    || arm_failed "could not publish the quota reset poll" "$subject" "$provider" "$window" "$action" "$note"
   trap - EXIT
 }
 
@@ -254,7 +259,7 @@ EOF
   fm_quota_freeze_record_write "$STATE" "$subject" "$kind" "$provider" "$window_id" \
     "$resets_at" "$epoch" "$action" "$frozen_at" "$note" \
     || die "could not record the quota freeze"
-  arm_poll "$subject" "$provider" "$window_id" "$action"
+  arm_poll "$subject" "$provider" "$window_id" "$action" "$note"
   printf 'frozen: %s (%s) on %s/%s resets_at=%s action=%s\n' \
     "$subject" "$kind" "$provider" "$window_id" "$resets_at" "$action"
   printf 'armed: state/%s.check.sh\n' "$FM_QUOTA_RESET_POLL_ID"

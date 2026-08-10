@@ -34,6 +34,11 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# Sourced for fm_quota_freeze_provider_valid alone: the provider this script
+# accepts and the provider the registry accepts must be one definition, or a
+# provider fm-quota-freeze.sh would take gets refused here before any keystroke.
+# shellcheck source=bin/fm-quota-freeze-lib.sh
+. "$SCRIPT_DIR/fm-quota-freeze-lib.sh"
 
 usage() {
   cat <<'EOF'
@@ -113,19 +118,12 @@ case "$ACTION" in
   nudge|respawn|repeat) ;;
   *) usage_error "invalid action: $ACTION" ;;
 esac
-# The provider is validated here rather than left to fm-quota-freeze.sh, which
-# only sees it after the keystroke has already been sent: a usage error
-# discovered then would leave an answered dialog with no resume armed. Same
-# shape as fm_quota_freeze_provider_valid, which is the consumer of this value.
+# Validated here rather than left to fm-quota-freeze.sh, which only sees it
+# after the keystroke has already been sent: a usage error discovered then would
+# leave an answered dialog with no resume armed. The check itself is the
+# registry's own, called rather than copied.
 if [ -n "$PROVIDER" ]; then
-  [ "${#PROVIDER}" -le 64 ] || usage_error "invalid provider: $PROVIDER"
-  case "$PROVIDER" in
-    [a-z0-9]*) ;;
-    *) usage_error "invalid provider: $PROVIDER" ;;
-  esac
-  case "$PROVIDER" in
-    *[!a-z0-9._-]*) usage_error "invalid provider: $PROVIDER" ;;
-  esac
+  fm_quota_freeze_provider_valid "$PROVIDER" || usage_error "invalid provider: $PROVIDER"
 fi
 
 # Normalize one captured pane into plain text: drop terminal escape sequences
@@ -168,19 +166,36 @@ CAPTURE2=$(mktemp "${TMPDIR:-/tmp}/fm-limit-dialog.XXXXXX")
 trap 'rm -f -- "$CAPTURE" "$CAPTURE2"' EXIT
 trap 'exit 1' HUP INT TERM
 
-capture_pane() {  # <destination> [lines]
-  local dest=$1 lines=${2:-$LINES} target backend label raw
+# How much recent output the post-answer confirmation looks at. There is NO
+# portable "visible pane only" bound across the five backends: tmux reads it as
+# scrollback depth above the live pane, herdr/zellij/cmux end their capture in
+# `tail -n "$lines"`, and orca forwards the number as `--limit`. A count of 0
+# would therefore mean "visible pane" on tmux and "nothing at all" on three of
+# the others, so this is a small POSITIVE bound every backend honours - a sample
+# of recent output, not a statement about what is on screen. That is why the
+# confirmation below is strictly advisory and never decides an exit code.
+CONFIRM_LINES=12
+
+# Returns non-zero instead of dying when <required> is not "required", for the
+# one caller that runs after the durable work is committed and therefore may not
+# turn a capture failure into a failed-answer verdict.
+capture_pane() {  # <destination> [lines] [required|optional]
+  local dest=$1 lines=${2:-$LINES} required=${3:-required} target backend label raw
   if [ -n "$FROM_CAPTURE" ]; then
     [ -f "$FROM_CAPTURE" ] || die "capture file does not exist: $FROM_CAPTURE"
     normalize < "$FROM_CAPTURE" > "$dest"
     return 0
   fi
-  target=$(fm_backend_resolve_selector "$ID" "$STATE") \
-    || die "could not resolve the worker's endpoint for $ID"
+  if ! target=$(fm_backend_resolve_selector "$ID" "$STATE"); then
+    [ "$required" = required ] || return 1
+    die "could not resolve the worker's endpoint for $ID"
+  fi
   backend=$(fm_backend_of_selector "$ID" "$target" "$STATE")
   label=$(fm_backend_expected_label_of_selector "$ID" "$STATE")
-  raw=$(fm_backend_capture "$backend" "$target" "$lines" "$label" 2>/dev/null) \
-    || die "could not read the worker's screen for $ID"
+  if ! raw=$(fm_backend_capture "$backend" "$target" "$lines" "$label" 2>/dev/null); then
+    [ "$required" = required ] || return 1
+    die "could not read the worker's screen for $ID"
+  fi
   printf '%s\n' "$raw" | normalize > "$dest"
 }
 
@@ -280,25 +295,33 @@ if [ "$SEND_RC" -ne 0 ]; then
   exit 1
 fi
 
-# Only now, after the durable part is done, look at whether the dialog cleared.
-# The VISIBLE pane, not the scrollback the detection pass reads: scrollback
-# still holds the pre-answer render of the very dialog just answered (which is
-# why scan() dedupes repaints at all), so asking it whether the dialog is gone
-# can only ever answer "no".
+# Only now, after the durable part is done, look at whether the dialog cleared -
+# over a much smaller slice of recent output than detection reads, because the
+# full scrollback still holds the pre-answer render of the very dialog just
+# answered (which is why scan() dedupes repaints at all) and would answer "still
+# there" every time.
 #
-# And the answer is reported, never acted on. By this point the key was sent,
-# the submit was confirmed by the worker runtime, and the freeze is recorded, so
-# a pane that has not repainted yet is a stale screen, not a failed answer -
-# failing here would tell the caller to re-answer a dialog that is already
-# answered, and typing another selection into a live composer is the worse
-# outcome by far.
-capture_pane "$CAPTURE2" 0
+# Everything from here on is ADVISORY. The key was sent, the submit was
+# confirmed by the worker runtime, and the freeze is recorded; per the commit
+# invariant in bin/fm-quota-freeze-lib.sh's header, no step after that may
+# report the answer as having failed. A pane that has not repainted yet, a
+# closed window, and a backend that cannot be read are all warnings: telling the
+# caller to re-answer an answered dialog types a second selection into a live
+# composer, which is the worse outcome by far.
+CLEARED_RC=1
 set +e
-scan "$CAPTURE2"
-CLEARED_RC=$?
+capture_pane "$CAPTURE2" "$CONFIRM_LINES" optional
+CONFIRM_CAPTURE_RC=$?
+if [ "$CONFIRM_CAPTURE_RC" -eq 0 ]; then
+  scan "$CAPTURE2"
+  CLEARED_RC=$?
+fi
 set -e
-if [ "$CLEARED_RC" -ne 1 ]; then
-  printf 'warning: the limit dialog is still on the visible pane; the selection was sent and the freeze recorded, so verify the pane rather than re-answering it\n' >&2
+if [ "$CONFIRM_CAPTURE_RC" -ne 0 ]; then
+  printf 'warning: could not re-read the pane for %s to confirm the dialog cleared; the selection was sent and the freeze recorded regardless\n' \
+    "$ID" >&2
+elif [ "$CLEARED_RC" -ne 1 ]; then
+  printf 'warning: the limit dialog is still in the pane output; the selection was sent and the freeze recorded, so verify the pane rather than re-answering it\n' >&2
 fi
 
 if [ -z "$PROVIDER" ]; then
