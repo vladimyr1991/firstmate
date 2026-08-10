@@ -140,7 +140,7 @@ family_for_basename() {
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
-    fm-quota-dash.test.sh|\
+    fm-quota-dash.test.sh|fm-retro.test.sh|fm-skill-trigger-check.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
@@ -401,6 +401,7 @@ tests/fm-pr-check-security.test.sh 199573
 tests/fm-procevent.test.sh 42789
 tests/fm-public-followup.test.sh 23365
 tests/fm-quota-array-dispatch-live-e2e.test.sh 19
+tests/fm-retro.test.sh 5000
 tests/fm-secondmate-harness.test.sh 87895
 tests/fm-secondmate-lifecycle-e2e.test.sh 4929
 tests/fm-secondmate-liveness.test.sh 12553
@@ -411,6 +412,7 @@ tests/fm-send-secondmate-marker.test.sh 2136
 tests/fm-session-start.test.sh 37289
 tests/fm-sessionstart-nudge.test.sh 264
 tests/fm-shared-captain-inheritance.test.sh 3506
+tests/fm-skill-trigger-check.test.sh 1700
 tests/fm-spawn-dispatch-profile.test.sh 41351
 tests/fm-spawn-worktree-settle.test.sh 4598
 tests/fm-startup-memory-budget.test.sh 4260
