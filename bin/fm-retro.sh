@@ -25,22 +25,24 @@
 #   2. A later read may never replace a known value with `unknown`, and may not
 #      drop a known key either: known -> absent is the same degradation as
 #      known -> unknown, only quieter. Both halves are enforced as one general
-#      merge rule over the whole facts block rather than per key, so they also
-#      cover degradations no reviewer named: a returned worktree turning
-#      `branch`, `commit_base`, and `commits` unknown while state/<id>.meta
-#      still exists, and a key this version never emits - a pass 2 struggle
-#      score, a line a human added - being erased by the block rewrite. An
-#      unrecognized key is carried forward verbatim instead, in the order it
-#      already had.
+#      merge rule over a whole block rather than per key, so they also cover
+#      degradations no reviewer named: a returned worktree turning `branch`,
+#      `commit_base`, and `commits` unknown while state/<id>.meta still exists,
+#      and a key this version never emits - a pass 2 struggle score, an
+#      `audited_by` line from the cross-vendor audit, anything a human added -
+#      being erased by the block rewrite. An unrecognized key is carried forward
+#      verbatim instead, in the order it already had. This governs BOTH blocks,
+#      because the hole belongs to rewriting a block from a fixed key list and
+#      not to either block, so `collect` and `complete` share one helper.
 #   3. When the volatile records are gone and a facts block already exists,
 #      `collect` REFUSES instead of degrading. A refusal that names its reason is
 #      strictly better than a quiet zero.
 #
 # The same invariant governs every other write path here: `complete` unions
-# lesson keys and never drops one, the frame is seeded only when the file does
-# not exist, and block rewrites leave every line outside their own markers
-# untouched, so human narrative added to data/<id>/retro.md survives both
-# commands. This invariant arrived independently from two unrelated tasks
+# lesson keys and never drops one and carries forward attestation keys it does
+# not recognize, the frame is seeded only when the file does not exist, and block
+# rewrites leave every line outside their own markers untouched, so human
+# narrative added to data/<id>/retro.md survives both commands. This invariant arrived independently from two unrelated tasks
 # (fm-lessons-learned and fm-quota-autoresume), which is why it is stated here as
 # a rule rather than patched at the one call site that exposed it.
 #
@@ -75,8 +77,10 @@
 # facts block and `complete` rewrites only the attestation block, so either
 # command may run first, again, or after the other without losing the other's
 # work. The facts block is deliberately an open key=value set: pass 2 struggle
-# scoring can add keys without a format change, and a key this version does not
-# emit survives a re-collect unchanged.
+# scoring can add keys without a format change. The attestation block carries a
+# closed set of keys today, but it is rewritten under the same rule, so a key
+# either block gains later - by a scorer, an auditor, or a hand - survives every
+# re-run of the command that owns that block, unchanged and in place.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -240,27 +244,33 @@ add_fact() {  # <key> <value>
 }
 
 # The other half of consequence 2: a rewrite drops nothing it merely failed to
-# recognize. Every line the previous facts block held whose key this version did
-# not emit is appended verbatim, after the known keys and in the order it already
-# had, so an unchanged record re-collects byte-identically apart from
-# collected_epoch and a pass 2 key survives a version of this script that predates
-# it.
-carry_unrecognized_facts() {
-  local line key
-  [ -n "$PREVIOUS_FACTS" ] || return 0
+# recognize. Every line the previous block held whose key the rebuilt body does
+# not itself emit is appended verbatim, after the known keys and in the order it
+# already had, so an unchanged record rewrites byte-identically apart from its one
+# timestamp key and a key added by a later pass survives a version of this script
+# that predates it. One helper serves BOTH blocks: the hole this closes is a
+# property of rewriting a whole block from a fixed key list, not of either block.
+carry_unrecognized_lines() {  # <rebuilt-body> <previous-body> <emitted-keys>
+  local body=$1 previous=$2 emitted=" $3 " line key
+  case "$body" in
+    ''|*$'\n') : ;;
+    *) body="$body"$'\n' ;;
+  esac
+  printf '%s' "$body"
+  [ -n "$previous" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     case "$line" in
       *=*)
         key=${line%%=*}
-        case " $EMITTED_KEYS" in
+        case "$emitted" in
           *" $key "*) continue ;;
         esac
         ;;
     esac
-    FACTS_BODY="${FACTS_BODY}${line}"$'\n'
+    printf '%s\n' "$line"
   done <<EOF
-$PREVIOUS_FACTS
+$previous
 EOF
 }
 
@@ -429,7 +439,7 @@ EOF
   add_fact landing_source "$landing_source"
   add_fact landing_epoch "${landing_epoch:-unknown}"
   add_fact elapsed_seconds "$elapsed"
-  carry_unrecognized_facts
+  FACTS_BODY=$(carry_unrecognized_lines "$FACTS_BODY" "$PREVIOUS_FACTS" "$EMITTED_KEYS")
 
   ensure_retro_frame "$id" "$file"
   write_block "$file" "$FACTS_OPEN" "$FACTS_CLOSE" "$FACTS_BODY"
@@ -437,7 +447,7 @@ EOF
 }
 
 command_complete() {
-  local id=${1:-} file body previous='' supplied='' keys='' now
+  local id=${1:-} file body attested previous='' supplied='' keys='' now
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$id"
   shift
@@ -460,8 +470,9 @@ command_complete() {
   [ "$previous" != none ] || previous=''
   keys=$(sorted_key_union "$previous" "$supplied")
   now=$(date -u +%s)
+  attested=$(printf 'lessons_reviewed=1\nlesson_keys=%s\nattested_epoch=%s\n' "${keys:-none}" "$now")
   write_block "$file" "$ATTEST_OPEN" "$ATTEST_CLOSE" \
-    "$(printf 'lessons_reviewed=1\nlesson_keys=%s\nattested_epoch=%s\n' "${keys:-none}" "$now")"
+    "$(carry_unrecognized_lines "$attested" "$body" 'lessons_reviewed lesson_keys attested_epoch')"
   printf 'complete: %s lessons reviewed (%s)\n' "$id" "${keys:-none}"
 }
 

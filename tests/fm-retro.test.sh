@@ -19,6 +19,7 @@
 #   (k) a post-teardown re-collect refuses and preserves facts, attestation, prose
 #   (l) --none never clears lesson keys an earlier attestation committed
 #   (m) a key this version does not emit survives a re-collect unchanged
+#   (n) the same holds for the attestation block across a re-complete
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -56,6 +57,36 @@ run_retro_expect_failure() {  # <home> <expected-fragment> <args>...
 # Read one key from the facts block of a task's retro record.
 fact() {  # <home> <key>
   sed -n "s/^$2=//p" "$1/data/task-r1/retro.md" | tail -1
+}
+
+# Backdate a file's mtime by <seconds>. GNU touch takes an epoch directly; the
+# BSD fallback has to format a timestamp, and both halves of that fallback stay
+# in LOCAL time because `touch -t` parses local time. Formatting UTC and feeding
+# it to `touch -t` silently backdates by the wrong interval east of UTC and lands
+# in the FUTURE west of it.
+backdate_file() {  # <path> <seconds-ago>
+  local path=$1 target
+  target=$(( $(date +%s) - $2 ))
+  touch -d "@$target" "$path" 2>/dev/null && return 0
+  touch -t "$(date -r "$target" +%Y%m%d%H%M.%S)" "$path"
+}
+
+# Append lines just inside a block's closing marker, the way a later pass or a
+# human extends data/<id>/retro.md - the delimited key=value block is this
+# script's own generated text contract.
+extend_block() {  # <file> <close-marker> <line>...
+  local file=$1 close=$2 line seen=0
+  shift 2
+  : > "$file.ext"
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$seen" = 0 ] && [ "$line" = "$close" ]; then
+      printf '%s\n' "$@" >> "$file.ext"
+      seen=1
+    fi
+    printf '%s\n' "$line" >> "$file.ext"
+  done < "$file"
+  [ "$seen" = 1 ] || fail "extend_block found no '$close' in $file"
+  mv "$file.ext" "$file"
 }
 
 write_meta_fixture() {  # <home>
@@ -114,7 +145,7 @@ EOF
 }
 
 test_collect_counts_rounds_commits_and_elapsed() {
-  local home now
+  local home dispatch landing
   home=$(make_home rounds)
   fm_git_init_commit "$home/project"
   git -C "$home/project" branch -M main
@@ -129,9 +160,8 @@ test_collect_counts_rounds_commits_and_elapsed() {
   printf 'done: landed\n' > "$home/state/task-r1.status"
   touch "$home/data/task-r1/evaluation-1.md" "$home/data/task-r1/evaluation-2.md" \
     "$home/data/task-r1/evaluation-3.md"
-  now=$(date -u +%s)
-  touch -t "$(date -u -r $((now - 7200)) +%Y%m%d%H%M.%S 2>/dev/null \
-    || date -u -d "@$((now - 7200))" +%Y%m%d%H%M.%S)" "$home/data/task-r1/brief.md"
+  touch "$home/data/task-r1/brief.md"
+  backdate_file "$home/data/task-r1/brief.md" 7200
 
   run_retro "$home" collect task-r1 >/dev/null || fail "collect failed on a real worktree"
 
@@ -143,6 +173,20 @@ test_collect_counts_rounds_commits_and_elapsed() {
     || fail "commits on the task branch miscounted: $(fact "$home" commits)"
   [ "$(fact "$home" dispatch_source)" = "data/task-r1/brief.md" ] \
     || fail "dispatch timestamp provenance wrong: $(fact "$home" dispatch_source)"
+
+  # Assert the backdate itself took effect, so the fixture can never again hand
+  # the elapsed assertion a nonsense interval for it to trip over: a fixture that
+  # writes a FUTURE dispatch time leaves elapsed_seconds unknown, and the numeric
+  # comparison below would then fail on "integer expression expected" rather than
+  # on the behaviour it names.
+  dispatch=$(fact "$home" dispatch_epoch)
+  landing=$(fact "$home" landing_epoch)
+  case "$dispatch" in ''|*[!0-9]*) fail "dispatch_epoch must be numeric, got '$dispatch'" ;; esac
+  case "$landing" in ''|*[!0-9]*) fail "landing_epoch must be numeric, got '$landing'" ;; esac
+  [ "$dispatch" -lt "$landing" ] \
+    || fail "the brief.md backdate did not take effect: dispatch_epoch=$dispatch is not older than landing_epoch=$landing"
+  [ $((landing - dispatch)) -ge 7000 ] \
+    || fail "the backdate moved brief.md only $((landing - dispatch))s before landing"
   [ "$(fact "$home" elapsed_seconds)" -ge 7000 ] \
     || fail "elapsed wall-clock wrong: $(fact "$home" elapsed_seconds)"
   pass "collect counts evaluation rounds, branch commits, and dispatch-to-landing wall-clock"
@@ -361,11 +405,7 @@ test_collect_preserves_keys_it_does_not_recognize() {
 
   # A pass 2 scorer, or a human, extends the open key=value set with keys this
   # version of the script does not emit.
-  awk '
-    /^<!-- \/fm-retro:facts -->$/ && !added { print "struggle_score=4"; print "cause_class=vendor-quota"; added = 1 }
-    { print }
-  ' "$file" > "$file.ext"
-  mv "$file.ext" "$file"
+  extend_block "$file" '<!-- /fm-retro:facts -->' struggle_score=4 cause_class=vendor-quota
   before=$(sed 's/^collected_epoch=.*/collected_epoch=X/' "$file")
 
   run_retro "$home" collect task-r1 >/dev/null || fail "re-collect failed after an added key"
@@ -377,6 +417,42 @@ test_collect_preserves_keys_it_does_not_recognize() {
   [ "$before" = "$after" ] \
     || fail "re-collect on an unchanged record was not byte-identical apart from collected_epoch"
   pass "a re-collect carries forward keys this version does not emit, unchanged and in place"
+}
+
+test_complete_preserves_attestation_keys_it_does_not_recognize() {
+  local home file before after
+  home=$(make_home carried-attestation)
+  file="$home/data/task-r1/retro.md"
+  write_meta_fixture "$home"
+  printf 'done: landed\n' > "$home/state/task-r1.status"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed"
+  run_retro "$home" complete task-r1 first-lesson >/dev/null || fail "complete failed"
+
+  # The cross-vendor audit the skill's operating sequence orders records itself
+  # inside the attestation markers, and that sequence re-runs complete.
+  extend_block "$file" '<!-- /fm-retro:attestation -->' \
+    audited_by=codex-gpt5 audit_verdict=accepted-with-edits
+  before=$(sed 's/^attested_epoch=.*/attested_epoch=X/' "$file")
+
+  run_retro "$home" complete task-r1 first-lesson >/dev/null \
+    || fail "re-complete failed after an added attestation key"
+  [ "$(fact "$home" audited_by)" = codex-gpt5 ] \
+    || fail "an unrecognized attestation key was dropped or altered: '$(fact "$home" audited_by)'"
+  [ "$(fact "$home" audit_verdict)" = accepted-with-edits ] \
+    || fail "a second unrecognized attestation key was dropped: '$(fact "$home" audit_verdict)'"
+  after=$(sed 's/^attested_epoch=.*/attested_epoch=X/' "$file")
+  [ "$before" = "$after" ] \
+    || fail "re-complete on an unchanged record was not byte-identical apart from attested_epoch"
+
+  # And the keys survive the other command's rewrite, plus a new lesson key.
+  run_retro "$home" complete task-r1 second-lesson >/dev/null || fail "adding a lesson key failed"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect after the added keys failed"
+  assert_grep "lesson_keys=first-lesson,second-lesson" "$file" \
+    "carrying unrecognized keys must not disturb the lesson-key union"
+  [ "$(fact "$home" audited_by)" = codex-gpt5 ] \
+    || fail "an unrecognized attestation key was lost by a later collect or complete"
+  run_retro "$home" verify task-r1 >/dev/null || fail "verify failed on the extended attestation"
+  pass "a re-complete carries forward attestation keys this version does not emit"
 }
 
 test_recollect_after_teardown_refuses_and_preserves_everything() {
@@ -436,6 +512,7 @@ test_artifacts_live_under_data
 test_absent_status_records_unknown_not_zero
 test_later_read_never_degrades_a_known_fact
 test_collect_preserves_keys_it_does_not_recognize
+test_complete_preserves_attestation_keys_it_does_not_recognize
 test_recollect_after_teardown_refuses_and_preserves_everything
 test_complete_none_never_clears_attested_lessons
 test_collect_refuses_an_unknown_task
