@@ -654,6 +654,12 @@ SH
     "window=firstmate:fm-work-disabled" "endpoint_task_id=work-disabled" \
     "worktree=$home/projects/worktree" "project=$home/projects/worktree" \
     "kind=ship" "mode=local-only"
+  # Ship teardown also requires a lessons-learned attestation; this case is about
+  # the public-followup path staying inert, so record it through the real script.
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    "$ROOT/bin/fm-retro.sh" collect work-disabled >/dev/null
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    "$ROOT/bin/fm-retro.sh" complete work-disabled --none >/dev/null
 
   rc=0
   out=$(PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
@@ -809,6 +815,15 @@ test_cleanup_refuses_while_a_public_reply_is_owed() {
     "harness=codex" \
     "kind=ship" \
     "mode=no-mistakes"
+
+  # A landed ship task must also carry its lessons-learned attestation before
+  # cleanup will proceed; record it up front so this case still tests the public
+  # -reply refusal rather than that gate. The refusal below is unaffected: the
+  # public-reply check runs before the lessons-learned one.
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    "$ROOT/bin/fm-retro.sh" collect ship-task >/dev/null
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    "$ROOT/bin/fm-retro.sh" complete ship-task --none >/dev/null
 
   rc=0
   PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \

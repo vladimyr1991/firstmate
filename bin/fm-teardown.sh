@@ -29,6 +29,11 @@
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
 # unresolved-decision completion gate verifies its captain-held inventory.
+# Ship tasks additionally pass the lessons-learned gate: after the dirty and
+# unlanded-work checks, `bin/fm-retro.sh verify` must confirm this task's retro
+# attestation under data/<task-id>/. That check runs before the volatile records
+# below are erased, because state/<task-id>.status and state/<task-id>.meta hold
+# the only record of the task's escalations, blockers, and stalls.
 # Before destructive cleanup, teardown validates task check artifacts and any
 # matching quarantine entries as ordinary single-link files on the state
 # device. It refuses and preserves task state when that proof fails; otherwise
@@ -53,9 +58,10 @@
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--force]
-#   --force skips ordinary-task dirty and landed-work checks, skips scout report
-#   checks, and discards secondmate child work for kind=secondmate. Only use it
-#   when the captain has explicitly said to discard the work.
+#   --force skips ordinary-task dirty and landed-work checks, skips the
+#   lessons-learned gate, skips scout report checks, and discards secondmate
+#   child work for kind=secondmate. Only use it when the captain has explicitly
+#   said to discard the work.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -1550,6 +1556,23 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
     else
       exit 1
     fi
+  fi
+fi
+
+# Deliberately AFTER the dirty and unlanded-work checks above: a task whose work
+# is not safely landed must still refuse for that reason first, because the
+# lessons-learned pass is about what an expensive task taught, not about whether
+# its code is safe to erase. Ship teardown erases state/<id>.status and
+# state/<id>.meta below, which is the whole record of this task's escalations,
+# blockers, and stalls, so the retro has to have happened while they still exist.
+if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
+  if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      "$SCRIPT_DIR/fm-retro.sh" verify "$ID" >/dev/null; then
+    echo "REFUSED: ship task $ID has not passed the lessons-learned gate." >&2
+    echo "Run: bin/fm-retro.sh collect $ID" >&2
+    echo "Then: bin/fm-retro.sh complete $ID --none   (or one or more lesson keys)" >&2
+    echo "See .agents/skills/lessons-learned/SKILL.md; --force skips this gate and the task's evidence is then lost." >&2
+    exit 1
   fi
 fi
 

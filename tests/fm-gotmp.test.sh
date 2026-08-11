@@ -29,6 +29,13 @@ pass() {
   printf 'ok - %s\n' "$1"
 }
 
+# Record the lessons-learned attestation through the real script so the ship
+# teardown gate is satisfied; these cases are about the temp root, not that gate.
+attest_retro() {  # <fake-home> <id>
+  FM_HOME="$1" "$ROOT/bin/fm-retro.sh" collect "$2" >/dev/null
+  FM_HOME="$1" "$ROOT/bin/fm-retro.sh" complete "$2" --none >/dev/null
+}
+
 TMP_ROOT=
 
 cleanup() {
@@ -64,6 +71,8 @@ make_fake_root() {
   ln -s "$ROOT/bin/fm-gate-refuse-lib.sh" "$fake/bin/fm-gate-refuse-lib.sh"
   # fm-pr-lib.sh: teardown uses its canonical task-ID validator for poll cleanup.
   ln -s "$ROOT/bin/fm-pr-lib.sh" "$fake/bin/fm-pr-lib.sh"
+  # fm-ci-run-lib.sh: teardown sources it to retire raw CI-run poll artifacts.
+  ln -s "$ROOT/bin/fm-ci-run-lib.sh" "$fake/bin/fm-ci-run-lib.sh"
   # fm-public-followup-lib.sh (and the fm-x-lib.sh it sources): teardown sources
   # it for the relay-activation gate on the promised-public-reply check. Neither
   # does anything in this fixture, which has no .env, but both are real siblings
@@ -71,6 +80,10 @@ make_fake_root() {
   ln -s "$ROOT/bin/fm-public-followup-lib.sh" "$fake/bin/fm-public-followup-lib.sh"
   ln -s "$ROOT/bin/fm-x-lib.sh" "$fake/bin/fm-x-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-registry-lib.sh" "$fake/bin/fm-secondmate-registry-lib.sh"
+  # fm-retro.sh (and the classifier it sources): ship teardown calls it for the
+  # lessons-learned gate before it erases the volatile task records.
+  ln -s "$ROOT/bin/fm-retro.sh" "$fake/bin/fm-retro.sh"
+  ln -s "$ROOT/bin/fm-classify-lib.sh" "$fake/bin/fm-classify-lib.sh"
   # fm-guard.sh: stub (teardown calls it with `|| true`).
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
@@ -111,6 +124,7 @@ test_teardown_removes_tasktmp_dir() {
   printf 'leftover\n' > "$task_tmp/gotmp/build-artifact"
   local fake
   fake=$(make_fake_root "$id" "$task_tmp")
+  attest_retro "$fake" "$id"
   # Sanity: dir + contents exist before teardown.
   [ -d "$task_tmp/gotmp" ] || fail "precondition: gotmp missing before teardown"
   # Run the REAL teardown against the fake root.
@@ -137,6 +151,8 @@ test_teardown_skips_gracefully_without_tasktmp() {
   ln -s "$ROOT/bin/fm-gate-refuse-lib.sh" "$fake/bin/fm-gate-refuse-lib.sh"
   # fm-pr-lib.sh: teardown uses its canonical task-ID validator for poll cleanup.
   ln -s "$ROOT/bin/fm-pr-lib.sh" "$fake/bin/fm-pr-lib.sh"
+  # fm-ci-run-lib.sh: teardown sources it to retire raw CI-run poll artifacts.
+  ln -s "$ROOT/bin/fm-ci-run-lib.sh" "$fake/bin/fm-ci-run-lib.sh"
   # fm-public-followup-lib.sh (and the fm-x-lib.sh it sources): teardown sources
   # it for the relay-activation gate on the promised-public-reply check. Neither
   # does anything in this fixture, which has no .env, but both are real siblings
@@ -144,6 +160,10 @@ test_teardown_skips_gracefully_without_tasktmp() {
   ln -s "$ROOT/bin/fm-public-followup-lib.sh" "$fake/bin/fm-public-followup-lib.sh"
   ln -s "$ROOT/bin/fm-x-lib.sh" "$fake/bin/fm-x-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-registry-lib.sh" "$fake/bin/fm-secondmate-registry-lib.sh"
+  # fm-retro.sh (and the classifier it sources): ship teardown calls it for the
+  # lessons-learned gate before it erases the volatile task records.
+  ln -s "$ROOT/bin/fm-retro.sh" "$fake/bin/fm-retro.sh"
+  ln -s "$ROOT/bin/fm-classify-lib.sh" "$fake/bin/fm-classify-lib.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -167,6 +187,7 @@ kind=ship
 mode=no-mistakes
 yolo=off
 META
+  attest_retro "$fake" "$id"
   FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" >/dev/null 2>&1 \
     || fail "teardown exited non-zero when tasktmp= was absent"
   pass "fm-teardown skips gracefully when tasktmp= is absent (backward compat)"
@@ -180,6 +201,7 @@ test_teardown_skips_gracefully_when_dir_missing() {
   [ ! -e "$task_tmp" ] || fail "precondition: task_tmp should not exist yet"
   local fake
   fake=$(make_fake_root "$id" "$task_tmp")
+  attest_retro "$fake" "$id"
   FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" >/dev/null 2>&1 \
     || fail "teardown exited non-zero when tasktmp dir was missing"
   [ ! -e "$task_tmp" ] || fail "teardown created/left the tasktmp dir unexpectedly"

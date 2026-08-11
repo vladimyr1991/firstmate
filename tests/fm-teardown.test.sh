@@ -151,8 +151,28 @@ SH
   chmod +x "$case_dir/fakebin/tasks-axi"
 }
 
+# Record a lessons-learned attestation for the task through the real script, so
+# the ship teardown gate is satisfied. Args: case_dir
+attest_retro() {
+  local case_dir=$1
+  FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$ROOT/bin/fm-retro.sh" collect task-x1 >/dev/null
+  FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$ROOT/bin/fm-retro.sh" complete task-x1 --none >/dev/null
+}
+
 # Write a meta file for the task. Args: case_dir mode kind
+# Every case built this way is a task that already ran its lessons-learned pass;
+# the landed-work matrix is about landing safety, not about that gate. The gate's
+# own cases below build their meta without this helper.
 write_meta() {
+  local case_dir=$1 mode=$2 kind=$3
+  write_meta_only "$case_dir" "$mode" "$kind"
+  attest_retro "$case_dir"
+}
+
+# Write the meta file WITHOUT the lessons-learned attestation. Args: case_dir mode kind
+write_meta_only() {
   local case_dir=$1 mode=$2 kind=$3
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=firstmate:fm-task-x1" \
@@ -493,9 +513,255 @@ run_teardown() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" task-x1 "$@"
+}
+
+# --- lessons-learned gate ---------------------------------------------------
+#
+# Ship teardown erases state/task-x1.status and state/task-x1.meta, which is the
+# whole record of a task's escalations, blockers, and stalls. The gate makes the
+# retro happen while those records still exist. It sits AFTER the dirty and
+# unlanded-work refusals, so a task whose work is unsafe to erase still refuses
+# for that reason first.
+
+test_landed_ship_without_retro_refuses() {
+  local case_dir rc
+  case_dir=$(make_case retro-missing)
+  write_meta_only "$case_dir" local-only ship
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "retro-missing: landed ship task was torn down without a lessons-learned attestation"
+  assert_grep "has not passed the lessons-learned gate" "$case_dir/stderr" \
+    "retro-missing: refusal did not name the lessons-learned gate"
+  assert_grep "bin/fm-retro.sh collect task-x1" "$case_dir/stderr" \
+    "retro-missing: refusal did not name the collect command that fixes it"
+  assert_grep "bin/fm-retro.sh complete task-x1 --none" "$case_dir/stderr" \
+    "retro-missing: refusal did not name the complete command that fixes it"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "retro-missing: refusal must leave the task's durable records intact"
+  pass "landed ship task without a lessons-learned attestation is refused with the fixing command"
+}
+
+test_landed_ship_with_retro_allows() {
+  local case_dir rc
+  case_dir=$(make_case retro-present)
+  write_meta_only "$case_dir" local-only ship
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  attest_retro "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "retro-present: teardown should succeed once the retro is attested"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "retro-present: teardown printed a REFUSED line"
+  pass "landed ship task with a lessons-learned attestation is torn down"
+}
+
+test_unlanded_ship_without_retro_refuses_for_unlanded_work_first() {
+  local case_dir rc
+  case_dir=$(make_case retro-after-unlanded)
+  write_meta_only "$case_dir" local-only ship
+  wt_commit "$case_dir" "unpushed work"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "retro-after-unlanded: unlanded work was torn down"
+  assert_grep "not yet merged into" "$case_dir/stderr" \
+    "retro-after-unlanded: the unlanded-work refusal must fire before the lessons-learned gate"
+  assert_no_grep "lessons-learned gate" "$case_dir/stderr" \
+    "retro-after-unlanded: the lessons-learned gate must not preempt the unlanded-work refusal"
+  pass "unlanded work refuses before the lessons-learned gate is consulted"
+}
+
+test_dirty_ship_without_retro_refuses_for_dirty_work_first() {
+  local case_dir rc
+  case_dir=$(make_case retro-after-dirty)
+  write_meta_only "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  add_fork_with_pushed_branch "$case_dir"
+  printf 'uncommitted edit\n' > "$case_dir/wt/feature.txt"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "retro-after-dirty: dirty worktree was torn down"
+  assert_grep "uncommitted changes" "$case_dir/stderr" \
+    "retro-after-dirty: the dirty refusal must fire before the lessons-learned gate"
+  assert_no_grep "lessons-learned gate" "$case_dir/stderr" \
+    "retro-after-dirty: the lessons-learned gate must not preempt the dirty refusal"
+  pass "a dirty worktree refuses before the lessons-learned gate is consulted"
+}
+
+test_forced_teardown_skips_the_retro_gate() {
+  local case_dir rc
+  case_dir=$(make_case retro-force)
+  write_meta_only "$case_dir" local-only ship
+  wt_commit "$case_dir" "unpushed work"
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "retro-force: --force should still bypass every teardown gate"
+  assert_no_grep "lessons-learned gate" "$case_dir/stderr" \
+    "retro-force: --force must not be blocked by the lessons-learned gate"
+  pass "--force keeps bypassing the lessons-learned gate as documented"
+}
+
+test_scout_gate_is_unaffected_by_the_retro_gate() {
+  local case_dir rc
+  case_dir=$(make_case retro-scout)
+  write_meta_only "$case_dir" scout scout
+  printf '%s\n' 'decisions_reviewed=1' >> "$case_dir/state/task-x1.meta"
+  wt_commit "$case_dir" "scratch work"
+  cat > "$case_dir/fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "--version ") printf '%s\n' '0.2.2'; exit 0 ;;
+  "update --help") printf '%s\n' '  --archive-body'; exit 0 ;;
+  "mv --help") printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <dir>'; exit 0 ;;
+  "hold --help") printf '%s\n' '  --kind captain'; exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/tasks-axi"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "retro-scout: a scout with no report must still be refused"
+  assert_grep "has no report at" "$case_dir/stderr" \
+    "retro-scout: the scout report refusal changed"
+
+  mkdir -p "$case_dir/data/task-x1"
+  printf '# findings\n' > "$case_dir/data/task-x1/report.md"
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "retro-scout: a scout that passed its own gates must not need a retro"
+  assert_no_grep "lessons-learned gate" "$case_dir/stderr" \
+    "retro-scout: the lessons-learned gate must not apply to scout tasks"
+  pass "the scout report and decision gates are unchanged and scouts skip the lessons-learned gate"
+}
+
+test_retro_artifacts_survive_teardown() {
+  local case_dir rc
+  case_dir=$(make_case retro-survives)
+  write_meta_only "$case_dir" local-only ship
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$ROOT/bin/fm-retro.sh" collect task-x1 >/dev/null
+  FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$ROOT/bin/fm-retro.sh" complete task-x1 telegram-cleanup >/dev/null
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "retro-survives: teardown should succeed"
+  assert_absent "$case_dir/state/task-x1.status" \
+    "retro-survives: teardown should still clear the volatile status record"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "retro-survives: teardown should still clear the volatile metadata record"
+  assert_present "$case_dir/data/task-x1/retro.md" \
+    "retro-survives: the retro record must outlive teardown"
+  assert_grep "lesson_keys=telegram-cleanup" "$case_dir/data/task-x1/retro.md" \
+    "retro-survives: the surviving retro must still carry its attested lesson keys"
+  pass "retro artifacts survive the cleanup that erases the volatile task records"
+}
+
+# Replace the no-op treehouse mock with one that records every invocation, so a
+# test can prove the worktree return - the irreversible step this gate stands in
+# front of - never ran, rather than only that the refusal was printed.
+record_treehouse_calls() {  # <case-dir>
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/treehouse-calls"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# A gate that passes what the writers refuse is worse than no gate: teardown
+# would erase state/task-x1.status and state/task-x1.meta, and the damaged record
+# can never be re-collected from them afterwards. The damage here is applied to a
+# record the real bin/fm-retro.sh wrote, so this fixture encodes no file format.
+test_landed_ship_with_a_damaged_retro_record_refuses() {
+  local case_dir rc file before
+  case_dir=$(make_case retro-damaged)
+  write_meta_only "$case_dir" local-only ship
+  printf 'blocked: needed help\ndone: landed\n' > "$case_dir/state/task-x1.status"
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  attest_retro "$case_dir"
+  record_treehouse_calls "$case_dir"
+
+  file="$case_dir/data/task-x1/retro.md"
+  grep -v '^<!-- /fm-retro:facts -->$' "$file" > "$file.damaged"
+  mv "$file.damaged" "$file"
+  before=$(cat "$file")
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "retro-damaged: a structurally damaged retro record passed the lessons-learned gate"
+  assert_grep "has not passed the lessons-learned gate" "$case_dir/stderr" \
+    "retro-damaged: the refusal did not name the lessons-learned gate"
+  assert_grep "structurally damaged record" "$case_dir/stderr" \
+    "retro-damaged: the refusal did not say the record itself is damaged"
+  assert_grep "facts block" "$case_dir/stderr" \
+    "retro-damaged: the refusal did not name the damaged block"
+  # The destructive path must not have run at all.
+  assert_present "$case_dir/state/task-x1.status" \
+    "retro-damaged: the refused teardown erased the volatile status record"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "retro-damaged: the refused teardown erased the volatile metadata record"
+  assert_absent "$case_dir/treehouse-calls" \
+    "retro-damaged: the refused teardown still returned the worktree"
+  [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD)" = fm/task-x1 ] \
+    || fail "retro-damaged: the refused teardown still detached and dropped the task branch"
+  [ "$(cat "$file")" = "$before" ] \
+    || fail "retro-damaged: the refused teardown modified the damaged record"
+
+  # And the documented bypass still works on exactly the same task.
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "retro-damaged: --force must still tear down a task the gate refused"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "retro-damaged: --force should have cleared the volatile metadata record"
+  assert_present "$case_dir/treehouse-calls" \
+    "retro-damaged: --force should have returned the worktree"
+  pass "a structurally damaged retro record refuses teardown before anything is erased, and --force still bypasses it"
 }
 
 test_local_only_fork_remote_allows() {
@@ -1824,6 +2090,14 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
   pass "herdr projection teardown retains every record when post-close presence is unknown"
 }
 
+test_landed_ship_without_retro_refuses
+test_landed_ship_with_retro_allows
+test_landed_ship_with_a_damaged_retro_record_refuses
+test_unlanded_ship_without_retro_refuses_for_unlanded_work_first
+test_dirty_ship_without_retro_refuses_for_dirty_work_first
+test_forced_teardown_skips_the_retro_gate
+test_scout_gate_is_unaffected_by_the_retro_gate
+test_retro_artifacts_survive_teardown
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present

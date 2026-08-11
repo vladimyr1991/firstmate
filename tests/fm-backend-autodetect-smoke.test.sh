@@ -151,6 +151,12 @@ pass "real herdr: the auto-detected spawn's launch command actually ran in the h
 # --- teardown completes the trivial spawn/teardown cycle --------------------
 
 TEARDOWN_OUT="$TMP_ROOT/teardown.out"
+# Ship teardown requires a lessons-learned attestation; this smoke test is about
+# the spawn/teardown cycle, so record it through the real script first.
+FM_HOME="$TMP_ROOT" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+  "$ROOT/bin/fm-retro.sh" collect "$ID" >/dev/null
+FM_HOME="$TMP_ROOT" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+  "$ROOT/bin/fm-retro.sh" complete "$ID" --none >/dev/null
 FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
   FM_CONFIG_OVERRIDE="$CONFIG" \
   "$ROOT/bin/fm-teardown.sh" "$ID" >"$TEARDOWN_OUT" 2>&1
