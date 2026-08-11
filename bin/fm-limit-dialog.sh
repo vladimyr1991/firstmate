@@ -199,11 +199,12 @@ options_of() {
 # token, is bounded to a few characters and is exactly what the payment veto
 # ahead of it is there to police.
 WAIT_LEAD='((stop|pause|hold)( and|,)?[[:space:]]+|just[[:space:]]+|please[[:space:]]+)?'
-WAIT_CLOCK='[0-9]{1,2}([:.][0-9]{2})?[[:space:]]*(am|pm)?([[:space:]]+[A-Z]{2,4})?'
+WAIT_CLOCK='[0-9]{1,2}([:.][0-9]{2})?[[:space:]]*(am|pm)?'
 WAIT_DURATION='[0-9]{1,3}[[:space:]]+(second|seconds|minute|minutes|hour|hours)'
+WAIT_IANA='[A-Za-z]+/[A-Za-z_][A-Za-z_0-9]*'
 WAIT_WHEN="([[:space:]]+(at|around|by)[[:space:]]+${WAIT_CLOCK}|[[:space:]]+in[[:space:]]+${WAIT_DURATION})?"
 WAIT_CONTINUE='([[:space:]]*[,;]?[[:space:]]*(and[[:space:]]+)?(then[[:space:]]+)?(automatically[[:space:]]+)?(continue|resume|retry|try[[:space:]]+again)([[:space:]]+automatically)?)?'
-WAIT_PAREN='([[:space:]]*\((recommended|default)\))?'
+WAIT_PAREN='([[:space:]]*\(((recommended|default|'$WAIT_IANA'))\))?'
 WAIT_TAIL="${WAIT_WHEN}${WAIT_CONTINUE}${WAIT_PAREN}[[:space:]]*[.!]?"
 WAIT_ALLOWLIST="\
 ${WAIT_LEAD}wait([[:space:]]+(for|until))?([[:space:]]+(the|my|your|this))?([[:space:]]+(usage|rate|quota|model))?([[:space:]]+(limit|limits|window|cap))?([[:space:]]+(to|will))?[[:space:]]+reset(s|ting)?${WAIT_TAIL}"
@@ -223,26 +224,34 @@ is_recognized_wait_option() {
   return 1
 }
 
-# The deny half of the boundary, and it runs FIRST on the raw option text at
-# every site that selects. Whatever the allowlist would say, an option that
-# mentions money is not selectable.
+# The deny half of the boundary: applied to the raw option text independently,
+# before any allowlist matching. The veto runs FIRST on the same input that the
+# allowlist will see, so that it genuinely rejects payment language - it is not
+# behind the allowlist where it could only see text the allowlist already
+# approved. This independence, not textual ordering alone, is what makes it a
+# live barrier.
 is_paid_option() {
-  printf '%s' "$1" | grep -qiE 'upgrade|buy|purchase|subscribe|billing|payment|checkout|credit card|add (funds|credits)'
+  printf '%s' "$1" | grep -qiE 'upgrade|buy|purchase|subscribe|billing|payment|checkout|credit card|add (funds|credits)|pay(s|ing|ment)?|paid|fee|cost|\$'
 }
 
 CAPTURE=$(mktemp "${TMPDIR:-/tmp}/fm-limit-dialog.XXXXXX")
+CAPTURE_DETECT=$(mktemp "${TMPDIR:-/tmp}/fm-limit-dialog.XXXXXX")
 CAPTURE2=$(mktemp "${TMPDIR:-/tmp}/fm-limit-dialog.XXXXXX")
-trap 'rm -f -- "$CAPTURE" "$CAPTURE2"' EXIT
+trap 'rm -f -- "$CAPTURE" "$CAPTURE_DETECT" "$CAPTURE2"' EXIT
 trap 'exit 1' HUP INT TERM
 
-# How much recent output the post-answer confirmation looks at. There is NO
-# portable "visible pane only" bound across the five backends: tmux reads it as
-# scrollback depth above the live pane, herdr/zellij/cmux end their capture in
-# `tail -n "$lines"`, and orca forwards the number as `--limit`. A count of 0
-# would therefore mean "visible pane" on tmux and "nothing at all" on three of
-# the others, so this is a small POSITIVE bound every backend honours - a sample
-# of recent output, not a statement about what is on screen. That is why the
-# confirmation below is strictly advisory and never decides an exit code.
+# How much recent output the detection and post-answer confirmation look at.
+# There is NO portable "visible pane only" bound across the five backends: tmux
+# reads it as scrollback depth above the live pane, herdr/zellij/cmux end their
+# capture in `tail -n "$lines"`, and orca forwards the number as `--limit`. A
+# count of 0 would therefore mean "visible pane" on tmux and "nothing at all" on
+# three of the others, so this is a small POSITIVE bound every backend honours -
+# a sample of recent output, not a statement about what is on screen.
+# Detection uses this to require that a dialog is the pane's CURRENT state before
+# anything is answered: an option found only in older scrollback, above the
+# pane's current lines, is stale and must not be answered. The full scrollback is
+# captured separately for reporting.
+DETECT_LINES=12
 CONFIRM_LINES=12
 
 # Returns non-zero instead of dying when <required> is not "required", for the
@@ -311,8 +320,9 @@ scan() {  # <capture>
 }
 
 capture_pane "$CAPTURE"
+capture_pane "$CAPTURE_DETECT" "$DETECT_LINES"
 set +e
-scan "$CAPTURE"
+scan "$CAPTURE_DETECT"
 SCAN_RC=$?
 set -e
 

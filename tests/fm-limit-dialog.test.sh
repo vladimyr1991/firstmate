@@ -423,7 +423,7 @@ Pause and wait for the limit to reset, then continue
 Stop and wait for the limit to reset at 3pm
 Wait for the limit to reset (recommended)
 Stop and wait for the limit to reset in 47 minutes
-Wait until your usage limit resets at 17:00 UTC
+Wait until your usage limit resets at 17:00 (Europe/London)
 VARIANTS
   pass "close variants of the wait-for-reset option are recognized, not just the one observed sentence"
 }
@@ -461,9 +461,11 @@ test_payment_language_is_refused_even_when_the_allowlist_shape_matches() {
   dir=$(make_case veto-over-allowlist)
   # The timezone slot is the one place the allowlist admits letters the dialog
   # supplies, so it is the one place money wording can reach an otherwise
-  # allowlist-shaped option. The veto runs on the raw text ahead of the
-  # allowlist precisely so it can reject here rather than document a barrier it
-  # never sees input for.
+  # allowlist-shaped option. The veto runs on the raw text independently ahead
+  # of the allowlist precisely so it can reject here rather than document a
+  # barrier it never sees input for. Payment stems like pay, fee, cost, and $ are
+  # also caught by the extended veto, so bare-letter timezone slots cannot pass
+  # payment language through.
   cat > "$dir/screen.txt" <<'T'
 Claude usage limit reached.
 1. Stop and wait for the limit to reset at 6 BUY
@@ -474,7 +476,7 @@ T
   rc=$?
   set -e
   err=$(cat "$dir/err")
-  [ "$rc" -eq 3 ] || fail "an allowlist-shaped option carrying payment language was not refused (got $rc)"
+  [ "$rc" -eq 3 ] || fail "an option carrying payment language (BUY in timezone slot) was not refused (got $rc)"
   [ ! -s "$dir/typed.txt" ] \
     || fail "an option carrying payment language reached the endpoint: $(cat "$dir/typed.txt")"
   case "$(cat "$dir/tmux.log")" in
@@ -500,6 +502,54 @@ T
   [ ! -s "$dir/typed.txt" ] \
     || fail "a wait sentence with an upgrade alternative appended reached the endpoint"
   pass "an option that mentions money is never selected, whatever shape the rest of it has"
+}
+
+test_bare_payment_stems_are_refused() {
+  local dir rc name screen
+  dir=$(make_case bare-payment-stems)
+
+  # Bare payment stems like "pay", "fee", "cost" are now caught by the extended
+  # veto, preventing them from reaching the endpoint even when the timezone slot
+  # no longer admits bare letters.
+  for name in pay fee cost paid; do
+    screen="$dir/$name.txt"
+    printf 'Claude usage limit reached.\n1. Stop and wait for the limit to reset at 5 %s\n2. Something else entirely\n' "$name" \
+      > "$screen"
+    : > "$dir/typed.txt"
+    set +e
+    run_live "$dir" --provider claude >/dev/null 2> "$dir/$name.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] || fail "an option with bare stem '$name' in the timezone slot was not refused (got $rc)"
+    [ ! -s "$dir/typed.txt" ] \
+      || fail "an option with '$name' reached the endpoint: $(cat "$dir/typed.txt")"
+  done
+  pass "bare payment stems (pay, fee, cost, paid) are refused by the veto"
+}
+
+test_iana_zones_in_parentheses_are_recognized() {
+  local dir rc out screen variant n=0
+  dir=$(make_case iana-zones)
+
+  # IANA-style zones in parentheses like (Europe/Podgorica) are recognized as
+  # part of the timeout detail, and options with them are still answered.
+  # Clock times in various formats are also still accepted. Bare letter timezones
+  # like "UTC" are no longer accepted - only parenthetical IANA zones.
+  while IFS= read -r variant; do
+    [ -n "$variant" ] || continue
+    n=$((n + 1))
+    screen="$dir/variant-$n.txt"
+    printf 'Claude usage limit reached.\n1. %s\n2. Upgrade to Max\n' "$variant" > "$screen"
+    out=$(run_detect "$dir" "$screen") || fail "a recognized time variant was not accepted: $variant"
+    assert_contains "$out" 'wait-option: 1' "the waiting option was not identified in: $variant"
+  done <<'VARIANTS'
+Stop and wait for the limit to reset at 3pm
+Stop and wait for the limit to reset at 12:30am
+Stop and wait for the limit to reset at 12:30am (Europe/Podgorica)
+Wait for the limit to reset at 17:20 (Europe/London)
+Stop and wait for limit to reset at 3pm (recommended)
+VARIANTS
+  pass "observed time formats (clock times, IANA zones in parens, recognized words) are accepted"
 }
 
 test_an_unrecognized_option_is_never_typed_into_the_pane() {
@@ -635,6 +685,8 @@ test_answering_without_a_provider_still_answers_but_reports_no_resume
 test_close_variants_of_the_waiting_option_are_still_recognized
 test_the_safe_option_carrying_a_reset_time_is_answered_not_stalled
 test_payment_language_is_refused_even_when_the_allowlist_shape_matches
+test_bare_payment_stems_are_refused
+test_iana_zones_in_parentheses_are_recognized
 test_an_unrecognized_option_is_never_typed_into_the_pane
 test_a_paywall_dialog_never_reaches_the_endpoint
 test_a_saved_capture_cannot_answer_a_live_dialog
