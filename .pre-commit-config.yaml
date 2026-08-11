@@ -1,0 +1,13 @@
+# Zero-token, local git hook. Runs deterministic shell scripts only - no
+# agent, no LLM call, no network. Wired to bin/fm-lint.sh so the ShellCheck
+# version and rule set stay owned by that one script (one-owner rule) rather
+# than duplicated here.
+repos:
+  - repo: local
+    hooks:
+      - id: fm-lint
+        name: fm-lint (shellcheck, pinned version, canonical file set)
+        entry: bin/fm-lint.sh
+        language: script
+        pass_filenames: false
+        always_run: true
