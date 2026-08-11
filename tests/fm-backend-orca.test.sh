@@ -988,6 +988,13 @@ test_ship_teardown_removes_orca_worktree_when_id_path_matches() {
     "backend=orca" "orca_worktree_id=wt-ship-match"
   orca_case ship-match
   printf '{"ok":true,"result":{"worktree":{"id":"wt-ship-match","path":"%s"}}}\n' "$wt" > "$RESP/1.out"
+  # A landed ship task also has to have passed the lessons-learned gate before
+  # teardown can succeed; record it through the real script so this case stays
+  # about the Orca worktree removal it names.
+  FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" \
+    "$ROOT/bin/fm-retro.sh" collect "$id" >/dev/null
+  FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" \
+    "$ROOT/bin/fm-retro.sh" complete "$id" --none >/dev/null
   neutral=$(neutral_fm_root "$CASE_DIR/neutral")
   set +e
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \

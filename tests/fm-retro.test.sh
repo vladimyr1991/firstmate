@@ -18,6 +18,7 @@
 #   (j) a later poorer read never degrades a fact the record already knows
 #   (k) a post-teardown re-collect refuses and preserves facts, attestation, prose
 #   (l) --none never clears lesson keys an earlier attestation committed
+#   (m) a key this version does not emit survives a re-collect unchanged
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -292,7 +293,7 @@ test_absent_status_records_unknown_not_zero() {
 }
 
 test_later_read_never_degrades_a_known_fact() {
-  local home before after
+  local home
   home=$(make_home no-degrade)
   write_meta_fixture "$home"
   cat > "$home/state/task-r1.status" <<'EOF'
@@ -319,14 +320,63 @@ EOF
   [ "$(fact "$home" open_decisions)" = 2 ] \
     || fail "a known open_decisions was degraded"
 
-  # The metadata disappears too, so a previously recorded meta field must also
-  # survive rather than reverting to unknown.
-  before=$(fact "$home" harness)
+  # The mirror case: the metadata disappears while the status log survives, so
+  # collect proceeds. Every meta-derived fact must still read the value it was
+  # first recorded with rather than reverting to unknown, while the
+  # status-derived counts are recomputed normally from the log that is still
+  # there.
+  cat > "$home/state/task-r1.status" <<'EOF'
+needs-decision [key=a]: something
+blocked: something else
+paused: waiting
+done: landed
+EOF
   rm "$home/state/task-r1.meta"
-  mkdir -p "$home/data/task-r1"
-  after=$(fact "$home" harness)
-  [ "$before" = "$after" ] || fail "harness changed without a collect"
+  run_retro "$home" collect task-r1 >/dev/null || fail "re-collect failed without metadata"
+  [ "$(fact "$home" harness)" = claude ] \
+    || fail "a known harness was degraded to '$(fact "$home" harness)'"
+  [ "$(fact "$home" model)" = opus ] \
+    || fail "a known model was degraded to '$(fact "$home" model)'"
+  [ "$(fact "$home" effort)" = high ] \
+    || fail "a known effort was degraded to '$(fact "$home" effort)'"
+  [ "$(fact "$home" mode)" = no-mistakes ] \
+    || fail "a known mode was degraded to '$(fact "$home" mode)'"
+  [ "$(fact "$home" pr)" = "https://github.com/example/repo/pull/9" ] \
+    || fail "a known pr was degraded to '$(fact "$home" pr)'"
+  # The still-readable log is the live source, so its counts move with it.
+  [ "$(fact "$home" status_lines)" = 4 ] \
+    || fail "status counts must be recomputed from a log that is still there: $(fact "$home" status_lines)"
+  [ "$(fact "$home" paused_events)" = 1 ] \
+    || fail "a newly readable paused event was not counted: $(fact "$home" paused_events)"
   pass "a later, poorer read never replaces a fact the record already knows"
+}
+
+test_collect_preserves_keys_it_does_not_recognize() {
+  local home file before after
+  home=$(make_home carried-keys)
+  file="$home/data/task-r1/retro.md"
+  write_meta_fixture "$home"
+  printf 'done: landed\n' > "$home/state/task-r1.status"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed"
+
+  # A pass 2 scorer, or a human, extends the open key=value set with keys this
+  # version of the script does not emit.
+  awk '
+    /^<!-- \/fm-retro:facts -->$/ && !added { print "struggle_score=4"; print "cause_class=vendor-quota"; added = 1 }
+    { print }
+  ' "$file" > "$file.ext"
+  mv "$file.ext" "$file"
+  before=$(sed 's/^collected_epoch=.*/collected_epoch=X/' "$file")
+
+  run_retro "$home" collect task-r1 >/dev/null || fail "re-collect failed after an added key"
+  [ "$(fact "$home" struggle_score)" = 4 ] \
+    || fail "an unrecognized key was dropped or altered by re-collect: '$(fact "$home" struggle_score)'"
+  [ "$(fact "$home" cause_class)" = vendor-quota ] \
+    || fail "a second unrecognized key was dropped or altered: '$(fact "$home" cause_class)'"
+  after=$(sed 's/^collected_epoch=.*/collected_epoch=X/' "$file")
+  [ "$before" = "$after" ] \
+    || fail "re-collect on an unchanged record was not byte-identical apart from collected_epoch"
+  pass "a re-collect carries forward keys this version does not emit, unchanged and in place"
 }
 
 test_recollect_after_teardown_refuses_and_preserves_everything() {
@@ -385,6 +435,7 @@ test_invalid_input_is_refused
 test_artifacts_live_under_data
 test_absent_status_records_unknown_not_zero
 test_later_read_never_degrades_a_known_fact
+test_collect_preserves_keys_it_does_not_recognize
 test_recollect_after_teardown_refuses_and_preserves_everything
 test_complete_none_never_clears_attested_lessons
 test_collect_refuses_an_unknown_task

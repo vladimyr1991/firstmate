@@ -22,11 +22,16 @@
 #      as `0` would not merely lose data, it would fail in the self-flattering
 #      direction - the fleet would look like it was improving precisely because
 #      the evidence of struggle had been erased.
-#   2. A later read may never replace a known value with `unknown`. This is
-#      enforced as one general merge rule over the whole facts block rather than
-#      per key, so it also covers degradations no reviewer named: a returned
-#      worktree turning `branch`, `commit_base`, and `commits` unknown while
-#      state/<id>.meta still exists.
+#   2. A later read may never replace a known value with `unknown`, and may not
+#      drop a known key either: known -> absent is the same degradation as
+#      known -> unknown, only quieter. Both halves are enforced as one general
+#      merge rule over the whole facts block rather than per key, so they also
+#      cover degradations no reviewer named: a returned worktree turning
+#      `branch`, `commit_base`, and `commits` unknown while state/<id>.meta
+#      still exists, and a key this version never emits - a pass 2 struggle
+#      score, a line a human added - being erased by the block rewrite. An
+#      unrecognized key is carried forward verbatim instead, in the order it
+#      already had.
 #   3. When the volatile records are gone and a facts block already exists,
 #      `collect` REFUSES instead of degrading. A refusal that names its reason is
 #      strictly better than a quiet zero.
@@ -70,7 +75,8 @@
 # facts block and `complete` rewrites only the attestation block, so either
 # command may run first, again, or after the other without losing the other's
 # work. The facts block is deliberately an open key=value set: pass 2 struggle
-# scoring can add keys without a format change.
+# scoring can add keys without a format change, and a key this version does not
+# emit survives a re-collect unchanged.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -220,6 +226,7 @@ MD
 # remembered about.
 FACTS_BODY=''
 PREVIOUS_FACTS=''
+EMITTED_KEYS=''
 add_fact() {  # <key> <value>
   local key=$1 value=$2 previous
   if [ "$value" = unknown ] && [ -n "$PREVIOUS_FACTS" ]; then
@@ -229,6 +236,32 @@ add_fact() {  # <key> <value>
     fi
   fi
   FACTS_BODY="${FACTS_BODY}${key}=${value}"$'\n'
+  EMITTED_KEYS="${EMITTED_KEYS}${key} "
+}
+
+# The other half of consequence 2: a rewrite drops nothing it merely failed to
+# recognize. Every line the previous facts block held whose key this version did
+# not emit is appended verbatim, after the known keys and in the order it already
+# had, so an unchanged record re-collects byte-identically apart from
+# collected_epoch and a pass 2 key survives a version of this script that predates
+# it.
+carry_unrecognized_facts() {
+  local line key
+  [ -n "$PREVIOUS_FACTS" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      *=*)
+        key=${line%%=*}
+        case " $EMITTED_KEYS" in
+          *" $key "*) continue ;;
+        esac
+        ;;
+    esac
+    FACTS_BODY="${FACTS_BODY}${line}"$'\n'
+  done <<EOF
+$PREVIOUS_FACTS
+EOF
 }
 
 sorted_key_union() {  # <comma-list> <space-separated-new-keys>
@@ -372,6 +405,7 @@ EOF
   now=$(date -u +%s)
 
   FACTS_BODY=''
+  EMITTED_KEYS=''
   add_fact schema 1
   add_fact task "$id"
   add_fact collected_epoch "$now"
@@ -395,6 +429,7 @@ EOF
   add_fact landing_source "$landing_source"
   add_fact landing_epoch "${landing_epoch:-unknown}"
   add_fact elapsed_seconds "$elapsed"
+  carry_unrecognized_facts
 
   ensure_retro_frame "$id" "$file"
   write_block "$file" "$FACTS_OPEN" "$FACTS_CLOSE" "$FACTS_BODY"
