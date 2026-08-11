@@ -26,6 +26,8 @@
 # to stay in quota-axi's source data but are not dashboard resources. Grok's
 # shared credits also carry an explicit unmeasured-weekly-cap warning, because
 # a healthy prepaid balance does not prove that Grok can accept another worker.
+# That warning rides the gauge, which every terminal width draws, so a narrow
+# pane can never quietly turn the caveat back into an unqualified number.
 #
 # A dispatch provider that answers with quota data but none of those windows
 # gets one explicit "dispatch limit not reported" row carrying no number at
@@ -85,19 +87,25 @@ tone_for() {
 # quota-axi emits ISO-8601 in UTC (Z or +00:00). macOS date -j without -u
 # treats the clock fields as local time, so a reset still an hour out already
 # rendered as "now" under CEST. Always parse the Y-M-DTh:m:s fields as UTC.
+#
+# A zone designator is APPLIED, never dropped: discarding "+02:00" would move
+# the reset two hours the wrong way, the same class of error as reading UTC
+# fields as local time. The offset is kept beside the clock fields and handed
+# to strptime's %z; only a stamp with no designator at all is read as UTC.
 human_until() {
-  local raw base t now d
+  local raw base off t now d
   [ -n "$1" ] && [ "$1" != null ] || { printf '?'; return; }
   raw=$1
-  base=$raw
-  # Drop fractional seconds, then a trailing Z or numeric offset.
-  base=${base%%.*}
-  case "$base" in
-    *Z) base=${base%Z} ;;
-    *[+-][0-9][0-9]:[0-9][0-9]) base=${base%[+-][0-9][0-9]:[0-9][0-9]} ;;
-    *[+-][0-9][0-9][0-9][0-9]) base=${base%[+-][0-9][0-9][0-9][0-9]} ;;
+  # Split the zone designator off first - fractional seconds sit between the
+  # clock and the offset, so trimming them first would take the offset too.
+  case "$raw" in
+    *Z|*z) off=+0000; base=${raw%?} ;;
+    *[+-][0-9][0-9]:[0-9][0-9]) off=${raw: -6}; off=${off%:*}${off#*:}; base=${raw%??????} ;;
+    *[+-][0-9][0-9][0-9][0-9]) off=${raw: -5}; base=${raw%?????} ;;
+    *) off=; base=$raw ;;
   esac
-  t=$(date -j -u -f '%Y-%m-%dT%H:%M:%S' "$base" +%s 2>/dev/null) \
+  base=${base%%.*}
+  t=$(date -j -u -f "%Y-%m-%dT%H:%M:%S${off:+%z}" "$base$off" +%s 2>/dev/null) \
     || t=$(date -u -d "$raw" +%s 2>/dev/null) \
     || t=$(date -d "$raw" +%s 2>/dev/null) \
     || { printf '?'; return; }
@@ -127,23 +135,27 @@ collect() {
   local json img
   json=$(quota-axi --provider "$PROVIDERS" --json 2>/dev/null)
   # Bucket rule (single owner of week vs day):
-  #   week - kind weekly, billing credits with a reset, label mentions week,
-  #          or cycle >= 2 days
+  #   week - kind weekly, a credit balance, label mentions week, or cycle >= 2 days
   #   day  - everything shorter (session/5h, true daily, unknown short)
   # Time remaining is not a cycle length: a weekly credit balance may have one
-  # day left, so reset-bearing credits remain weekly at every point in cycle.
+  # day left, so credits remain weekly at every point in the cycle. A credit
+  # balance is a billing-cycle balance and never today's or this session's
+  # budget, so it stays weekly whether or not quota-axi carried a resetsAt -
+  # a nullable timestamp must not move the same resource between sections.
   ROWS=$(printf '%s' "$json" | jq -r '
     def cycle_secs:
       (.windowSeconds // .pace.cycleSeconds // 0);
+    def is_credits:
+      ((.kind // "") == "credits")
+      or (((.id // "") + " " + (.label // "")) | test("credit"; "i"));
     def section:
       if (.kind // "") == "weekly" then "week"
-      elif ((.kind // "") == "credits" and ((.resetsAt? // "") != "")) then "week"
+      elif is_credits then "week"
       elif ((.label // "") | test("week"; "i")) then "week"
       elif (cycle_secs >= 172800) then "week"
       else "day"
       end;
     .providers[]? | (.provider) as $p | (.plan // "?") as $plan |
-    (if $p == "grok" then "weekly cap unmeasured" else "-" end) as $note |
     (($p == "claude") or ($p == "codex") or ($p == "grok")) as $dispatch_provider |
     [ .windows[]? ] as $reported |
     [ $reported[] |
@@ -187,22 +199,46 @@ image_row() {
     "$spent" "$cap" "$pct" "$reset"
 }
 
-gauge() {  # <n> <pct> <model> <window> <cols>
-  local n=$1 pct=$2 model=$3 win=$4 cols=$5 width overhead filled tone pipes spaces
-  # Everything on the line except the bar itself: "NN [" + " NNN.N%]" + " " +
-  # model + " (" + window + ")" - measured, not guessed, so the bar shrinks by
-  # exactly what the rest of the line needs instead of wrapping on narrow tty.
-  overhead=$(( 16 + ${#model} + ${#win} ))
-  width=$(( cols - overhead ))
+# Everything on a gauge line except the bar itself: "NN [" + " NNN.N%]" + " "
+# + model + " (" + window + ")" - measured, not guessed, so the bar shrinks by
+# exactly what the rest of the line needs instead of wrapping on narrow tty.
+line_overhead() {  # <model> <window> <note>
+  local n=$(( 16 + ${#1} + ${#2} ))
+  case "$3" in -) ;; *) n=$(( n + ${#3} + 3 )) ;; esac
+  printf '%d' "$n"
+}
+
+# One bar width for the whole stack, taken from the LONGEST line in ROWS. A
+# per-row width made two rows at the same percentage draw different bar
+# lengths and knocked the numbers out of column - the gauges are read by
+# comparing them, so equal percentages must look equal.
+gauge_width() {  # <cols>
+  local cols=$1 longest=0 overhead width sec prov plan win pct resets
+  while IFS=$'\t' read -r sec prov plan win pct resets; do
+    [ -n "$prov" ] || continue
+    overhead=$(line_overhead "$prov" "$win" "$(availability_note "$prov")")
+    [ "$overhead" -le "$longest" ] || longest=$overhead
+  done <<EOF
+$ROWS
+EOF
+  width=$(( cols - longest ))
   [ "$width" -ge 10 ] || width=10
   [ "$width" -le 40 ] || width=40
+  printf '%d' "$width"
+}
+
+gauge() {  # <n> <pct> <model> <window> <note> <width>
+  local n=$1 pct=$2 model=$3 win=$4 note=$5 width=$6 filled tone pipes spaces caveat
   filled=$(awk -v p="$pct" -v w="$width" 'BEGIN { f = int(p / 100 * w); if (f < 0) f = 0; if (f > w) f = w; print f }')
   tone=$(tone_for "$pct")
   pipes=$(repeat_char '|' "$filled")
   spaces=$(repeat_char ' ' $(( width - filled )))
-  printf '%s%2d%s [%s%s%s%s %s%s%5.1f%%%s%s]%s %s%s%s %s(%s)%s\n' \
+  # The caveat rides the gauge, which every terminal width shows, so a narrow
+  # pane cannot turn a disclosed uncertainty into an unqualified number.
+  case "$note" in -) caveat= ;; *) caveat=" $D($note)$R" ;; esac
+  printf '%s%2d%s [%s%s%s%s %s%s%5.1f%%%s%s]%s %s%s%s %s(%s)%s%s\n' \
     "$CYAN" "$n" "$R" "$tone" "$pipes" "$R" "$spaces" "$B" "$tone" "$pct" "$R" "$CYAN" "$R" \
-    "$B" "$model" "$R" "$D" "$win" "$R"
+    "$B" "$model" "$R" "$D" "$win" "$R" "$caveat"
 }
 
 availability_note() {
@@ -219,7 +255,7 @@ section_title() {
 
 # Print gauges for one section. Updates global _ID and _ANY.
 render_gauges() {
-  local want=$1 cols=$2
+  local want=$1 width=$2
   local sec prov plan win pct resets note caveat
   _ANY=0
   while IFS=$'\t' read -r sec prov plan win pct resets; do
@@ -236,7 +272,7 @@ render_gauges() {
       printf '%s%2d%s [%sUNREADABLE - run: quota-axi --allow-keychain-prompt%s] %s%s%s\n' \
         "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R"
     else
-      gauge "$_ID" "$pct" "$prov" "$win" "$cols"
+      gauge "$_ID" "$pct" "$prov" "$win" "$note" "$width"
     fi
   done <<EOF
 $ROWS
@@ -248,9 +284,13 @@ EOF
 
 # Print the detail table for one section. Restarts IDs from _ID_BASE so gauge
 # and table IDs match within the section; continues the global sequence.
+#
+# The column layout has exactly ONE owner per mode: each row builds its cells
+# as strings and hands them to a single format. Six hand-aligned printf lines
+# meant a column tweak could be applied to five of them and drift in the sixth.
 render_table() {
   local want=$1 table_mode=$2
-  local sec prov plan win pct resets n note caveat
+  local sec prov plan win pct resets n note win_cell rem_cell resets_cell note_cell
   n=$_ID_BASE
   _ANY=0
   case "$table_mode" in
@@ -263,38 +303,31 @@ render_table() {
     _ANY=1
     n=$(( n + 1 ))
     note=$(availability_note "$prov")
+    # A row with no readable number carries no window and no reset either: the
+    # cells say "-" rather than borrowing a value the number cannot support.
+    win_cell=-
+    resets_cell=$(printf '%-10s' -)
+    note_cell=$note
     if [ "$pct" = unknown ]; then
-      caveat='dispatch limit not reported'
-      case "$note" in -) ;; *) caveat="$caveat; $note" ;; esac
-      case "$table_mode" in
-        full)
-          printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s\n' \
-            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "unknown" "$R" "-" "$caveat" ;;
-        compact)
-          printf '%s%3d%s %s%-8s%s %-16s %s%9s%s\n' \
-            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "-" "$AMBER" "unknown" "$R" ;;
-      esac
+      rem_cell=$(printf '%s%9s%s' "$AMBER" "unknown" "$R")
+      note_cell='dispatch limit not reported'
+      case "$note" in -) ;; *) note_cell="$note_cell; $note" ;; esac
     elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
-      case "$table_mode" in
-        full)
-          printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s\n' \
-            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "n/a" "$R" "-" "$note" ;;
-        compact)
-          printf '%s%3d%s %s%-8s%s %-16s %s%9s%s\n' \
-            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "-" "$AMBER" "n/a" "$R" ;;
-      esac
+      rem_cell=$(printf '%s%9s%s' "$AMBER" "n/a" "$R")
     else
-      case "$table_mode" in
-        full)
-          printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%8.1f%%%s   %s%-10s%s %s\n' \
-            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "$win" \
-            "$(tone_for "$pct")" "$pct" "$R" "$D" "$(human_until "$resets")" "$R" "$note" ;;
-        compact)
-          printf '%s%3d%s %s%-8s%s %-16s %s%8.1f%%%s\n' \
-            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$win" \
-            "$(tone_for "$pct")" "$pct" "$R" ;;
-      esac
+      win_cell=$win
+      rem_cell=$(printf '%s%8.1f%%%s' "$(tone_for "$pct")" "$pct" "$R")
+      resets_cell=$(printf '%s%-10s%s' "$D" "$(human_until "$resets")" "$R")
     fi
+    case "$table_mode" in
+      full)
+        printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s   %s %s\n' \
+          "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" \
+          "$win_cell" "$rem_cell" "$resets_cell" "$note_cell" ;;
+      compact)
+        printf '%s%3d%s %s%-8s%s %-16s %s\n' \
+          "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$win_cell" "$rem_cell" ;;
+    esac
   done <<EOF
 $ROWS
 EOF
@@ -307,11 +340,17 @@ EOF
 # Renders the full dashboard to stdout. draw() then shows it through a
 # viewport, so nothing can be pushed off the top of a short terminal.
 render_all() {
-  local cols table_mode total sec prov
-  cols=$( { tput cols; } 2>/dev/null || echo 80)
+  local cols table_mode total width sec prov
+  # COLUMNS wins when the environment states a width: tput reports the terminal
+  # it can see, which is neither the caller's pane nor a stable value when the
+  # dashboard is piped. Both agree in an ordinary interactive run.
+  cols=${COLUMNS:-}
+  case "$cols" in ''|*[!0-9]*|0) cols=$( { tput cols; } 2>/dev/null || echo 80) ;; esac
+  case "$cols" in ''|*[!0-9]*|0) cols=80 ;; esac
   if [ "$cols" -ge 70 ]; then table_mode=full
   else                        table_mode=compact
   fi
+  width=$(gauge_width "$cols")
 
   total=0
   while IFS=$'\t' read -r sec prov _; do
@@ -323,7 +362,7 @@ EOF
 
   _ID=0
   section_title "WEEKLY LIMIT"
-  render_gauges week "$cols"
+  render_gauges week "$width"
   printf '\n'
   _ID_BASE=0
   render_table week "$table_mode"
@@ -331,7 +370,7 @@ EOF
 
   _ID_BASE=$_ID
   section_title "DAILY LIMIT"
-  render_gauges day "$cols"
+  render_gauges day "$width"
   printf '\n'
   render_table day "$table_mode"
   printf '\n'
