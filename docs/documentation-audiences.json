@@ -148,12 +148,20 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/fmx-respond/RETIRED.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": ".agents/skills/fmx-respond/SKILL.md",
       "audience": "agent-runtime"
     },
     {
       "path": ".agents/skills/frontend-evaluator/SKILL.md",
       "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/harness-adapters/RETIRED.md",
+      "audience": "maintainer-architecture"
     },
     {
       "path": ".agents/skills/harness-adapters/SKILL.md",
@@ -356,6 +364,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/skill-compaction.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/stow-memory.md",
       "audience": "maintainer-verification"
     },
@@ -378,6 +390,22 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "tests/skill-scenarios/README.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "tests/skill-scenarios/fmx-respond.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/skill-scenarios/harness-adapters.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/skill-scenarios/secondmate-provisioning.md",
+      "audience": "maintainer-verification"
     }
   ]
 }

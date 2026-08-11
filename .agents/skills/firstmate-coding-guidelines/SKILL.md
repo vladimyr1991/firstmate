@@ -69,6 +69,11 @@ A new skill is dead weight if nothing loads it.
 Every new skill needs its load trigger declared inline: section 13 for agent-only reference skills, or the relevant operating section for anything else.
 State the trigger as a condition ("load before X", "load on Y wake"), never as a vague pointer.
 `bin/fm-skill-trigger-check.sh` enforces that every tracked skill is either declared `user-invocable: true` or named in `AGENTS.md`; whether the trigger reads as a condition rather than a pointer stays a review judgment.
+
+Rewriting a skill's prose is a behavior change, so verify it as one rather than by reading the diff.
+`bin/fm-skill-compact-check.sh` refuses a rewrite that silently drops a pointer or a never/always/must/refuse/stop statement, and a materially smaller skill must also carry a scenario fixture in `tests/skill-scenarios/`, answered blind on a different vendor from the one that wrote the rewrite.
+Collapsing a rule stated three times into a rule stated once is an ordinary consolidation; genuinely retiring a stated safety boundary exits 3 and goes to the captain for merge regardless of diff size.
+[`docs/verification/skill-compaction.md`](../../../docs/verification/skill-compaction.md) owns the procedure and the active evidence.
 Briefs for tasks that touch firstmate's own tracked material should tell the crewmate to load this skill.
 `bin/fm-brief.sh`'s `REPO` argument is a caller-supplied string with no reliable signal that it names firstmate's own repo, unlike a project registered in `data/projects.md`, so there is no clean point inside the scaffold to detect this case automatically.
 Firstmate adds this skill's load instruction to firstmate-repo briefs by hand instead.
@@ -98,6 +103,7 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 - `bin/*.sh` and `bin/backends/*.sh` must pass `shellcheck`.
 - Run `bin/fm-lint.sh` before treating a script change as done; it is the single owner of the lint definition (file set, config, and pinned shellcheck version) that CI and the no-mistakes pre-push gate both invoke, and it refuses to run under any other shellcheck version.
 - Colocate tests with the existing pattern in `tests/`, name them `<subject>.test.sh`, and extend an existing script rather than inventing a new runner.
+- A new tracked file needs its wiring, not just its content: classify tracked prose in `docs/documentation-audiences.json`, and give a new test a family in `bin/fm-test-run.sh` so a lane actually selects it - an unclassified test belongs to no family, passes locally, and never runs in CI. A new tracked file TYPE also needs a changed-file mapping there, because `--changed` refuses an unmapped path rather than silently under-selecting.
 - Tests must exercise behavior through an executable or public interface and must never assert implementation-source bytes, including through parsers, regexes, snapshots, or indirect wrappers.
 - A maintainer-verification record under `docs/verification/` records active empirical facts, not assumptions or task chronology.
 - Include the date, version, exact commands run, and exact output needed to support the current guarantee.
