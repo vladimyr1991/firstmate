@@ -695,6 +695,134 @@ SH
   pass "fm-quota-dash: the quota-axi exit state survives into what the row claims"
 }
 
+test_a_payload_jq_cannot_walk_lists_every_provider() {
+  local case_dir fakebin real_jq out prov
+  case_dir="$TMP_ROOT/unwalkable-payload"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  # Valid JSON, exit 0, but the provider entries are strings: the row program
+  # cannot walk them, and the guarantee that every provider renders must not
+  # depend on the program the bad payload breaks.
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+echo '{"providers":["claude","codex"]}'
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,codex,grok --once)
+  for prov in claude codex grok; do
+    assert_unread_provider "$out" "$prov" "a payload whose provider entries are not objects"
+  done
+  assert_contains "$out" "Resources: 4" \
+    "a malformed payload must not shrink the fleet to the image row"
+  pass "fm-quota-dash: a payload jq cannot walk still lists every configured provider"
+}
+
+test_status_rows_are_measured_against_the_pane() {
+  local case_dir fakebin real_jq wide_out fit_out tight_out helpwide longest
+  case_dir="$TMP_ROOT/status-width"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  # One of each status row in a single payload: claude answers with no dispatch
+  # window (UNKNOWN), codex answers with one (a gauge), and grok is left out
+  # entirely (UNREADABLE, and the only row carrying a caveat).
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"claude","plan":"max","windows":[
+    {"id":"model:fable","label":"Fable week","percentRemaining":60,"resetsAt":"2030-01-07T01:00:00Z"}]},
+  {"provider":"codex","plan":"plus","windows":[
+    {"id":"weekly","kind":"weekly","label":"week","percentRemaining":50,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  # The boundary is the longest status row the dashboard actually printed, not
+  # a width restated here: retuning the wording retunes the case with it.
+  wide_out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=200 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,codex,grok --once)
+  helpwide=$(printf '%s\n' "$wide_out" \
+    | awk '/UNREADABLE - run:/ { if (length > m) m = length } END { print m + 0 }')
+  [ "${helpwide:-0}" -gt 0 ] || fail "could not measure an unreadable status row in: $wide_out"
+  assert_not_contains "$wide_out" "  unreadable: run" \
+    "a pane that fits the remedy inline must not repeat it at the bottom"
+
+  fit_out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$helpwide" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,codex,grok --once)
+  assert_contains "$fit_out" "UNREADABLE - run: quota-axi --allow-keychain-prompt] grok" \
+    "at exactly the width it measures, the status row keeps its remedy"
+  longest=$(printf '%s\n' "$fit_out" | awk '{ if (length > m) m = length } END { print m + 0 }')
+  [ "$longest" -le "$helpwide" ] \
+    || fail "no line may exceed the $helpwide-column pane, longest was $longest in: $fit_out"
+
+  # One column short: the remedy is the only thing that may give way, and it
+  # moves to the bottom rather than disappearing.
+  tight_out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=$(( helpwide - 1 )) FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,codex,grok --once)
+  assert_not_contains "$tight_out" "UNREADABLE - run:" \
+    "a pane too narrow for the remedy must not wrap the status row"
+  assert_contains "$tight_out" "[UNREADABLE] grok" \
+    "the unreadable fact itself is never dropped"
+  assert_contains "$tight_out" "weekly cap unmeasured" \
+    "the caveat survives a pane too narrow for the remedy"
+  assert_contains "$tight_out" "UNKNOWN - dispatch limit not reported] claude" \
+    "dispatch-limit-not-reported is a fact, so it is preserved at every width"
+  assert_contains "$tight_out" "unreadable: run: quota-axi --allow-keychain-prompt" \
+    "the remedy the row could not carry must still be stated once"
+  longest=$(printf '%s\n' "$tight_out" | awk '{ if (length > m) m = length } END { print m + 0 }')
+  [ "$longest" -le $(( helpwide - 1 )) ] \
+    || fail "no line may exceed the $(( helpwide - 1 ))-column pane, longest was $longest in: $tight_out"
+  pass "fm-quota-dash: status rows are measured against the pane like every other line"
+}
+
+test_gauge_lines_shrink_below_the_preferred_bar() {
+  local case_dir fakebin real_jq wide_out overhead narrow out longest
+  case_dir="$TMP_ROOT/gauge-shrink"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"codex","plan":"plus","windows":[
+    {"id":"weekly","kind":"weekly","label":"week","percentRemaining":50,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  # Everything the widest gauge line spends outside its bar, measured from a
+  # pane wide enough for the bar's 40-column ceiling.
+  wide_out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=200 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
+  overhead=$(printf '%s\n' "$wide_out" | awk '/^ *[0-9]+ \[/ { if (length > m) m = length } END { print m - 40 }')
+  [ "${overhead:-0}" -gt 0 ] || fail "could not measure the gauge overhead in: $wide_out"
+
+  # A pane that leaves room for only five bar columns: the bar is what gives
+  # way, so the line still fits and the percentage is still there to read.
+  narrow=$(( overhead + 5 ))
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$narrow" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
+  longest=$(printf '%s\n' "$out" | awk '/^ *[0-9]+ \[/ { if (length > m) m = length } END { print m + 0 }')
+  [ "$longest" -le "$narrow" ] \
+    || fail "no gauge line may exceed the $narrow-column pane, longest was $longest in: $out"
+  assert_contains "$out" " 50.0%" "the percentage is what the bar shrinks to protect"
+  assert_contains "$out" "100.0%" "every gauge keeps its number at the narrow width"
+  pass "fm-quota-dash: a gauge bar shrinks past its preferred width rather than wrapping"
+}
+
 test_help_prints_the_whole_header() {
   local out
   out=$("$ROOT/bin/fm-quota-dash.sh" --help)
@@ -720,5 +848,8 @@ test_a_failed_quota_read_never_hides_a_provider
 test_unparseable_quota_output_never_hides_a_provider
 test_provider_missing_from_the_payload_still_gets_a_row
 test_failed_run_does_not_claim_a_provider_reported_no_limit
+test_a_payload_jq_cannot_walk_lists_every_provider
+test_status_rows_are_measured_against_the_pane
+test_gauge_lines_shrink_below_the_preferred_bar
 test_help_prints_the_whole_header
 test_other_providers_keep_reported_windows

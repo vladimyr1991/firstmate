@@ -54,7 +54,10 @@
 #
 # A provider whose quota cannot be read is shown as UNREADABLE, never as 0%.
 # Zero would claim "quota exhausted" - a different and far more alarming fact
-# than "we could not ask".
+# than "we could not ask". The word and the caveat beside it are drawn at every
+# width; the command that would fix it is help rather than fact, so a pane too
+# narrow for the whole row prints that command once at the bottom instead of
+# wrapping every unreadable row.
 #
 # Every configured provider gets exactly one row, and the configured list - not
 # the payload - is what the rows are drawn from. A provider quota-axi omits, or
@@ -150,33 +153,21 @@ repeat_char() {
 # Rows are collected once per refresh into a TSV cache, so the gauge block and
 # the detail table below it can never disagree about the same number.
 # Columns: section  provider  plan  window  pct  resets
-# section is "week", "day" or "unknown" - see bucket rule in collect().
+# section is "week", "day" or "unknown" - see the bucket rule below.
 ROWS=
 
-collect() {
-  local json img status ok
-  json=$(quota-axi --provider "$PROVIDERS" --json 2>/dev/null)
-  status=$?
-  # The exit state is kept, not thrown away with the stderr: a run that failed
-  # reported nothing we may read as complete, so a provider it did answer for
-  # but without a dispatch window is unread rather than "not reported". Output
-  # that is not a JSON object carries no provider entries at all; the join
-  # below then synthesizes one unreadable row for every configured provider.
-  ok=true
-  [ "$status" -eq 0 ] || ok=false
-  printf '%s' "$json" | jq -e 'type == "object"' >/dev/null 2>&1 || json='{}'
-  # Bucket rule (single owner of row placement). Each branch demands POSITIVE
-  # evidence for the claim its section makes; nothing falls through to the
-  # nearest plausible heading:
-  #   week    - kind weekly, a credit balance, a weekly id/label, cycle >= 2 days
-  #   day     - a session/hourly/daily kind or id/label, or a sub-2-day cycle
-  #   unknown - the payload states no cycle length, so neither claim is true
-  # Time remaining is not a cycle length: a weekly credit balance may have one
-  # day left, so credits remain weekly at every point in the cycle. A credit
-  # balance is a billing-cycle balance and never today's or this session's
-  # budget, so it stays weekly whether or not quota-axi carried a resetsAt -
-  # a nullable timestamp must not move the same resource between sections.
-  ROWS=$(printf '%s' "$json" | jq -r --arg providers "$PROVIDERS" --argjson ok "$ok" '
+# Bucket rule (single owner of row placement). Each branch demands POSITIVE
+# evidence for the claim its section makes; nothing falls through to the
+# nearest plausible heading:
+#   week    - kind weekly, a credit balance, a weekly id/label, cycle >= 2 days
+#   day     - a session/hourly/daily kind or id/label, or a sub-2-day cycle
+#   unknown - the payload states no cycle length, so neither claim is true
+# Time remaining is not a cycle length: a weekly credit balance may have one
+# day left, so credits remain weekly at every point in the cycle. A credit
+# balance is a billing-cycle balance and never today's or this session's
+# budget, so it stays weekly whether or not quota-axi carried a resetsAt -
+# a nullable timestamp must not move the same resource between sections.
+ROWS_PROGRAM=$(cat <<'JQ'
     def cycle_secs:
       (.windowSeconds // .pace.cycleSeconds // 0);
     def naming:
@@ -223,7 +214,37 @@ collect() {
     elif $ok and $dispatch_provider and ($reported | length) > 0 then
       ["unknown", $p, $plan, "-", "unknown", ""]
     else ["unknown", $p, $plan, "-", "-1", ""] end)
-    | map(tostring | if . == "" then "-" else . end) | @tsv' 2>/dev/null)
+    | map(tostring | if . == "" then "-" else . end) | @tsv
+JQ
+)
+
+# <payload> <ok> -> the TSV rows, or a non-zero status when the payload cannot
+# be walked at all. An empty object is a valid payload and yields exactly the
+# per-provider unreadable rows, which is what makes it usable as the fallback.
+quota_rows() {  # <payload> <ok>
+  printf '%s' "$1" | jq -r --arg providers "$PROVIDERS" --argjson ok "$2" "$ROWS_PROGRAM" 2>/dev/null
+}
+
+collect() {
+  local json img status ok rows
+  json=$(quota-axi --provider "$PROVIDERS" --json 2>/dev/null)
+  status=$?
+  # The exit state is kept, not thrown away with the stderr: a run that failed
+  # reported nothing we may read as complete, so a provider it did answer for
+  # but without a dispatch window is unread rather than "not reported".
+  ok=true
+  [ "$status" -eq 0 ] || ok=false
+  # The every-provider guarantee cannot live only inside the program a bad
+  # payload breaks. A payload jq refuses to walk - unparseable, or provider
+  # entries that are not objects - fails HERE and is answered by running the
+  # same program over an empty one, so malformed output produces the identical
+  # unreadable row per configured provider rather than an empty dashboard that
+  # reads as a healthy fleet. Partial output from a failed run is discarded for
+  # the complete set: half a fleet is the shape of the bug being closed.
+  if ! rows=$(quota_rows "$json" "$ok") || [ -z "$rows" ]; then
+    rows=$(quota_rows '{}' false)
+  fi
+  ROWS=$rows
 
   img=$(image_row) && ROWS="${ROWS}${ROWS:+$'\n'}${img}"
 }
@@ -284,7 +305,10 @@ gauge_width() {  # <cols>
 $ROWS
 EOF
   width=$(( cols - longest ))
-  [ "$width" -ge 10 ] || width=10
+  # A floor wide enough to look like a bar is not worth a wrapped line: on a
+  # pane that cannot spare the columns the bar gives them up, because the
+  # percentage beside it is the number being read either way.
+  [ "$width" -ge 1 ] || width=1
   [ "$width" -le 40 ] || width=40
   printf '%d' "$width"
 }
@@ -308,6 +332,21 @@ availability_note() {
     grok) printf 'weekly cap unmeasured' ;;
     *) printf '-' ;;
   esac
+}
+
+# A status row states a FACT and then offers HELP. "UNKNOWN - dispatch limit
+# not reported" and "UNREADABLE" are the fact, and the caveat beside them is
+# the uncertainty: neither may be dropped at any width. The command that would
+# make an unreadable row readable is help, so that is what gives way when the
+# pane cannot hold the line - and it is reprinted once at the bottom rather
+# than lost, the same bargain the table makes when it goes compact.
+UNREADABLE_FACT='UNREADABLE'
+UNREADABLE_HELP='run: quota-axi --allow-keychain-prompt'
+UNKNOWN_FACT='UNKNOWN - dispatch limit not reported'
+
+# What a status row costs: "NN [" + text + "] " + provider + any caveat.
+status_width() {  # <text> <provider>
+  printf '%d' $(( 6 + ${#1} + ${#2} + $(caveat_width "$(availability_note "$2")") ))
 }
 
 # True only for a percentage the dashboard may draw. "unknown" is a disclosure,
@@ -345,8 +384,8 @@ EOF
 
 # Print gauges for one section. Updates global _ID and _ANY.
 render_gauges() {
-  local want=$1 width=$2
-  local sec prov plan win pct resets note caveat
+  local want=$1 width=$2 help=$3
+  local sec prov plan win pct resets note caveat text
   _ANY=0
   while IFS=$'\t' read -r sec prov plan win pct resets; do
     [ -n "$prov" ] || continue
@@ -356,11 +395,13 @@ render_gauges() {
     note=$(availability_note "$prov")
     caveat=$(caveat_suffix "$note")
     if [ "$pct" = unknown ]; then
-      printf '%s%2d%s [%sUNKNOWN - dispatch limit not reported%s] %s%s%s%s\n' \
-        "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
+      printf '%s%2d%s [%s%s%s] %s%s%s%s\n' \
+        "$CYAN" "$_ID" "$R" "$AMBER" "$UNKNOWN_FACT" "$R" "$B" "$prov" "$R" "$caveat"
     elif ! readable_pct "$pct"; then
-      printf '%s%2d%s [%sUNREADABLE - run: quota-axi --allow-keychain-prompt%s] %s%s%s%s\n' \
-        "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
+      text=$UNREADABLE_FACT
+      [ "$help" -eq 0 ] || text="$UNREADABLE_FACT - $UNREADABLE_HELP"
+      printf '%s%2d%s [%s%s%s] %s%s%s%s\n' \
+        "$CYAN" "$_ID" "$R" "$AMBER" "$text" "$R" "$B" "$prov" "$R" "$caveat"
     else
       gauge "$_ID" "$pct" "$prov" "$win" "$note" "$width"
     fi
@@ -502,7 +543,7 @@ EOF
 # Renders the full dashboard to stdout. draw() then shows it through a
 # viewport, so nothing can be pushed off the top of a short terminal.
 render_all() {
-  local cols table_mode total width needed grid wide_name wide_w sec prov
+  local cols table_mode total width needed grid wide_name wide_w sec prov pct help unread
   # COLUMNS wins when the environment states a width: tput reports the terminal
   # it can see, which is neither the caller's pane nor a stable value when the
   # dashboard is piped. Both agree in an ordinary interactive run.
@@ -523,17 +564,26 @@ render_all() {
   fi
   width=$(gauge_width "$cols")
 
+  # The status rows are measured like everything else, and the answer is one
+  # answer for the whole stack: two providers in the same state that printed
+  # different text would read as two different states.
   total=0
-  while IFS=$'\t' read -r sec prov _; do
+  help=1
+  unread=0
+  while IFS=$'\t' read -r sec prov _ _ pct _; do
     [ -n "$prov" ] || continue
     total=$(( total + 1 ))
+    if [ "$pct" != unknown ] && ! readable_pct "$pct"; then
+      unread=1
+      [ "$(status_width "$UNREADABLE_FACT - $UNREADABLE_HELP" "$prov")" -le "$cols" ] || help=0
+    fi
   done <<EOF
 $ROWS
 EOF
 
   _ID=0
   section_title "WEEKLY LIMIT"
-  render_gauges week "$width"
+  render_gauges week "$width" "$help"
   printf '\n'
   _ID_BASE=0
   render_table week "$table_mode"
@@ -541,7 +591,7 @@ EOF
 
   _ID_BASE=$_ID
   section_title "DAILY LIMIT"
-  render_gauges day "$width"
+  render_gauges day "$width" "$help"
   printf '\n'
   render_table day "$table_mode"
   printf '\n'
@@ -552,7 +602,7 @@ EOF
   if section_has_rows unknown; then
     _ID_BASE=$_ID
     section_title "UNKNOWN LIMIT"
-    render_gauges unknown "$width"
+    render_gauges unknown "$width" "$help"
     printf '\n'
     render_table unknown "$table_mode"
     printf '\n'
@@ -577,6 +627,12 @@ EOF
     if [ "$table_mode" != compact ] || [ "$needed" -gt "$grid" ]; then
       printf '%s  full table needs %d cols (%s %d)%s\n' "$D" "$needed" "$wide_name" "$wide_w" "$R"
     fi
+  fi
+
+  # The remedy a status row could not carry is printed once here instead, so
+  # the pane that was too narrow for it loses the repetition, not the help.
+  if [ "$unread" -eq 1 ] && [ "$help" -eq 0 ]; then
+    printf '%s  unreadable: %s%s\n' "$D" "$UNREADABLE_HELP" "$R"
   fi
 
   printf '%sResources:%s %s%d%s\n' "$CYAN" "$R" "$B" "$total" "$R"
