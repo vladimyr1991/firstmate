@@ -15,12 +15,13 @@ TMP_ROOT=$(fm_test_tmproot fm-quota-dash-tests)
 # The dashboard picks its layout from the terminal width, so every case states
 # the width it is asserting about. Without this the runner's own COLUMNS/TERM
 # decided whether the wide table existed at all, and a narrow pane failed
-# assertions that have nothing to do with the code under test.
+# assertions that have nothing to do with the code under test. Cases about the
+# narrow layout derive their width from the table's own rendered size instead,
+# so retuning a column cannot turn them into tests of nothing.
 WIDE=100
-NARROW=68
 
 test_dispatch_windows_and_grok_caveat() {
-  local case_dir fakebin real_jq out weekly_block grok_reset
+  local case_dir fakebin real_jq out weekly_block grok_reset grok_row
   case_dir="$TMP_ROOT/dispatch-windows"
   fakebin=$(fm_fakebin "$case_dir")
   real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
@@ -60,7 +61,11 @@ SH
   weekly_block=$(printf '%s\n' "$out" | sed -n '/WEEKLY LIMIT/,/DAILY LIMIT/p')
   assert_contains "$weekly_block" "grok (credits)" "Grok credits with a reset must appear in WEEKLY LIMIT"
   assert_contains "$out" "weekly cap unmeasured" "Grok credits must disclose the unmeasured weekly cap"
-  assert_contains "$out" "3d" "the Grok reset about four days away must render as about three days remaining"
+  # Anchored on the Grok row: the fixture's other resets are years out, and a
+  # bare "3d" would also be satisfied by any day count ending in 3 (1243d).
+  grok_row=$(printf '%s\n' "$out" | awk '/^ *[0-9]+ grok /  { print; exit }')
+  assert_contains "$grok_row" "3d " \
+    "the Grok reset about four days away must render as about three days remaining"
   assert_not_contains "$out" "Fable week" "model-specific Claude noise must stay out of the dashboard"
   assert_not_contains "$out" "Imagine" "Grok Imagine product credits must stay out of the dashboard"
   assert_not_contains "$out" "Grok Build" "Grok Build product credits must stay out of the dashboard"
@@ -312,7 +317,7 @@ SH
 }
 
 test_narrow_terminal_keeps_caveat_and_bar_widths() {
-  local case_dir fakebin real_jq out claude_bar grok_bar distinct longest
+  local case_dir fakebin real_jq out claude_bar grok_bar distinct longest table_header narrow
   case_dir="$TMP_ROOT/narrow"
   fakebin=$(fm_fakebin "$case_dir")
   real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
@@ -334,10 +339,17 @@ JSON
 SH
   chmod +x "$fakebin/jq" "$fakebin/quota-axi"
 
-  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$NARROW" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,grok --once)
+  # One column short of what the table's own header costs: narrow enough to
+  # force the compact layout however the columns are later retuned.
+  narrow=$(PATH="$fakebin:$BASE_PATH" COLUMNS=200 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,grok --once \
+    | awk '/AVAILABILITY/ { print length - 1; exit }')
+  [ "${narrow:-0}" -gt 0 ] || fail "could not measure the full table's header width"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$narrow" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,grok --once)
   assert_contains "$out" "weekly cap unmeasured" \
     "a narrow pane must still disclose Grok's unmeasured weekly cap"
-  assert_not_contains "$out" "AVAILABILITY" \
+  table_header=$(printf '%s\n' "$out" | awk '/ ID +MODEL/ { print; exit }')
+  assert_not_contains "$table_header" "AVAILABILITY" \
     "a narrow pane drops the wide table, which is why the caveat cannot live there alone"
   claude_bar=$(printf '%s\n' "$out" | awk -F'[][]' '/ claude \(/ { print $2; exit }')
   grok_bar=$(printf '%s\n' "$out" | awk -F'[][]' '/ grok \(/ { print $2; exit }')
@@ -346,8 +358,8 @@ SH
   distinct=$(printf '%s\n' "$out" | awk -F'[][]' '/^ *[0-9]+ \[/ { print length($2) }' | sort -u | wc -l | tr -d ' ')
   [ "$distinct" = 1 ] || fail "every gauge in the stack must share one bar width, found $distinct widths in: $out"
   longest=$(printf '%s\n' "$out" | awk '{ if (length > m) m = length } END { print m + 0 }')
-  [ "$longest" -le "$NARROW" ] \
-    || fail "no line may exceed the $NARROW-column pane, longest was $longest in: $out"
+  [ "$longest" -le "$narrow" ] \
+    || fail "no line may exceed the $narrow-column pane, longest was $longest in: $out"
   pass "fm-quota-dash: a narrow pane keeps the caveat, one bar width, and its margins"
 }
 
@@ -472,6 +484,79 @@ SH
   pass "fm-quota-dash: a window with no stated cycle is grouped as unknown, not daily"
 }
 
+test_full_table_is_used_exactly_when_it_fits() {
+  local case_dir fakebin real_jq wide_out needed grid fit_out spill_out tight_out longest header
+  case_dir="$TMP_ROOT/table-boundary"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"claude","plan":"max","windows":[
+    {"id":"five_hour","label":"session","percentRemaining":80,"resetsAt":"2030-01-01T01:00:00Z"},
+    {"id":"seven_day","label":"week","percentRemaining":70,"resetsAt":"2030-01-07T01:00:00Z"}]},
+  {"provider":"codex","plan":"plus","windows":[
+    {"id":"weekly","kind":"weekly","label":"week","percentRemaining":50,"resetsAt":"2030-01-07T01:00:00Z"}]},
+  {"provider":"grok","plan":"heavy","windows":[
+    {"id":"credits","kind":"credits","label":"credits","percentRemaining":42,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  # Both boundaries are read off the rendered table rather than restated here:
+  # its longest row is what the full table needs, and its header line - whose
+  # last cell is the AVAILABILITY label - is what the grid alone costs.
+  wide_out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=200 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --once)
+  needed=$(printf '%s\n' "$wide_out" \
+    | awk '/AVAILABILITY/ || /^ *[0-9]+ [a-z]/ { if (length > m) m = length } END { print m + 0 }')
+  grid=$(printf '%s\n' "$wide_out" | awk '/AVAILABILITY/ { print length; exit }')
+  [ "${needed:-0}" -gt 0 ] && [ "${grid:-0}" -gt 0 ] \
+    || fail "could not measure the full table in: $wide_out"
+  [ "$needed" -le 80 ] \
+    || fail "the full table must fit an ordinary 80-column terminal, it needs $needed"
+  assert_not_contains "$wide_out" "full table needs" \
+    "a pane wider than the table has nothing to report"
+
+  fit_out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$needed" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --once)
+  assert_contains "$fit_out" "AVAILABILITY" \
+    "at exactly the width it measures, the full table must be the one drawn"
+  assert_contains "$fit_out" "weekly cap unmeasured" "the caveat survives at the boundary width"
+  longest=$(printf '%s\n' "$fit_out" | awk '{ if (length > m) m = length } END { print m + 0 }')
+  [ "$longest" -le "$needed" ] \
+    || fail "the full table must not wrap at the width it asked for, longest was $longest in: $fit_out"
+
+  # One column short of the widest row: the grid still fits, so the columns
+  # stay and only the measurement is reported.
+  spill_out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=$(( needed - 1 )) FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --once)
+  header=$(printf '%s\n' "$spill_out" | awk '/ ID +MODEL/ { print; exit }')
+  assert_contains "$header" "AVAILABILITY" \
+    "a pane that can still hold the grid must keep PLAN, RESETS and AVAILABILITY"
+  assert_contains "$spill_out" "full table needs $needed cols" \
+    "a pane short of the full table must be told what it would cost"
+
+  # One column short of the grid: compact is the honest fallback, and it still
+  # reports the requirement and keeps the caveat.
+  tight_out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=$(( grid - 1 )) FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --once)
+  header=$(printf '%s\n' "$tight_out" | awk '/ ID +MODEL/ { print; exit }')
+  assert_not_contains "$header" "AVAILABILITY" \
+    "a pane too narrow for the grid must fall back to the compact table"
+  assert_contains "$tight_out" "full table needs $needed cols" \
+    "the compact fallback must still report the measurement"
+  assert_contains "$tight_out" "weekly cap unmeasured" \
+    "falling back to compact must not drop Grok's caveat"
+  longest=$(printf '%s\n' "$tight_out" | awk '{ if (length > m) m = length } END { print m + 0 }')
+  [ "$longest" -le $(( grid - 1 )) ] \
+    || fail "the compact fallback must fit the pane, longest was $longest in: $tight_out"
+  pass "fm-quota-dash: the table's own measured width decides full vs compact"
+}
+
 test_help_prints_the_whole_header() {
   local out
   out=$("$ROOT/bin/fm-quota-dash.sh" --help)
@@ -492,5 +577,6 @@ test_noise_only_provider_reports_unknown_headroom
 test_unmeasured_rows_group_under_unknown_limit
 test_unknown_section_is_absent_when_every_cycle_is_known
 test_window_without_a_stated_cycle_is_not_claimed_as_daily
+test_full_table_is_used_exactly_when_it_fits
 test_help_prints_the_whole_header
 test_other_providers_keep_reported_windows

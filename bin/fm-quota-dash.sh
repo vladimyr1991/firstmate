@@ -24,6 +24,11 @@
 # filed under the nearest plausible heading; it goes to UNKNOWN LIMIT, which
 # sits last so an unmeasured row cannot push an actionable one down the screen.
 #
+# The detail table is drawn at the width its own columns measure. A pane too
+# narrow for that gets the compact table plus the width the full one would have
+# needed and the column that costs the most, so information is never dropped
+# silently. The gauges - and with them Grok's caveat - survive every width.
+#
 # Refresh is ONE HOUR by default, not htop's one second. Quota windows are
 # weekly, so a fast poll would redraw an unchanged picture while hammering each
 # provider's endpoint. No countdown is shown: a ticking number invites watching
@@ -279,6 +284,13 @@ availability_note() {
   esac
 }
 
+# True only for a percentage the dashboard may draw. "unknown" is a disclosure,
+# and a negative percentage is the unreadable sentinel - neither is a number.
+readable_pct() {  # <pct>
+  [ "$1" != unknown ] || return 1
+  awk -v p="$1" 'BEGIN { exit !(p >= 0) }'
+}
+
 section_title() {
   local label=$1
   printf '%s%s%s\n' "$SEC" " $label " "$R"
@@ -320,7 +332,7 @@ render_gauges() {
     if [ "$pct" = unknown ]; then
       printf '%s%2d%s [%sUNKNOWN - dispatch limit not reported%s] %s%s%s%s\n' \
         "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
-    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
+    elif ! readable_pct "$pct"; then
       printf '%s%2d%s [%sUNREADABLE - run: quota-axi --allow-keychain-prompt%s] %s%s%s%s\n' \
         "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
     else
@@ -334,52 +346,124 @@ EOF
   fi
 }
 
+# A row with no readable number carries no window and no reset either: those
+# cells say "-" rather than borrowing a value the number cannot support.
+window_cell() {  # <window> <pct>
+  if readable_pct "$2"; then printf '%s' "$1"; else printf '-'; fi
+}
+
+note_cell() {  # <provider> <pct>
+  local note
+  note=$(availability_note "$1")
+  [ "$2" = unknown ] || { printf '%s' "$note"; return; }
+  case "$note" in
+    -) printf 'dispatch limit not reported' ;;
+    *) printf 'dispatch limit not reported; %s' "$note" ;;
+  esac
+}
+
+# The ONE owner of the table's column joins. Every cell arrives padded to its
+# measured width, so the header and the rows are laid out by the same code and
+# cannot drift; compact simply drops the columns it cannot afford.
+table_line() {  # <mode> <id> <model> <plan> <window> <remaining> <resets> <note>
+  case "$1" in
+    full)    printf '%s %s %s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" "$7" "$8" ;;
+    compact) printf '%s %s %s %s\n' "$2" "$3" "$5" "$6" ;;
+  esac
+}
+
+# Column widths, measured once per render from the rows about to be drawn.
+# REMAIN and RESETS are format-determined: "100.0%"/"unknown" and "1245d 12h"
+# are the longest either can produce. The rest come from the data, because a
+# fixed guess is what makes a table wrap the day a cell outgrows it.
+TABLE_ID=3 TABLE_REM=7 TABLE_RESET=9 TABLE_NOTE_MIN=12
+TABLE_MODEL=5 TABLE_PLAN=4 TABLE_WIN=6 TABLE_NOTE=12
+
+measure_table() {
+  local sec prov plan win pct resets cell
+  TABLE_MODEL=5 TABLE_PLAN=4 TABLE_WIN=6 TABLE_NOTE=$TABLE_NOTE_MIN
+  while IFS=$'\t' read -r sec prov plan win pct resets; do
+    [ -n "$prov" ] || continue
+    [ "${#prov}" -le "$TABLE_MODEL" ] || TABLE_MODEL=${#prov}
+    [ "${#plan}" -le "$TABLE_PLAN" ] || TABLE_PLAN=${#plan}
+    cell=$(window_cell "$win" "$pct")
+    [ "${#cell}" -le "$TABLE_WIN" ] || TABLE_WIN=${#cell}
+    cell=$(note_cell "$prov" "$pct")
+    [ "${#cell}" -le "$TABLE_NOTE" ] || TABLE_NOTE=${#cell}
+  done <<EOF
+$ROWS
+EOF
+}
+
+# What the full table costs, taken by rendering one of its lines at the
+# measured widths rather than by re-adding the columns by hand - a second copy
+# of the arithmetic is exactly how a layout change reintroduces wrapping.
+#
+# Called with TABLE_NOTE it gives the width the widest row needs; called with
+# the AVAILABILITY label it gives the grid's own cost. The two differ because
+# the note is the last cell and carries no padding: a note too long for the
+# pane spills its own prose, while a grid too wide breaks every column.
+table_width() {  # <note-width>
+  local line
+  line=$(table_line full \
+    "$(printf '%*s'  "$TABLE_ID"    '')" \
+    "$(printf '%-*s' "$TABLE_MODEL" '')" \
+    "$(printf '%-*s' "$TABLE_PLAN"  '')" \
+    "$(printf '%-*s' "$TABLE_WIN"   '')" \
+    "$(printf '%*s'  "$TABLE_REM"   '')" \
+    "$(printf '%-*s' "$TABLE_RESET" '')" \
+    "$(printf '%-*s' "$1"           '')")
+  printf '%d' "${#line}"
+}
+
+# The column the full table spends the most on, so a pane too narrow for it is
+# told what it would have to fit rather than left to guess.
+widest_column() {  # -> "<name> <width>"
+  local name=AVAILABILITY w=$TABLE_NOTE
+  [ "$TABLE_WIN"   -le "$w" ] || { name=WINDOW;    w=$TABLE_WIN; }
+  [ "$TABLE_PLAN"  -le "$w" ] || { name=PLAN;      w=$TABLE_PLAN; }
+  [ "$TABLE_MODEL" -le "$w" ] || { name=MODEL;     w=$TABLE_MODEL; }
+  [ "$TABLE_RESET" -le "$w" ] || { name=RESETS;    w=$TABLE_RESET; }
+  [ "$TABLE_REM"   -le "$w" ] || { name=REMAIN;    w=$TABLE_REM; }
+  printf '%s %d' "$name" "$w"
+}
+
 # Print the detail table for one section. Restarts IDs from _ID_BASE so gauge
 # and table IDs match within the section; continues the global sequence.
-#
-# The column layout has exactly ONE owner per mode: each row builds its cells
-# as strings and hands them to a single format. Six hand-aligned printf lines
-# meant a column tweak could be applied to five of them and drift in the sixth.
 render_table() {
   local want=$1 table_mode=$2
-  local sec prov plan win pct resets n note win_cell rem_cell resets_cell note_cell
+  local sec prov plan win pct resets n win_cell rem_cell resets_cell note_cell
   n=$_ID_BASE
   _ANY=0
-  case "$table_mode" in
-    full)    printf '%s%s%s\n' "$HDR" " ID MODEL    PLAN         WINDOW           REMAINING   RESETS     AVAILABILITY" "$R" ;;
-    compact) printf '%s%s%s\n' "$HDR" " ID MODEL    WINDOW           REMAINING " "$R" ;;
-  esac
+  printf '%s%s%s\n' "$HDR" "$(table_line "$table_mode" \
+    "$(printf '%*s'  "$TABLE_ID"    ID)" \
+    "$(printf '%-*s' "$TABLE_MODEL" MODEL)" \
+    "$(printf '%-*s' "$TABLE_PLAN"  PLAN)" \
+    "$(printf '%-*s' "$TABLE_WIN"   WINDOW)" \
+    "$(printf '%*s'  "$TABLE_REM"   REMAIN)" \
+    "$(printf '%-*s' "$TABLE_RESET" RESETS)" \
+    AVAILABILITY)" "$R"
   while IFS=$'\t' read -r sec prov plan win pct resets; do
     [ -n "$prov" ] || continue
     row_in_section "$sec" "$want" || continue
     _ANY=1
     n=$(( n + 1 ))
-    note=$(availability_note "$prov")
-    # A row with no readable number carries no window and no reset either: the
-    # cells say "-" rather than borrowing a value the number cannot support.
-    win_cell=-
-    resets_cell=$(printf '%-10s' -)
-    note_cell=$note
+    win_cell=$(printf '%-*s' "$TABLE_WIN" "$(window_cell "$win" "$pct")")
+    note_cell=$(note_cell "$prov" "$pct")
+    resets_cell=$(printf '%-*s' "$TABLE_RESET" -)
     if [ "$pct" = unknown ]; then
-      rem_cell=$(printf '%s%9s%s' "$AMBER" "unknown" "$R")
-      note_cell='dispatch limit not reported'
-      case "$note" in -) ;; *) note_cell="$note_cell; $note" ;; esac
-    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
-      rem_cell=$(printf '%s%9s%s' "$AMBER" "n/a" "$R")
+      rem_cell=$(printf '%s%*s%s' "$AMBER" "$TABLE_REM" "unknown" "$R")
+    elif ! readable_pct "$pct"; then
+      rem_cell=$(printf '%s%*s%s' "$AMBER" "$TABLE_REM" "n/a" "$R")
     else
-      win_cell=$win
-      rem_cell=$(printf '%s%8.1f%%%s' "$(tone_for "$pct")" "$pct" "$R")
-      resets_cell=$(printf '%s%-10s%s' "$D" "$(human_until "$resets")" "$R")
+      rem_cell=$(printf '%s%*s%s' "$(tone_for "$pct")" "$TABLE_REM" "$(printf '%.1f%%' "$pct")" "$R")
+      resets_cell=$(printf '%s%-*s%s' "$D" "$TABLE_RESET" "$(human_until "$resets")" "$R")
     fi
-    case "$table_mode" in
-      full)
-        printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s   %s %s\n' \
-          "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" \
-          "$win_cell" "$rem_cell" "$resets_cell" "$note_cell" ;;
-      compact)
-        printf '%s%3d%s %s%-8s%s %-16s %s\n' \
-          "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$win_cell" "$rem_cell" ;;
-    esac
+    table_line "$table_mode" \
+      "$(printf '%s%*d%s' "$CYAN" "$TABLE_ID" "$n" "$R")" \
+      "$(printf '%s%-*s%s' "$B" "$TABLE_MODEL" "$prov" "$R")" \
+      "$(printf '%s%-*s%s' "$BLUE" "$TABLE_PLAN" "$plan" "$R")" \
+      "$win_cell" "$rem_cell" "$resets_cell" "$note_cell"
   done <<EOF
 $ROWS
 EOF
@@ -392,15 +476,24 @@ EOF
 # Renders the full dashboard to stdout. draw() then shows it through a
 # viewport, so nothing can be pushed off the top of a short terminal.
 render_all() {
-  local cols table_mode total width sec prov
+  local cols table_mode total width needed grid wide_name wide_w sec prov
   # COLUMNS wins when the environment states a width: tput reports the terminal
   # it can see, which is neither the caller's pane nor a stable value when the
   # dashboard is piped. Both agree in an ordinary interactive run.
   cols=${COLUMNS:-}
   case "$cols" in ''|*[!0-9]*|0) cols=$( { tput cols; } 2>/dev/null || echo 80) ;; esac
   case "$cols" in ''|*[!0-9]*|0) cols=80 ;; esac
-  if [ "$cols" -ge 70 ]; then table_mode=full
-  else                        table_mode=compact
+  # The mode is decided by what the table MEASURES, never by a constant: a
+  # threshold below the layout's real cost picks a table that then wraps, which
+  # is worse than the compact one it was meant to avoid. Compact is reserved
+  # for a pane that cannot hold the grid at all - dropping PLAN, RESETS and
+  # AVAILABILITY from every row because one row's note is long would cost the
+  # captain more than that note spilling does.
+  measure_table
+  needed=$(table_width "$TABLE_NOTE")
+  grid=$(table_width "$TABLE_NOTE_MIN")
+  if [ "$cols" -ge "$grid" ]; then table_mode=full
+  else                             table_mode=compact
   fi
   width=$(gauge_width "$cols")
 
@@ -437,6 +530,16 @@ EOF
     printf '\n'
     render_table unknown "$table_mode"
     printf '\n'
+  fi
+
+  # Whenever the pane is short of the full table - whether that cost it the
+  # grid or only the tail of a note - it is told the measurement and the column
+  # that drove it, so a narrower reading is never an unexplained one.
+  if [ "$cols" -lt "$needed" ]; then
+    read -r wide_name wide_w <<EOF
+$(widest_column)
+EOF
+    printf '%s  full table needs %d cols (%s %d)%s\n' "$D" "$needed" "$wide_name" "$wide_w" "$R"
   fi
 
   printf '%sResources:%s %s%d%s\n' "$CYAN" "$R" "$B" "$total" "$R"
