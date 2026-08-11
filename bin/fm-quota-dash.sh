@@ -9,12 +9,20 @@
 # captain reads the gauges in a second and only drops to the table when one of
 # them has gone amber.
 #
-# Two top-level sections keep short-cycle and long-cycle limits from blending:
-#   WEEKLY LIMIT - windows of about a week (kind weekly, billing credits, or
-#                  multi-day cycles)
-#   DAILY LIMIT  - short cycles (session/5h, true daily, image daily cap)
+# Top-level sections keep short-cycle and long-cycle limits from blending:
+#   WEEKLY LIMIT  - windows of about a week (kind weekly, billing credits, or
+#                   multi-day cycles)
+#   DAILY LIMIT   - short cycles (session/5h, true daily, image daily cap)
+#   UNKNOWN LIMIT - rows whose cycle length is not known, shown last and only
+#                   when there are any
 # A flat list made a green weekly bar hide an exhausted session. Sectioning
 # answers "is the week burned?" and "is today's/session budget burned?" apart.
+#
+# A section heading is a CLAIM about every row under it, so a row appears in
+# WEEKLY or DAILY only when that claim is true of it. A row we could not
+# measure - and a window whose cycle nothing in the payload states - is never
+# filed under the nearest plausible heading; it goes to UNKNOWN LIMIT, which
+# sits last so an unmeasured row cannot push an actionable one down the screen.
 #
 # Refresh is ONE HOUR by default, not htop's one second. Quota windows are
 # weekly, so a fast poll would redraw an unchanged picture while hammering each
@@ -31,8 +39,9 @@
 #
 # A dispatch provider that answers with quota data but none of those windows
 # gets one explicit "dispatch limit not reported" row carrying no number at
-# all. The uncertainty is disclosed rather than filled in: the provider stays
-# eligible, but nothing on that row may be read as sustainable headroom.
+# all, filed under UNKNOWN LIMIT. The uncertainty is disclosed rather than
+# filled in: the provider stays eligible, but nothing on that row may be read
+# as sustainable headroom - and no section claims the row as its own.
 #
 # The image row reads the same state/image-gen-spend.tsv that bin/fm-image-gen.sh
 # writes, so the dashboard and the tool's own cap can never drift apart.
@@ -128,15 +137,18 @@ repeat_char() {
 # Rows are collected once per refresh into a TSV cache, so the gauge block and
 # the detail table below it can never disagree about the same number.
 # Columns: section  provider  plan  window  pct  resets
-# section is "week" or "day" - see bucket rule in collect().
+# section is "week", "day" or "unknown" - see bucket rule in collect().
 ROWS=
 
 collect() {
   local json img
   json=$(quota-axi --provider "$PROVIDERS" --json 2>/dev/null)
-  # Bucket rule (single owner of week vs day):
-  #   week - kind weekly, a credit balance, label mentions week, or cycle >= 2 days
-  #   day  - everything shorter (session/5h, true daily, unknown short)
+  # Bucket rule (single owner of row placement). Each branch demands POSITIVE
+  # evidence for the claim its section makes; nothing falls through to the
+  # nearest plausible heading:
+  #   week    - kind weekly, a credit balance, a weekly id/label, cycle >= 2 days
+  #   day     - a session/hourly/daily kind or id/label, or a sub-2-day cycle
+  #   unknown - the payload states no cycle length, so neither claim is true
   # Time remaining is not a cycle length: a weekly credit balance may have one
   # day left, so credits remain weekly at every point in the cycle. A credit
   # balance is a billing-cycle balance and never today's or this session's
@@ -145,15 +157,19 @@ collect() {
   ROWS=$(printf '%s' "$json" | jq -r '
     def cycle_secs:
       (.windowSeconds // .pace.cycleSeconds // 0);
+    def naming:
+      ((.id // "") + " " + (.label // ""));
     def is_credits:
-      ((.kind // "") == "credits")
-      or (((.id // "") + " " + (.label // "")) | test("credit"; "i"));
+      ((.kind // "") == "credits") or (naming | test("credit"; "i"));
     def section:
       if (.kind // "") == "weekly" then "week"
       elif is_credits then "week"
-      elif ((.label // "") | test("week"; "i")) then "week"
+      elif (naming | test("week|seven[_ -]?day"; "i")) then "week"
       elif (cycle_secs >= 172800) then "week"
-      else "day"
+      elif ((.kind // "") | test("^(daily|session|hourly)$"; "i")) then "day"
+      elif (naming | test("session|five[_ -]?hour|5h|hourly|daily"; "i")) then "day"
+      elif (cycle_secs > 0) then "day"
+      else "unknown"
       end;
     .providers[]? | (.provider) as $p | (.plan // "?") as $plan |
     (($p == "claude") or ($p == "codex") or ($p == "grok")) as $dispatch_provider |
@@ -174,8 +190,8 @@ collect() {
       [section, $p, $plan, (.label // .id // "window"),
        ((.percentRemaining // -1) | tostring), (.resetsAt // "")]
     elif $dispatch_provider and ($reported | length) > 0 then
-      ["day", $p, $plan, "-", "unknown", ""]
-    else ["day", $p, $plan, "-", "-1", ""] end)
+      ["unknown", $p, $plan, "-", "unknown", ""]
+    else ["unknown", $p, $plan, "-", "-1", ""] end)
     | map(tostring | if . == "" then "-" else . end) | @tsv' 2>/dev/null)
 
   img=$(image_row) && ROWS="${ROWS}${ROWS:+$'\n'}${img}"
@@ -199,13 +215,28 @@ image_row() {
     "$spent" "$cap" "$pct" "$reset"
 }
 
+# One owner of the availability caveat a gauge line carries: its text, its
+# dimming, and the columns it costs all come from here, so the width reserved
+# for it can never drift from the string actually printed.
+caveat_suffix() {  # <note>
+  case "$1" in -) return 0 ;; esac
+  printf ' %s(%s)%s' "$D" "$1" "$R"
+}
+
+# Visible columns caveat_suffix() adds: the escape sequences that dim it print
+# no columns at all, so they are measured out rather than assumed away.
+caveat_width() {  # <note>
+  local suffix
+  suffix=$(caveat_suffix "$1")
+  [ -n "$suffix" ] || { printf '0'; return; }
+  printf '%d' $(( ${#suffix} - ${#D} - ${#R} ))
+}
+
 # Everything on a gauge line except the bar itself: "NN [" + " NNN.N%]" + " "
-# + model + " (" + window + ")" - measured, not guessed, so the bar shrinks by
-# exactly what the rest of the line needs instead of wrapping on narrow tty.
+# + model + " (" + window + ")" plus any caveat - measured, not guessed, so the
+# bar shrinks by exactly what the rest of the line needs instead of wrapping.
 line_overhead() {  # <model> <window> <note>
-  local n=$(( 16 + ${#1} + ${#2} ))
-  case "$3" in -) ;; *) n=$(( n + ${#3} + 3 )) ;; esac
-  printf '%d' "$n"
+  printf '%d' $(( 16 + ${#1} + ${#2} + $(caveat_width "$3") ))
 }
 
 # One bar width for the whole stack, taken from the LONGEST line in ROWS. A
@@ -235,7 +266,7 @@ gauge() {  # <n> <pct> <model> <window> <note> <width>
   spaces=$(repeat_char ' ' $(( width - filled )))
   # The caveat rides the gauge, which every terminal width shows, so a narrow
   # pane cannot turn a disclosed uncertainty into an unqualified number.
-  case "$note" in -) caveat= ;; *) caveat=" $D($note)$R" ;; esac
+  caveat=$(caveat_suffix "$note")
   printf '%s%2d%s [%s%s%s%s %s%s%5.1f%%%s%s]%s %s%s%s %s(%s)%s%s\n' \
     "$CYAN" "$n" "$R" "$tone" "$pipes" "$R" "$spaces" "$B" "$tone" "$pct" "$R" "$CYAN" "$R" \
     "$B" "$model" "$R" "$D" "$win" "$R" "$caveat"
@@ -253,6 +284,27 @@ section_title() {
   printf '%s%s%s\n' "$SEC" " $label " "$R"
 }
 
+# Membership has one owner, and UNKNOWN is the catch-all rather than a fourth
+# named bucket: every row is drawn under exactly one heading, so no row can
+# fall between the sections and disappear from the dashboard entirely.
+row_in_section() {  # <row-section> <wanted-section>
+  case "$2" in
+    unknown) case "$1" in week|day) return 1 ;; *) return 0 ;; esac ;;
+    *) [ "$1" = "$2" ] ;;
+  esac
+}
+
+section_has_rows() {  # <section>
+  local want=$1 sec prov rest
+  while IFS=$'\t' read -r sec prov rest; do
+    [ -n "$prov" ] || continue
+    row_in_section "$sec" "$want" && return 0
+  done <<EOF
+$ROWS
+EOF
+  return 1
+}
+
 # Print gauges for one section. Updates global _ID and _ANY.
 render_gauges() {
   local want=$1 width=$2
@@ -260,17 +312,17 @@ render_gauges() {
   _ANY=0
   while IFS=$'\t' read -r sec prov plan win pct resets; do
     [ -n "$prov" ] || continue
-    [ "$sec" = "$want" ] || continue
+    row_in_section "$sec" "$want" || continue
     _ANY=1
     _ID=$(( _ID + 1 ))
     note=$(availability_note "$prov")
+    caveat=$(caveat_suffix "$note")
     if [ "$pct" = unknown ]; then
-      case "$note" in -) caveat= ;; *) caveat=" $D($note)$R" ;; esac
       printf '%s%2d%s [%sUNKNOWN - dispatch limit not reported%s] %s%s%s%s\n' \
         "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
     elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
-      printf '%s%2d%s [%sUNREADABLE - run: quota-axi --allow-keychain-prompt%s] %s%s%s\n' \
-        "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R"
+      printf '%s%2d%s [%sUNREADABLE - run: quota-axi --allow-keychain-prompt%s] %s%s%s%s\n' \
+        "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
     else
       gauge "$_ID" "$pct" "$prov" "$win" "$note" "$width"
     fi
@@ -299,7 +351,7 @@ render_table() {
   esac
   while IFS=$'\t' read -r sec prov plan win pct resets; do
     [ -n "$prov" ] || continue
-    [ "$sec" = "$want" ] || continue
+    row_in_section "$sec" "$want" || continue
     _ANY=1
     n=$(( n + 1 ))
     note=$(availability_note "$prov")
@@ -374,6 +426,18 @@ EOF
   printf '\n'
   render_table day "$table_mode"
   printf '\n'
+
+  # Last, and only when something landed there: an unmeasured row must not push
+  # an actionable limit down the screen, and an empty heading would be noise on
+  # a fleet whose windows all came back with a cycle.
+  if section_has_rows unknown; then
+    _ID_BASE=$_ID
+    section_title "UNKNOWN LIMIT"
+    render_gauges unknown "$width"
+    printf '\n'
+    render_table unknown "$table_mode"
+    printf '\n'
+  fi
 
   printf '%sResources:%s %s%d%s\n' "$CYAN" "$R" "$B" "$total" "$R"
 }

@@ -351,6 +351,127 @@ SH
   pass "fm-quota-dash: a narrow pane keeps the caveat, one bar width, and its margins"
 }
 
+test_unmeasured_rows_group_under_unknown_limit() {
+  local case_dir fakebin real_jq out weekly_block daily_block unknown_block order fallbacks
+  case_dir="$TMP_ROOT/unknown-section"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"claude","plan":"max","windows":[
+    {"id":"model:fable","label":"Fable week","percentRemaining":60,"resetsAt":"2030-01-07T01:00:00Z"}]},
+  {"provider":"codex","plan":"plus","windows":[]},
+  {"provider":"grok","plan":"heavy","windows":[
+    {"id":"credits","kind":"credits","label":"credits","percentRemaining":42,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --once)
+  weekly_block=$(printf '%s\n' "$out" | sed -n '/WEEKLY LIMIT/,/DAILY LIMIT/p')
+  daily_block=$(printf '%s\n' "$out" | sed -n '/DAILY LIMIT/,/UNKNOWN LIMIT/p')
+  unknown_block=$(printf '%s\n' "$out" | sed -n '/UNKNOWN LIMIT/,$p')
+
+  assert_contains "$unknown_block" "UNKNOWN - dispatch limit not reported] claude" \
+    "a provider with no dispatch window belongs under UNKNOWN LIMIT"
+  assert_contains "$unknown_block" "UNREADABLE - run: quota-axi --allow-keychain-prompt] codex" \
+    "a provider whose quota could not be read belongs under UNKNOWN LIMIT"
+  assert_not_contains "$daily_block" "dispatch limit not reported] claude" \
+    "an unmeasured row must not be filed as today's limit"
+  assert_not_contains "$daily_block" "UNREADABLE - run: quota-axi --allow-keychain-prompt] codex" \
+    "codex's only dispatch window is weekly, so an unreadable codex row is not a daily limit"
+  assert_not_contains "$weekly_block" "dispatch limit not reported] claude" \
+    "an unmeasured row must not be filed as this week's limit either"
+  assert_contains "$weekly_block" "grok (credits)" \
+    "a measured window still lands in the section whose claim is true of it"
+
+  order=$(printf '%s\n' "$out" | awk '/WEEKLY LIMIT/ { print "W" } /DAILY LIMIT/ { print "D" } /UNKNOWN LIMIT/ { print "U" }' | tr -d '\n')
+  [ "$order" = "WDU" ] \
+    || fail "sections must read WEEKLY, then DAILY, then UNKNOWN last, got '$order' in: $out"
+
+  fallbacks=$(printf '%s\n' "$out" | grep -c 'dispatch limit not reported\] claude')
+  [ "$fallbacks" = 1 ] || fail "a provider gets exactly one fallback gauge row, got $fallbacks in: $out"
+  pass "fm-quota-dash: unmeasured rows group under a trailing UNKNOWN LIMIT section"
+}
+
+test_unknown_section_is_absent_when_every_cycle_is_known() {
+  local case_dir fakebin real_jq out
+  case_dir="$TMP_ROOT/no-unknown-section"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"claude","plan":"max","windows":[
+    {"id":"five_hour","label":"session","percentRemaining":80,"resetsAt":"2030-01-01T01:00:00Z"},
+    {"id":"seven_day","label":"week","percentRemaining":70,"resetsAt":"2030-01-07T01:00:00Z"}]},
+  {"provider":"codex","plan":"plus","windows":[
+    {"id":"weekly","kind":"weekly","label":"week","percentRemaining":50,"resetsAt":"2030-01-07T01:00:00Z"}]},
+  {"provider":"grok","plan":"heavy","windows":[
+    {"id":"credits","kind":"credits","label":"credits","percentRemaining":42,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --once)
+  assert_not_contains "$out" "UNKNOWN LIMIT" \
+    "a fleet whose windows all state a cycle must not carry an empty UNKNOWN heading"
+  assert_not_contains "$out" "(none)" "every section must have rows in this fixture"
+  assert_contains "$out" "claude (session)" "a session window is a daily-cycle claim"
+  assert_contains "$out" "claude (week)" "a seven-day window is a weekly-cycle claim"
+  pass "fm-quota-dash: UNKNOWN LIMIT appears only when something is unmeasured"
+}
+
+test_window_without_a_stated_cycle_is_not_claimed_as_daily() {
+  local case_dir fakebin real_jq out daily_block unknown_block
+  case_dir="$TMP_ROOT/no-stated-cycle"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"kimi","plan":"pro","windows":[
+    {"id":"widgets","label":"widgets","percentRemaining":55},
+    {"id":"five_hour","label":"session","percentRemaining":80,"resetsAt":"2030-01-01T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider kimi --once)
+  daily_block=$(printf '%s\n' "$out" | sed -n '/DAILY LIMIT/,/UNKNOWN LIMIT/p')
+  unknown_block=$(printf '%s\n' "$out" | sed -n '/UNKNOWN LIMIT/,$p')
+  assert_contains "$unknown_block" "kimi (widgets)" \
+    "a window that states no cycle length must not be claimed by a cycle section"
+  assert_not_contains "$daily_block" "kimi (widgets)" \
+    "the nearest plausible section is not evidence of a cycle"
+  assert_contains "$daily_block" "kimi (session)" \
+    "a session window in the same payload still lands in DAILY LIMIT"
+  assert_contains "$out" " 55.0%" "an unmeasured cycle does not hide a measured percentage"
+  pass "fm-quota-dash: a window with no stated cycle is grouped as unknown, not daily"
+}
+
 test_help_prints_the_whole_header() {
   local out
   out=$("$ROOT/bin/fm-quota-dash.sh" --help)
@@ -368,5 +489,8 @@ test_credit_balances_without_reset_are_weekly
 test_nonzero_offset_reset_is_applied
 test_narrow_terminal_keeps_caveat_and_bar_widths
 test_noise_only_provider_reports_unknown_headroom
+test_unmeasured_rows_group_under_unknown_limit
+test_unknown_section_is_absent_when_every_cycle_is_known
+test_window_without_a_stated_cycle_is_not_claimed_as_daily
 test_help_prints_the_whole_header
 test_other_providers_keep_reported_windows
