@@ -907,6 +907,12 @@ families_for_changed_path() {
       # then evict the fleet-wide poll from the shared slot or impersonate the
       # board PM in the freeze registry.
       printf '%s\n' watcher-wake-lock
+      # The same file carries the shape-only predicate that recognizes ids which
+      # already exist. Its guard - that a task carrying a reserved name from
+      # before the reservation still has its stale session cleaned up - lives in
+      # backend-dispatch, so a reservation leaking into that predicate would
+      # otherwise strand real sessions with no test selected to catch it.
+      printf '%s\n' backend-dispatch
       ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)

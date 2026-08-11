@@ -927,9 +927,27 @@ test_a_marker_that_cannot_be_read_never_silences_its_obligation() {
   out=$(run_poll "$dir" recovered.json)
   [ -z "$out" ] || fail "the rewritten marker did not restore the quiet window: $out"
 
+  # The same silence hole entered from the other side. A marker is written from
+  # date +%s, so a backwards clock step - an NTP correction, a resume from
+  # sleep, a shared state dir written by a skewed host - leaves it dated ahead
+  # of now. The negative age that produces is less than every span, so the
+  # record would be suppressed and never re-marked for the whole skew.
+  printf '%s\n' "$(( $(date +%s) + FM_QUOTA_RESET_RESURFACE_SECS * 4 ))" > "$marker"
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' \
+    "an obligation whose marker is dated in the future was silenced instead of surfaced"
+  content=$(cat "$marker")
+  case "$content" in
+    ''|*[!0-9]*) fail "the future-dated marker was not rewritten with a usable timestamp: [$content]" ;;
+  esac
+  [ "$content" -le "$(date +%s)" ] \
+    || fail "the rewritten marker is still dated in the future: [$content]"
+  out=$(run_poll "$dir" recovered.json)
+  [ -z "$out" ] || fail "the marker rewritten over a future timestamp did not restore the quiet window: $out"
+
   [ -f "$dir/home/state/quota-frozen/task-a" ] \
     || fail "the poll removed the obligation, which only a confirmed resume may do"
-  pass "a notified marker that cannot be read surfaces its obligation and is rewritten, never silences it"
+  pass "a notified marker that cannot be read or is dated ahead of now surfaces its obligation and is rewritten"
 }
 
 test_the_poll_id_cannot_be_taken_by_a_task() {
@@ -955,7 +973,15 @@ test_the_role_names_cannot_be_taken_by_a_task() {
       && fail "a task may be created under the reserved role name $role"
     fm_task_id_creation_valid "${role}-1" \
       || fail "the $role reservation leaked onto an ordinary task id"
+    # The reservation answers only the creation question. A task created under
+    # that name before the reservation landed still exists, and every site
+    # judging an id it finds on disk must still recognize it, or that task's
+    # state is stranded with nothing left that will act on it.
+    fm_task_id_recognized "$role" \
+      || fail "the $role reservation leaked into the shape predicate that recognizes existing ids"
   done
+  fm_task_id_recognized "$FM_QUOTA_RESET_POLL_ID" \
+    || fail "the check-slot reservation leaked into the shape predicate that recognizes existing ids"
 
   # And the registry's own door stays shut from the other side: the same name
   # offered as a task subject is refused rather than recorded as the role.

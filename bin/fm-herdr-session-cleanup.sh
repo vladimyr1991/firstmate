@@ -68,7 +68,10 @@ fm_herdr_cleanup_journal_matches() { # <title> <session> <home-real>
   for journal in "$STATE"/*"$FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX"; do
     [ -f "$journal" ] && [ ! -L "$journal" ] || continue
     id=$(basename "$journal" "$FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX")
-    fm_task_id_creation_valid "$id" || continue
+    # The question here is "does this journal name a task id?", never "may a
+    # task be created under it": these ids already exist, and a reserved name a
+    # task carried before the reservation landed still needs its session closed.
+    fm_task_id_recognized "$id" || continue
     fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || continue
     if [ "$FM_BACKEND_HERDR_JOURNAL_VERSION" = 2 ]; then
       journal_home=$(fm_backend_herdr_projection_home_identity \

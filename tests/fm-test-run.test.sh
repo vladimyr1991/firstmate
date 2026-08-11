@@ -110,6 +110,7 @@ init_changed_fixture_repo() {
     fm-backend-cmux.test.sh \
     fm-backend-zellij.test.sh \
     fm-quota-freeze.test.sh \
+    fm-herdr-session-cleanup.test.sh \
     fm-backend-orca.test.sh; do
     printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/$script"
     chmod +x "$repo/tests/$script"
@@ -198,10 +199,16 @@ test_reserved_check_slot_source_selects_the_suite_that_guards_it() {
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
   assert_contains "$listed" "tests/fm-quota-freeze.test.sh" \
     "a reserved-check-slot change does not select the suite binding the reservation to its poll"
+  # The same file carries the shape predicate that recognizes ids already on
+  # disk, whose guard - a task carrying a reserved name from before the
+  # reservation still gets its stale session cleaned up - lives in the backend
+  # suite. Without it a reservation could leak into that predicate unguarded.
+  assert_contains "$listed" "tests/fm-herdr-session-cleanup.test.sh" \
+    "a task-id predicate change does not select the suite guarding recognition of existing ids"
   assert_contains "$listed" "tests/fm-pr-merge.test.sh" \
     "a reserved-check-slot change stopped selecting its own PR coverage"
   rm -rf "$tmp"
-  pass "changing the reserved check-slot ids selects the suite that guards them"
+  pass "changing the reserved check-slot ids selects the suites that guard them"
 }
 
 test_empty_selection_emits_summary() {

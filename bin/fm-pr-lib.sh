@@ -124,10 +124,24 @@ FM_RESERVED_CHECK_SLOT_IDS="fm-quota-reset"
 # for under a name nobody expects.
 FM_RESERVED_ROLE_IDS="firstmate pm"
 
+# Answers ONE question: "does this string have the shape of a task id?" - which
+# is what every site judging an id that ALREADY EXISTS has to ask. It must never
+# grow a reservation and must never drift into the creation question below: a
+# task minted before a name was reserved still exists, and a filter that stops
+# recognizing it strands that task's state with nothing left to clean it up.
+fm_task_id_recognized() {
+  local id=${1-}
+  fm_task_id_path_safe "$id" || return 1
+  [ "${#id}" -le 64 ] || return 1
+}
+
+# Answers ONE question: "may a NEW task be created under this id?" - the shape
+# above PLUS every reservation. It must never drift into recognizing an existing
+# id, because refusing to recognize one is refusing to act on something already
+# on disk.
 fm_task_id_creation_valid() {
   local id=${1-} reserved
-  fm_pr_task_id_valid "$id" || return 1
-  [ "${#id}" -le 64 ] || return 1
+  fm_task_id_recognized "$id" || return 1
   for reserved in $FM_RESERVED_CHECK_SLOT_IDS $FM_RESERVED_ROLE_IDS; do
     [ "$id" != "$reserved" ] || return 1
   done

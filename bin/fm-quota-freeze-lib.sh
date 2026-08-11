@@ -623,14 +623,23 @@ window_remaining() {
 # more costs a duplicate wake; the other way costs the wake entirely, and
 # silence is the failure this whole mechanism exists to remove.
 marker_age() {  # <subject>
-  local subject=\$1 marker marked
+  local subject=\$1 marker marked age
   marker="\$NOTIFIED/\$subject"
   [ -f "\$marker" ] && [ ! -L "\$marker" ] || return 0
   marked=\$(cat "\$marker" 2>/dev/null) || marked=
   case "\$marked" in
     ''|*[!0-9]*) return 0 ;;
   esac
-  printf '%s\\n' "\$((now - marked))"
+  # A timestamp AHEAD of now is no more valid age evidence than an unparseable
+  # one, and it arrives without any corruption: the marker is written from
+  # date +%s, so a backwards clock step - an NTP correction, a resume from
+  # sleep, a shared state dir written by a skewed host - leaves now behind it.
+  # The negative age it produces compares as less than every span, which would
+  # silence the obligation for the whole skew. Handled here, beside the
+  # unreadable case, so the two cannot drift apart.
+  age=\$((now - marked))
+  [ "\$age" -ge 0 ] || return 0
+  printf '%s\\n' "\$age"
 }
 
 # Whether the record carries NO recorded reset (resets_at_epoch=0, the explicit
