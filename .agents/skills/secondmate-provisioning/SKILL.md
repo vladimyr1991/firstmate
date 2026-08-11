@@ -123,7 +123,8 @@ What this reference owns is the content contract and what the instruction must n
 - `data/captain-shared.md` is not a config file and is never inlined into this instruction file or message.
 - Every failed publication, retry, or send surfaces a concrete `CONFIG_REREAD:` diagnostic and never claims the live agent already re-read the values.
 - Homes whose allowlisted config files were all unchanged receive no config-reread message when no retry is pending, so different homes may receive different changed-file sets.
-- A newly launched or relaunched secondmate already reads its files at launch, so its pending config-reread generations are discarded and it needs no redundant live-agent config nudge unless propagation changes files after launch.
+- A newly launched or relaunched secondmate already reads its files at launch, so its pending config-reread generations are discarded or quarantined after cleanup failure, and it needs no redundant live-agent config nudge unless propagation changes files after launch.
+Quarantine skips creating an empty generation when the destination has no artifacts to preserve.
 
 These config values remain defaults and rules only; they must not harden `fm-spawn` to reject a deliberate runtime choice that differs from the configured defaults.
 For already-live secondmates, use `bin/fm-config-push.sh` to push a mid-session inherited local-material change without running the tracked-file fast-forward; it shares bootstrap's live-home discovery and propagation helper, and reports each item as `pushed`, `unchanged`, `skipped`, or `error`.

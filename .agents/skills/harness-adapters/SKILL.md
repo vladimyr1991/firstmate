@@ -326,7 +326,7 @@ Pin `[hints] project_picker_disabled = true` in `~/.grok/config.toml` if a non-p
 A freshly-dismissed, never-typed-into grok composer shows a placeholder ("Type a message...") styled with a dark 24-bit TRUECOLOR foreground, not the SGR-2 dim/faint attribute the ghost stripper originally detected.
 The shared ANSI-aware owner `fm_composer_strip_ghost` (`bin/fm-composer-lib.sh`) drops a dark/muted truecolor foreground (perceived luminance below `FM_COMPOSER_GHOST_LUMA_MAX`, default 128) as well as dim/faint, so the placeholder is stripped and the row reads empty on both ANSI-capable backends, which route through the same owner.
 This assumes a dark terminal theme, the fleet reality; the SGR-2 signal stays theme-independent.
-`docs/verification/runtime-backends.md` owns the live grok 0.2.93 captures and exact luminance evidence; regression coverage is in `tests/fm-composer-ghost.test.sh` and `tests/fm-backend-herdr.test.sh`.
+The exact live grok 0.2.93 hex/luminance captures live in `tests/fm-composer-ghost.test.sh` and `tests/fm-backend-herdr.test.sh`, which also carry regression coverage.
 
 **Cursor position is not a composer reading (fixed):**
 In a pristine placeholder-only composer, tmux's `#{cursor_y}` can point at the box's bottom border instead of its text row, and an early Enter on Kimi can leave pointer text on the first row with the cursor on an empty later row.
