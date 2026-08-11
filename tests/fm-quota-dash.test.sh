@@ -230,7 +230,7 @@ JSON
 SH
   chmod +x "$fakebin/jq" "$fakebin/quota-axi"
 
-  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --once)
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,grok --once)
   assert_not_contains "$out" "Imagine" "Grok product windows must never reach the dashboard, even as a fallback"
   assert_not_contains "$out" "Grok Build" "Grok product windows must never reach the dashboard, even as a fallback"
   assert_not_contains "$out" "Fable week" "Claude model windows must never reach the dashboard, even as a fallback"
@@ -485,7 +485,7 @@ SH
 }
 
 test_full_table_is_used_exactly_when_it_fits() {
-  local case_dir fakebin real_jq wide_out needed grid fit_out spill_out tight_out longest header
+  local case_dir fakebin real_jq wide_out needed grid fit_out spill_out tight_out restored longest header
   case_dir="$TMP_ROOT/table-boundary"
   fakebin=$(fm_fakebin "$case_dir")
   real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
@@ -547,14 +547,152 @@ SH
   header=$(printf '%s\n' "$tight_out" | awk '/ ID +MODEL/ { print; exit }')
   assert_not_contains "$header" "AVAILABILITY" \
     "a pane too narrow for the grid must fall back to the compact table"
+  # The width the captain is sent looking for must be the one that actually
+  # brings the dropped columns back, measured by widening the pane to it.
+  assert_contains "$tight_out" "PLAN/RESETS/AVAILABILITY return at $grid cols" \
+    "the compact fallback must state the grid width that restores the columns"
   assert_contains "$tight_out" "full table needs $needed cols" \
-    "the compact fallback must still report the measurement"
+    "the wider spill-free measurement stays disclosed, on its own line"
+  restored=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$grid" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --once)
+  header=$(printf '%s\n' "$restored" | awk '/ ID +MODEL/ { print; exit }')
+  assert_contains "$header" "PLAN" "the stated width must restore PLAN"
+  assert_contains "$header" "RESETS" "the stated width must restore RESETS"
+  assert_contains "$header" "AVAILABILITY" "the stated width must restore AVAILABILITY"
   assert_contains "$tight_out" "weekly cap unmeasured" \
     "falling back to compact must not drop Grok's caveat"
   longest=$(printf '%s\n' "$tight_out" | awk '{ if (length > m) m = length } END { print m + 0 }')
   [ "$longest" -le $(( grid - 1 )) ] \
     || fail "the compact fallback must fit the pane, longest was $longest in: $tight_out"
   pass "fm-quota-dash: the table's own measured width decides full vs compact"
+}
+
+# Every configured provider owes the captain a row. These cases assert the
+# shape an unread provider takes: exactly one gauge, under UNKNOWN LIMIT, and
+# counted among the resources - never a provider that simply is not on screen.
+assert_unread_provider() {  # <out> <provider> <label>
+  local out=$1 prov=$2 label=$3 unknown_block gauges
+  unknown_block=$(printf '%s\n' "$out" | sed -n '/UNKNOWN LIMIT/,$p')
+  assert_contains "$unknown_block" "UNREADABLE - run: quota-axi --allow-keychain-prompt] $prov" \
+    "$label: $prov must render once as unreadable under UNKNOWN LIMIT"
+  gauges=$(printf '%s\n' "$out" | grep -c "UNREADABLE - run: quota-axi --allow-keychain-prompt] $prov")
+  [ "$gauges" = 1 ] \
+    || fail "$label: $prov must get exactly one gauge row, got $gauges in: $out"
+}
+
+test_a_failed_quota_read_never_hides_a_provider() {
+  local case_dir fakebin real_jq out prov
+  case_dir="$TMP_ROOT/failed-read"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+echo 'quota-axi: could not reach any provider' >&2
+exit 1
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,codex,grok --once)
+  for prov in claude codex grok; do
+    assert_unread_provider "$out" "$prov" "a quota-axi that fails outright"
+  done
+  assert_contains "$out" "weekly cap unmeasured" \
+    "Grok's unmeasured weekly cap survives a failed quota read"
+  assert_contains "$out" "Resources: 4" \
+    "three unread providers plus the image row are four resources, not one"
+  pass "fm-quota-dash: a failed quota-axi run shows every provider as unread, not as nothing"
+}
+
+test_unparseable_quota_output_never_hides_a_provider() {
+  local case_dir fakebin real_jq out prov
+  case_dir="$TMP_ROOT/unparseable"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  # Exit 0 with prose instead of JSON: a successful run whose output cannot be
+  # read is still no report at all.
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+echo 'no accounts configured'
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,codex,grok --once)
+  for prov in claude codex grok; do
+    assert_unread_provider "$out" "$prov" "output that is not JSON"
+  done
+  pass "fm-quota-dash: output that is not JSON leaves every provider disclosed as unread"
+}
+
+test_provider_missing_from_the_payload_still_gets_a_row() {
+  local case_dir fakebin real_jq out weekly_block prov
+  case_dir="$TMP_ROOT/partial-payload"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"grok","plan":"heavy","windows":[
+    {"id":"credits","kind":"credits","label":"credits","percentRemaining":42,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,codex,grok --once)
+  for prov in claude codex; do
+    assert_unread_provider "$out" "$prov" "a payload that omits a configured provider"
+  done
+  weekly_block=$(printf '%s\n' "$out" | sed -n '/WEEKLY LIMIT/,/DAILY LIMIT/p')
+  assert_contains "$weekly_block" "grok (credits)" \
+    "the provider the payload did report keeps its measured window"
+  assert_contains "$out" " 42.0%" "a missing neighbour must not cost a reported provider its number"
+  pass "fm-quota-dash: a provider the payload omits is disclosed, not dropped"
+}
+
+test_failed_run_does_not_claim_a_provider_reported_no_limit() {
+  local case_dir fakebin real_jq out
+  case_dir="$TMP_ROOT/failed-partial"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  # A run that printed a payload AND failed: "dispatch limit not reported" is a
+  # claim about a complete answer, which a failed run never gave.
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"claude","plan":"max","windows":[
+    {"id":"model:fable","label":"Fable week","percentRemaining":60,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+exit 1
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude --once)
+  assert_unread_provider "$out" claude "a failed run that still printed a payload"
+  assert_not_contains "$out" "dispatch limit not reported" \
+    "a failed run is not evidence that the provider reported no dispatch limit"
+  pass "fm-quota-dash: the quota-axi exit state survives into what the row claims"
 }
 
 test_help_prints_the_whole_header() {
@@ -578,5 +716,9 @@ test_unmeasured_rows_group_under_unknown_limit
 test_unknown_section_is_absent_when_every_cycle_is_known
 test_window_without_a_stated_cycle_is_not_claimed_as_daily
 test_full_table_is_used_exactly_when_it_fits
+test_a_failed_quota_read_never_hides_a_provider
+test_unparseable_quota_output_never_hides_a_provider
+test_provider_missing_from_the_payload_still_gets_a_row
+test_failed_run_does_not_claim_a_provider_reported_no_limit
 test_help_prints_the_whole_header
 test_other_providers_keep_reported_windows

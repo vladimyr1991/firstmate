@@ -25,9 +25,10 @@
 # sits last so an unmeasured row cannot push an actionable one down the screen.
 #
 # The detail table is drawn at the width its own columns measure. A pane too
-# narrow for that gets the compact table plus the width the full one would have
-# needed and the column that costs the most, so information is never dropped
-# silently. The gauges - and with them Grok's caveat - survive every width.
+# narrow for that gets the compact table plus the width that brings the dropped
+# columns back, and separately the wider one the longest note would need, so
+# information is never dropped silently and the two widths are never confused.
+# The gauges - and with them Grok's caveat - survive every width.
 #
 # Refresh is ONE HOUR by default, not htop's one second. Quota windows are
 # weekly, so a fast poll would redraw an unchanged picture while hammering each
@@ -54,6 +55,13 @@
 # A provider whose quota cannot be read is shown as UNREADABLE, never as 0%.
 # Zero would claim "quota exhausted" - a different and far more alarming fact
 # than "we could not ask".
+#
+# Every configured provider gets exactly one row, and the configured list - not
+# the payload - is what the rows are drawn from. A provider quota-axi omits, or
+# that a failed or unparseable run never reported at all, is unread rather than
+# absent: it takes the UNREADABLE row under UNKNOWN LIMIT. A provider that just
+# vanished from the dashboard would read as one fewer thing to worry about,
+# which is the opposite of what a failed quota read means.
 #
 # Usage:
 #   fm-quota-dash.sh [--interval <seconds>] [--provider <list>] [--once]
@@ -146,8 +154,17 @@ repeat_char() {
 ROWS=
 
 collect() {
-  local json img
+  local json img status ok
   json=$(quota-axi --provider "$PROVIDERS" --json 2>/dev/null)
+  status=$?
+  # The exit state is kept, not thrown away with the stderr: a run that failed
+  # reported nothing we may read as complete, so a provider it did answer for
+  # but without a dispatch window is unread rather than "not reported". Output
+  # that is not a JSON object carries no provider entries at all; the join
+  # below then synthesizes one unreadable row for every configured provider.
+  ok=true
+  [ "$status" -eq 0 ] || ok=false
+  printf '%s' "$json" | jq -e 'type == "object"' >/dev/null 2>&1 || json='{}'
   # Bucket rule (single owner of row placement). Each branch demands POSITIVE
   # evidence for the claim its section makes; nothing falls through to the
   # nearest plausible heading:
@@ -159,7 +176,7 @@ collect() {
   # balance is a billing-cycle balance and never today's or this session's
   # budget, so it stays weekly whether or not quota-axi carried a resetsAt -
   # a nullable timestamp must not move the same resource between sections.
-  ROWS=$(printf '%s' "$json" | jq -r '
+  ROWS=$(printf '%s' "$json" | jq -r --arg providers "$PROVIDERS" --argjson ok "$ok" '
     def cycle_secs:
       (.windowSeconds // .pace.cycleSeconds // 0);
     def naming:
@@ -176,7 +193,16 @@ collect() {
       elif (cycle_secs > 0) then "day"
       else "unknown"
       end;
-    .providers[]? | (.provider) as $p | (.plan // "?") as $plan |
+    # The row list is driven by the CONFIGURED providers joined against the
+    # payload, never by the payload alone: a provider quota-axi omits still
+    # owes the captain a row, and one that renders nowhere is indistinguishable
+    # from a fleet that never had it. Each configured name appears once.
+    ($providers | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $wanted |
+    [ .providers[]? | select(((.provider // "") | tostring | length) > 0) ] as $entries |
+    ($entries | map(.provider | tostring)) as $seen |
+    ($entries + ([ $wanted[] | . as $w | select($seen | index($w) | not) ]
+                 | unique | map({provider: .})))[] |
+    (.provider | tostring) as $p | (.plan // "?") as $plan |
     (($p == "claude") or ($p == "codex") or ($p == "grok")) as $dispatch_provider |
     [ .windows[]? ] as $reported |
     [ $reported[] |
@@ -194,7 +220,7 @@ collect() {
       $dispatch_windows[] |
       [section, $p, $plan, (.label // .id // "window"),
        ((.percentRemaining // -1) | tostring), (.resetsAt // "")]
-    elif $dispatch_provider and ($reported | length) > 0 then
+    elif $ok and $dispatch_provider and ($reported | length) > 0 then
       ["unknown", $p, $plan, "-", "unknown", ""]
     else ["unknown", $p, $plan, "-", "-1", ""] end)
     | map(tostring | if . == "" then "-" else . end) | @tsv' 2>/dev/null)
@@ -535,11 +561,22 @@ EOF
   # Whenever the pane is short of the full table - whether that cost it the
   # grid or only the tail of a note - it is told the measurement and the column
   # that drove it, so a narrower reading is never an unexplained one.
+  #
+  # A pane that LOST columns is told the width that brings them back, which is
+  # the grid's - not the wider one a note needs to stop spilling. Naming the
+  # spill width there sends the captain looking for columns the dropped ones
+  # never cost. The spill width is still disclosed, on its own line, so the two
+  # measurements cannot be read as one number.
   if [ "$cols" -lt "$needed" ]; then
     read -r wide_name wide_w <<EOF
 $(widest_column)
 EOF
-    printf '%s  full table needs %d cols (%s %d)%s\n' "$D" "$needed" "$wide_name" "$wide_w" "$R"
+    if [ "$table_mode" = compact ]; then
+      printf '%s  PLAN/RESETS/AVAILABILITY return at %d cols%s\n' "$D" "$grid" "$R"
+    fi
+    if [ "$table_mode" != compact ] || [ "$needed" -gt "$grid" ]; then
+      printf '%s  full table needs %d cols (%s %d)%s\n' "$D" "$needed" "$wide_name" "$wide_w" "$R"
+    fi
   fi
 
   printf '%sResources:%s %s%d%s\n' "$CYAN" "$R" "$B" "$total" "$R"
