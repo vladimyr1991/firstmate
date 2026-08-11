@@ -32,10 +32,20 @@ set -eu
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTRUCTIONS=
 
+need_value() {  # <flag> <remaining-arg-count>
+  [ "$2" -gt 1 ] || {
+    printf 'fm-skill-trigger-check: %s needs a path\n' "$1" >&2
+    exit 2
+  }
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --root) shift; ROOT=${1:-} ;;
-    --instructions) shift; INSTRUCTIONS=${1:-} ;;
+    # Guard the value before shifting: with the value missing, the loop's
+    # trailing `shift` runs at $# = 0, and `set -eu` would exit before the
+    # actionable message below could print, leaving a bare exit code.
+    --root) need_value --root "$#"; shift; ROOT=$1 ;;
+    --instructions) need_value --instructions "$#"; shift; INSTRUCTIONS=$1 ;;
     -h|--help)
       awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
       exit 0

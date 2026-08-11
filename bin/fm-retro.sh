@@ -12,6 +12,33 @@
 # deletes state/<id>.status and state/<id>.meta, so a receipt written there would
 # be erased by the very step this gate protects. data/<id>/ survives teardown.
 #
+# THE DURABLE-RECORD INVARIANT, which this script owns and every command below
+# obeys: once a durable record is committed, no later step may destroy, degrade,
+# or contradict it. Three consequences, none of them optional.
+#
+#   1. `unknown` and `0` are DIFFERENT FACTS. A status-derived count is `0` only
+#      when the status log was read and genuinely held no such event; when the
+#      log is gone it is `unknown`. Recording a torn-down task's five escalations
+#      as `0` would not merely lose data, it would fail in the self-flattering
+#      direction - the fleet would look like it was improving precisely because
+#      the evidence of struggle had been erased.
+#   2. A later read may never replace a known value with `unknown`. This is
+#      enforced as one general merge rule over the whole facts block rather than
+#      per key, so it also covers degradations no reviewer named: a returned
+#      worktree turning `branch`, `commit_base`, and `commits` unknown while
+#      state/<id>.meta still exists.
+#   3. When the volatile records are gone and a facts block already exists,
+#      `collect` REFUSES instead of degrading. A refusal that names its reason is
+#      strictly better than a quiet zero.
+#
+# The same invariant governs every other write path here: `complete` unions
+# lesson keys and never drops one, the frame is seeded only when the file does
+# not exist, and block rewrites leave every line outside their own markers
+# untouched, so human narrative added to data/<id>/retro.md survives both
+# commands. This invariant arrived independently from two unrelated tasks
+# (fm-lessons-learned and fm-quota-autoresume), which is why it is stated here as
+# a rule rather than patched at the one call site that exposed it.
+#
 # Usage:
 #   fm-retro.sh collect <origin-id>
 #   fm-retro.sh complete <origin-id> (--none | <lesson-key>...)
@@ -55,6 +82,11 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# fm-lock-lib.sh is a dependency-free leaf; sourced only for its portable
+# fm_lock_path_mtime, so this script adds no fourth copy of the platform test.
+# shellcheck source=bin/fm-lock-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-lock-lib.sh"
 
 FACTS_OPEN='<!-- fm-retro:facts v1 -->'
 FACTS_CLOSE='<!-- /fm-retro:facts -->'
@@ -89,11 +121,14 @@ meta_value() {  # <meta> <key>
   grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
-# Epoch mtime of a file on either BSD or GNU stat; empty when unreadable.
+# Epoch mtime of a file, or empty when unreadable. Delegates the platform test to
+# fm_lock_path_mtime: a `stat -f %m || stat -c %Y` chain looks portable but is
+# not, because GNU `stat -f` means --file-system and SUCCEEDS, so the fallback
+# would never run on Linux and every timestamp would silently read unknown there.
 file_epoch() {  # <path>
   local path=$1 value
   [ -f "$path" ] || return 0
-  value=$(stat -f %m "$path" 2>/dev/null) || value=$(stat -c %Y "$path" 2>/dev/null) || return 0
+  value=$(fm_lock_path_mtime "$path") || return 0
   case "$value" in
     ''|*[!0-9]*) return 0 ;;
     *) printf '%s' "$value" ;;
@@ -177,9 +212,23 @@ MD
 }
 
 # Accumulate one `key=value` fact line into the block body being built.
+#
+# Consequence 2 of the durable-record invariant lives here, once, for every fact:
+# a newly computed `unknown` never replaces a value the record already knows.
+# Keeping it in the accumulator rather than at each call site is what makes the
+# rule total - a fact added later inherits the protection without being
+# remembered about.
 FACTS_BODY=''
+PREVIOUS_FACTS=''
 add_fact() {  # <key> <value>
-  FACTS_BODY="${FACTS_BODY}$1=$2"$'\n'
+  local key=$1 value=$2 previous
+  if [ "$value" = unknown ] && [ -n "$PREVIOUS_FACTS" ]; then
+    previous=$(block_value "$PREVIOUS_FACTS" "$key")
+    if [ -n "$previous" ] && [ "$previous" != unknown ]; then
+      value=$previous
+    fi
+  fi
+  FACTS_BODY="${FACTS_BODY}${key}=${value}"$'\n'
 }
 
 sorted_key_union() {  # <comma-list> <space-separated-new-keys>
@@ -193,32 +242,39 @@ sorted_key_union() {  # <comma-list> <space-separated-new-keys>
 # Count status events by verb and collect the distinct decision keys they carry.
 # Both the verb and the key come from bin/fm-classify-lib.sh so this script never
 # becomes a second status-line parser.
+#
+# An ABSENT status log yields `unknown` for every count, never `0`: consequence 1
+# of the durable-record invariant. `0` is the answer only when the log was read
+# and held no such event, and `decision_keys=none` likewise means "read, and
+# there were none" rather than "never read".
 status_facts() {  # <status-file> -> "lines needs blocked resolved paused keys"
   local file=$1 line verb key lines=0 needs=0 blocked=0 resolved=0 paused=0 keys=''
   local resolve_verb pause_verb stripped
   resolve_verb=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   pause_verb=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
-  if [ -f "$file" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      stripped=${line//[[:space:]]/}
-      [ -n "$stripped" ] || continue
-      lines=$((lines + 1))
-      verb=$(status_line_verb "$line")
-      key=$(_fm_decision_key "$line") || key=''
-      case "$verb" in
-        needs-decision)
-          needs=$((needs + 1))
-          keys="${keys}${keys:+ }${key}"
-          ;;
-        blocked)
-          blocked=$((blocked + 1))
-          keys="${keys}${keys:+ }${key}"
-          ;;
-        "$resolve_verb") resolved=$((resolved + 1)) ;;
-        "$pause_verb") paused=$((paused + 1)) ;;
-      esac
-    done < "$file"
+  if [ ! -f "$file" ]; then
+    printf 'unknown unknown unknown unknown unknown unknown'
+    return 0
   fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    stripped=${line//[[:space:]]/}
+    [ -n "$stripped" ] || continue
+    lines=$((lines + 1))
+    verb=$(status_line_verb "$line")
+    key=$(_fm_decision_key "$line") || key=''
+    case "$verb" in
+      needs-decision)
+        needs=$((needs + 1))
+        keys="${keys}${keys:+ }${key}"
+        ;;
+      blocked)
+        blocked=$((blocked + 1))
+        keys="${keys}${keys:+ }${key}"
+        ;;
+      "$resolve_verb") resolved=$((resolved + 1)) ;;
+      "$pause_verb") paused=$((paused + 1)) ;;
+    esac
+  done < "$file"
   keys=$(sorted_key_union '' "$keys")
   printf '%s %s %s %s %s %s' "$lines" "$needs" "$blocked" "$resolved" "$paused" "${keys:-none}"
 }
@@ -269,15 +325,27 @@ command_collect() {
   [ -f "$meta" ] || [ -f "$status_file" ] || [ -d "$DATA/$id" ] \
     || fail "task $id is not owned by the active home $FM_HOME"
 
+  PREVIOUS_FACTS=$(read_block "$file" "$FACTS_OPEN" "$FACTS_CLOSE")
+  # Consequence 3 of the durable-record invariant: past teardown there is nothing
+  # left to read, so a re-collect could only overwrite real evidence with
+  # absence. Refuse and say so rather than degrade the record silently.
+  if [ ! -f "$meta" ] && [ ! -f "$status_file" ] && [ -n "$PREVIOUS_FACTS" ]; then
+    fail "task $id has no volatile records left and $file already holds collected facts; refusing to re-collect over them (the existing record was collected while state/$id.status and state/$id.meta still existed)"
+  fi
+
   read -r lines needs blocked resolved paused keys <<EOF
 $(status_facts "$status_file")
 EOF
-  while IFS=$'\t' read -r key _verb _summary; do
-    [ -n "$key" ] || continue
-    open_count=$((open_count + 1))
-  done <<EOF
+  if [ -f "$status_file" ]; then
+    while IFS=$'\t' read -r key _verb _summary; do
+      [ -n "$key" ] || continue
+      open_count=$((open_count + 1))
+    done <<EOF
 $(status_open_decisions "$status_file")
 EOF
+  else
+    open_count=unknown
+  fi
   for value in "$DATA/$id"/evaluation-*.md; do
     [ -e "$value" ] || continue
     eval_count=$((eval_count + 1))

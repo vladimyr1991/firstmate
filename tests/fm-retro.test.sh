@@ -14,6 +14,10 @@
 #   (f) --none is accepted, recorded, and cannot be mixed with lesson keys
 #   (g) a non-slug lesson key is refused
 #   (h) every artifact lands under data/, never under state/
+#   (i) unknown and 0 recorded as different facts, a true zero never laundered
+#   (j) a later poorer read never degrades a fact the record already knows
+#   (k) a post-teardown re-collect refuses and preserves facts, attestation, prose
+#   (l) --none never clears lesson keys an earlier attestation committed
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -248,6 +252,123 @@ test_artifacts_live_under_data() {
   pass "every retro artifact lands under data/ and none under state/"
 }
 
+# --- the durable-record invariant -------------------------------------------
+#
+# Once a durable record is committed, no later step may destroy, degrade, or
+# contradict it. These cases fail if a POORER LATER READ can replace a RICHER
+# EARLIER ONE, which is the only property that makes the whole design worth
+# having: a torn-down task recorded as zero escalations would make the fleet look
+# like it was improving precisely because its evidence had been erased.
+
+test_absent_status_records_unknown_not_zero() {
+  local home
+  home=$(make_home unknown-vs-zero)
+  fm_write_meta "$home/state/task-r1.meta" "kind=ship" "mode=no-mistakes"
+  # No status file at all, and no prior record to inherit from.
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed without a status log"
+
+  local key
+  for key in status_lines needs_decision_events blocked_events resolved_events \
+    paused_events open_decisions; do
+    [ "$(fact "$home" "$key")" = unknown ] \
+      || fail "$key must be unknown when the status log was never read, got '$(fact "$home" "$key")'"
+  done
+  [ "$(fact "$home" decision_keys)" = unknown ] \
+    || fail "decision_keys must be unknown when the status log was never read"
+  # evaluation_rounds is counted from data/, which survives teardown, so zero
+  # there is a true zero and must NOT be laundered into unknown.
+  [ "$(fact "$home" evaluation_rounds)" = 0 ] \
+    || fail "a genuinely zero evaluation-round count must stay 0, not become unknown"
+
+  # And the other direction: a status log that exists and holds no decision
+  # events reads none, which is a different fact from never having been read.
+  printf 'done: landed\n' > "$home/state/task-r1.status"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed with a status log"
+  [ "$(fact "$home" decision_keys)" = none ] \
+    || fail "decision_keys must be none when the log was read and held no decisions"
+  [ "$(fact "$home" blocked_events)" = 0 ] \
+    || fail "a read log with no blocked events must record 0, not unknown"
+  pass "unknown and 0 are recorded as different facts, and a true zero is never laundered"
+}
+
+test_later_read_never_degrades_a_known_fact() {
+  local home before after
+  home=$(make_home no-degrade)
+  write_meta_fixture "$home"
+  cat > "$home/state/task-r1.status" <<'EOF'
+needs-decision [key=a]: something
+blocked: something else
+done: landed
+EOF
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed"
+  [ "$(fact "$home" blocked_events)" = 1 ] || fail "precondition: blocked event not counted"
+  [ "$(fact "$home" harness)" = claude ] || fail "precondition: harness not recorded"
+
+  # The status log disappears while the metadata survives - the partial case.
+  # Every previously known fact must still read exactly as it did.
+  rm "$home/state/task-r1.status"
+  run_retro "$home" collect task-r1 >/dev/null || fail "re-collect failed in the partial case"
+  [ "$(fact "$home" status_lines)" = 3 ] \
+    || fail "a known status_lines was degraded to '$(fact "$home" status_lines)'"
+  [ "$(fact "$home" blocked_events)" = 1 ] \
+    || fail "a known blocked_events was degraded to '$(fact "$home" blocked_events)'"
+  [ "$(fact "$home" needs_decision_events)" = 1 ] \
+    || fail "a known needs_decision_events was degraded"
+  [ "$(fact "$home" decision_keys)" = "a,default" ] \
+    || fail "known decision keys were degraded to '$(fact "$home" decision_keys)'"
+  [ "$(fact "$home" open_decisions)" = 2 ] \
+    || fail "a known open_decisions was degraded"
+
+  # The metadata disappears too, so a previously recorded meta field must also
+  # survive rather than reverting to unknown.
+  before=$(fact "$home" harness)
+  rm "$home/state/task-r1.meta"
+  mkdir -p "$home/data/task-r1"
+  after=$(fact "$home" harness)
+  [ "$before" = "$after" ] || fail "harness changed without a collect"
+  pass "a later, poorer read never replaces a fact the record already knows"
+}
+
+test_recollect_after_teardown_refuses_and_preserves_everything() {
+  local home facts_before attest_before
+  home=$(make_home post-teardown)
+  write_meta_fixture "$home"
+  printf 'blocked: needed help\ndone: landed\n' > "$home/state/task-r1.status"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed"
+  run_retro "$home" complete task-r1 a-real-lesson >/dev/null || fail "complete failed"
+  printf '\n## Narrative\n\nHand-written prose that must survive.\n' \
+    >> "$home/data/task-r1/retro.md"
+  facts_before=$(sed -n '/fm-retro:facts/,/\/fm-retro:facts/p' "$home/data/task-r1/retro.md")
+  attest_before=$(sed -n '/fm-retro:attestation/,/\/fm-retro:attestation/p' "$home/data/task-r1/retro.md")
+
+  # Exactly the post-teardown state: both volatile records erased, data/ intact.
+  rm "$home/state/task-r1.status" "$home/state/task-r1.meta"
+  run_retro_expect_failure "$home" "refusing to re-collect over them" collect task-r1
+
+  [ "$(sed -n '/fm-retro:facts/,/\/fm-retro:facts/p' "$home/data/task-r1/retro.md")" = "$facts_before" ] \
+    || fail "the refused re-collect still altered the facts block"
+  [ "$(sed -n '/fm-retro:attestation/,/\/fm-retro:attestation/p' "$home/data/task-r1/retro.md")" = "$attest_before" ] \
+    || fail "the refused re-collect altered the attestation"
+  assert_grep "Hand-written prose that must survive" "$home/data/task-r1/retro.md" \
+    "narrative prose outside both blocks must survive every command"
+  run_retro "$home" verify task-r1 >/dev/null \
+    || fail "verify must still succeed on the preserved record after teardown"
+  pass "a post-teardown re-collect refuses, names why, and leaves facts, attestation and prose intact"
+}
+
+test_complete_none_never_clears_attested_lessons() {
+  local home
+  home=$(make_home none-after-keys)
+  write_meta_fixture "$home"
+  printf 'done: landed\n' > "$home/state/task-r1.status"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed"
+  run_retro "$home" complete task-r1 first-lesson second-lesson >/dev/null || fail "complete failed"
+  run_retro "$home" complete task-r1 --none >/dev/null || fail "complete --none failed"
+  assert_grep "lesson_keys=first-lesson,second-lesson" "$home/data/task-r1/retro.md" \
+    "a later --none must not erase lessons already attested"
+  pass "--none never clears lesson keys an earlier attestation committed"
+}
+
 test_collect_refuses_an_unknown_task() {
   local home
   home=$(make_home unknown-task)
@@ -262,4 +383,8 @@ test_collect_and_complete_are_idempotent
 test_verify_refuses_before_complete
 test_invalid_input_is_refused
 test_artifacts_live_under_data
+test_absent_status_records_unknown_not_zero
+test_later_read_never_degrades_a_known_fact
+test_recollect_after_teardown_refuses_and_preserves_everything
+test_complete_none_never_clears_attested_lessons
 test_collect_refuses_an_unknown_task
