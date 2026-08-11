@@ -495,6 +495,35 @@ test_complete_none_never_clears_attested_lessons() {
   pass "--none never clears lesson keys an earlier attestation committed"
 }
 
+test_structural_marker_damage_is_refused_not_rewritten() {
+  local home before
+  home=$(make_home marker-damage)
+  fm_write_meta "$home/state/task-r1.meta" "kind=ship" "mode=no-mistakes"
+  printf 'blocked: x\ndone: landed\n' > "$home/state/task-r1.status"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed"
+  run_retro "$home" complete task-r1 a-lesson >/dev/null || fail "complete failed"
+  printf 'TRAILING_NARRATIVE\n' >> "$home/data/task-r1/retro.md"
+
+  # Hand-damage the record by removing one close marker. Every later line -
+  # the narrative, the whole attestation block - now reads as facts-block body.
+  grep -v '^<!-- /fm-retro:facts -->$' "$home/data/task-r1/retro.md" \
+    > "$home/data/task-r1/retro.damaged"
+  mv "$home/data/task-r1/retro.damaged" "$home/data/task-r1/retro.md"
+  before=$(cat "$home/data/task-r1/retro.md")
+
+  run_retro_expect_failure "$home" "refusing to rewrite through structural damage" \
+    collect task-r1
+  run_retro_expect_failure "$home" "refusing to rewrite through structural damage" \
+    complete task-r1 another-lesson
+  [ "$(cat "$home/data/task-r1/retro.md")" = "$before" ] \
+    || fail "a refused write still modified the damaged record"
+  assert_grep "TRAILING_NARRATIVE" "$home/data/task-r1/retro.md" \
+    "the refusal must leave the trailing narrative exactly where it was"
+  assert_grep "lessons_reviewed=1" "$home/data/task-r1/retro.md" \
+    "the refusal must leave the attestation where it was"
+  pass "structural marker damage is refused by name, never rewritten through"
+}
+
 test_collect_refuses_an_unknown_task() {
   local home
   home=$(make_home unknown-task)
@@ -515,4 +544,5 @@ test_collect_preserves_keys_it_does_not_recognize
 test_complete_preserves_attestation_keys_it_does_not_recognize
 test_recollect_after_teardown_refuses_and_preserves_everything
 test_complete_none_never_clears_attested_lessons
+test_structural_marker_damage_is_refused_not_rewritten
 test_collect_refuses_an_unknown_task

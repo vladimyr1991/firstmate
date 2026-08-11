@@ -165,10 +165,44 @@ block_value() {  # <block-body> <key>
   printf '%s\n' "$1" | sed -n "s/^$2=//p" | tail -1
 }
 
+# 0 when <file> has no structural marker damage for the given block: either the
+# open marker is absent entirely, or it is present and followed by its close.
+# An open marker with no close makes every later line - narrative, the sibling
+# block, the trailing text - read as this block's body, which is how a rewrite
+# would silently swallow the rest of the record into one block.
+block_markers_intact() {  # <file> <open-marker> <close-marker>
+  local file=$1 open=$2 close=$3 line inside=0
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$inside" = 1 ]; then
+      [ "$line" = "$close" ] && inside=0
+      continue
+    fi
+    [ "$line" = "$open" ] && inside=1
+  done < "$file"
+  [ "$inside" = 0 ]
+}
+
 # Rewrite one delimited block in place, creating the file and the block when
 # absent and leaving every other line - including the sibling block - untouched.
+#
+# Refuses outright on structural marker damage rather than rewriting through it.
+# That is the durable-record invariant applied to the record's SHAPE, not just
+# its values: with a close marker missing, this rewrite would relocate the
+# narrative, the sibling block, and the trailing text inside the block being
+# written. No byte is lost that way, but the record stops meaning what it says,
+# and "contradict" is as forbidden as "destroy". A refusal naming the damaged
+# marker leaves the file for a human to repair.
 write_block() {  # <file> <open-marker> <close-marker> <body>
   local file=$1 open=$2 close=$3 body=$4 tmp line inside=0 seen=0
+  # Guard the WHOLE record, not just the block being written. Damage in the
+  # sibling block is what the next command would swallow, so writing either
+  # block while the other is unterminated would persist a record already known
+  # to be structurally broken.
+  block_markers_intact "$file" "$FACTS_OPEN" "$FACTS_CLOSE" \
+    || fail "$file has an unterminated facts block; refusing to rewrite through structural damage that would swallow the rest of the record"
+  block_markers_intact "$file" "$ATTEST_OPEN" "$ATTEST_CLOSE" \
+    || fail "$file has an unterminated attestation block; refusing to rewrite through structural damage that would swallow the rest of the record"
   case "$body" in
     ''|*$'\n') : ;;
     *) body="$body"$'\n' ;;
