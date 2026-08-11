@@ -44,6 +44,12 @@ fm-skill-compact-check: ok checked=26 changed=4 compacted=3 retired_boundaries=0
 
 `retired_boundaries=0`: no stated safety boundary was retired in any of the three, so none of this needed the captain-merge path.
 
+Blind numbers are re-runs against the current (post-fix) skill text, same independence setup: prompts rendered from the compacted skill, answered by `codex exec` on `gpt-5.6-terra` (OpenAI Codex v0.147.0) from an empty scratch directory with `--skip-git-repo-check`. No scenario fixture was edited at any point; all three fixtures are byte-identical to the versions the control run used.
+
+- `secondmate-provisioning` 24/24: S16 now returns the control's answer verbatim - "pending config-reread generations are discarded or quarantined after cleanup failure" - confirming the restored branch is back in the reader-facing text.
+- `harness-adapters` 38/38: the only flagged row is the long-standing S35 wording artifact, where the control opens "No specific harness is assumed" and the re-run opens "Harness is unknown" with an identical decision; S29 and S30, the scenarios nearest the corrected pointer sentence, both match.
+- `fmx-respond` is unchanged by the fix commit (byte-identical `SKILL.md`), so its 30/30 stands from the original run and needed no re-run.
+
 ## Why the control run is mandatory
 
 Every fixture was answered against the **original** skill before the compaction was written.
@@ -64,6 +70,13 @@ The scenario suite caught what the check structurally cannot.
 In `harness-adapters`, collapsing the per-concern watcher section dropped the *reason* Codex uses a bounded foreground checkpoint - that it cannot reason while a foreground tool call is running.
 That sentence contains no pointer and no never/always/must/refuse/stop keyword, so nothing deterministic could flag it; scenario S36 asks "why", and the answer changed.
 Restored, and re-verified.
+
+The scenario suite also caught, then nearly lost, a real miss in `secondmate-provisioning`: the compaction dropped the "or quarantined after cleanup failure" branch from a reader-facing answer.
+That sentence carries no pointer and no never/always/must/refuse/stop keyword, so the deterministic check could not see it either.
+The scenario suite did detect it - S16's answer changed - but the first comparison of control vs. blind was polarity-based, and both the control and blind answers happened to begin with "No", so the divergence was missed and the compaction was first reported as a clean 24/24.
+The true pre-fix figure was 23/24.
+The pipeline's own review step caught the miss, the branch was restored, and the re-run above is the genuine 24/24.
+This is the strongest evidence in this document for why the two-axis rule needs both a deterministic check and a scenario suite: each covers a gap the other has, and even the scenario suite's own comparison step can miss a divergence if the comparison is too shallow.
 
 ## Detector calibration
 
