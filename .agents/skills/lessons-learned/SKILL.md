@@ -55,14 +55,14 @@ A skill whose trigger is a vague pointer is dead weight: nothing will ever load 
 
 ## Registration checklist for a new skill
 
-All four, or the skill is invisible:
+Miss one and the skill is invisible:
 
 1. `SKILL.md` with frontmatter, including `name`, `description`, and `user-invocable`.
 2. An `agent-runtime` entry in `docs/documentation-audiences.json`.
-3. A one-line trigger in `AGENTS.md` section 13, stated as a load condition.
+3. A one-line trigger in `AGENTS.md` section 13, stated as a load condition, for an agent-only skill; a `user-invocable` skill is exempt because the captain invokes it by name, and adding that line would create exactly the dead entry the trigger rule exists to prevent.
 4. Delivery through the no-mistakes PR path like any other tracked change.
 
-`bin/fm-skill-trigger-check.sh` enforces items 1 and 3; `bin/fm-doc-audience-check.sh` enforces item 2.
+`bin/fm-skill-trigger-check.sh` owns and enforces that distinction along with item 1, and `bin/fm-doc-audience-check.sh` enforces item 2.
 
 ## Provenance
 

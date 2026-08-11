@@ -574,6 +574,61 @@ test_headless_block_is_refused_and_never_gains_a_second_block() {
   pass "a headless block is refused by every command and never gains an all-unknown twin"
 }
 
+test_block_removed_entirely_is_refused_not_silently_rebuilt() {
+  local home before
+  home=$(make_home block-absent)
+  fm_write_meta "$home/state/task-r1.meta" "kind=ship" "mode=no-mistakes"
+  printf 'blocked: needed help\ndone: landed\n' > "$home/state/task-r1.status"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed"
+  run_retro "$home" complete task-r1 first-lesson >/dev/null || fail "complete failed"
+  printf 'TRAILING_NARRATIVE\n' >> "$home/data/task-r1/retro.md"
+  [ "$(fact "$home" blocked_events)" = 1 ] || fail "precondition: blocked event not recorded"
+
+  # The quietest damage: BOTH of a block's markers gone. The frame still parses,
+  # but read_block finds nothing, so an unguarded collect would read that
+  # emptiness as "no facts yet" and append a SECOND all-unknown facts block,
+  # turning a recorded blocked_events=1 into unknown for the authoritative read.
+  grep -v '^<!-- /\?fm-retro:facts v\?1\? \?-->$' "$home/data/task-r1/retro.md" \
+    | grep -v '^<!-- fm-retro:facts v1 -->$' | grep -v '^<!-- /fm-retro:facts -->$' \
+    > "$home/data/task-r1/damaged"
+  mv "$home/data/task-r1/damaged" "$home/data/task-r1/retro.md"
+  before=$(cat "$home/data/task-r1/retro.md")
+
+  run_retro_expect_failure "$home" "no facts block at all" collect task-r1
+  [ "$(cat "$home/data/task-r1/retro.md")" = "$before" ] \
+    || fail "a refused collect still modified the damaged record"
+  [ "$(grep -c '^<!-- fm-retro:facts v1 -->$' "$home/data/task-r1/retro.md")" = 0 ] \
+    || fail "collect appended a second facts block over the damaged record"
+  assert_grep "blocked_events=1" "$home/data/task-r1/retro.md" \
+    "the real counts must survive as prose rather than being contradicted by an unknown"
+  assert_grep "TRAILING_NARRATIVE" "$home/data/task-r1/retro.md" \
+    "the refusal must leave the trailing narrative in place"
+  pass "a facts block removed entirely is refused, never silently rebuilt as unknown"
+}
+
+test_attestation_block_removed_entirely_is_refused() {
+  local home before
+  home=$(make_home attest-absent)
+  fm_write_meta "$home/state/task-r1.meta" "kind=ship" "mode=no-mistakes"
+  printf 'done: landed\n' > "$home/state/task-r1.status"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed"
+  run_retro "$home" complete task-r1 first-lesson >/dev/null || fail "complete failed"
+
+  grep -v '^<!-- fm-retro:attestation v1 -->$' "$home/data/task-r1/retro.md" \
+    | grep -v '^<!-- /fm-retro:attestation -->$' > "$home/data/task-r1/damaged"
+  mv "$home/data/task-r1/damaged" "$home/data/task-r1/retro.md"
+  before=$(cat "$home/data/task-r1/retro.md")
+
+  run_retro_expect_failure "$home" "no attestation block at all" \
+    complete task-r1 second-lesson
+  [ "$(cat "$home/data/task-r1/retro.md")" = "$before" ] \
+    || fail "a refused complete still modified the damaged record"
+  assert_grep "lesson_keys=first-lesson" "$home/data/task-r1/retro.md" \
+    "an already-attested lesson key must not be dropped by a refused complete"
+  run_retro_expect_failure "$home" "no attestation block at all" verify task-r1
+  pass "an attestation block removed entirely is refused by complete and by verify"
+}
+
 test_collect_refuses_an_unknown_task() {
   local home
   home=$(make_home unknown-task)
@@ -595,5 +650,7 @@ test_complete_preserves_attestation_keys_it_does_not_recognize
 test_recollect_after_teardown_refuses_and_preserves_everything
 test_complete_none_never_clears_attested_lessons
 test_structural_marker_damage_is_refused_not_rewritten
+test_block_removed_entirely_is_refused_not_silently_rebuilt
+test_attestation_block_removed_entirely_is_refused
 test_headless_block_is_refused_and_never_gains_a_second_block
 test_collect_refuses_an_unknown_task

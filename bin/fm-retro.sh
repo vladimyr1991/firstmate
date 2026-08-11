@@ -255,7 +255,19 @@ record_marker_damage() {  # <file>
         ;;
     esac
   done < "$file"
-  [ -z "$inside" ] || printf 'an unterminated %s block' "$inside"
+  if [ -n "$inside" ]; then
+    printf 'an unterminated %s block' "$inside"
+    return 0
+  fi
+  # A block that is ABSENT ENTIRELY is damage too, and it is the quietest form:
+  # both markers gone leaves a frame that parses as sound while read_block finds
+  # nothing, so the emptiness reads as "no facts yet" and every other guard is
+  # bypassed. ensure_retro_frame always seeds BOTH blocks together, so an
+  # existing record carrying one block but not the other is provably damaged.
+  # Stating it this way rejects absent, unterminated, headless, duplicate, and
+  # interleaved from one rule, instead of a guard per variant.
+  [ "$seen_facts" = 1 ] || { printf 'no facts block at all'; return 0; }
+  [ "$seen_attest" = 1 ] || { printf 'no attestation block at all'; return 0; }
 }
 
 # Refuse a structurally damaged record, naming the damage and what the caller was
