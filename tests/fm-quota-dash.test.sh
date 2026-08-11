@@ -241,7 +241,11 @@ SH
     "Claude without a dispatch window must disclose unknown headroom"
   assert_contains "$out" "UNKNOWN - dispatch limit not reported] grok" \
     "Grok without a credits window must disclose unknown headroom"
-  assert_contains "$out" "dispatch limit not reported; weekly cap unmeasured" \
+  # This row's AVAILABILITY note is wider than the pane, so the dashboard folds
+  # its tail onto a continuation line rather than drawing past the edge. The
+  # claim is about the disclosure being there, not about where it breaks.
+  assert_contains "$(printf '%s\n' "$out" | tr '\n' ' ' | tr -s ' ')" \
+    "dispatch limit not reported; weekly cap unmeasured" \
     "the Grok weekly cap stays visible on the unknown-headroom row"
   assert_contains "$out" "unknown" "the table must show a non-numeric remaining value"
   pass "fm-quota-dash: noise-only providers disclose unknown headroom, not noise or 0%"
@@ -868,11 +872,13 @@ SH
   # Cutting a cell must not move the width the guidance names: that number
   # answers "widen to what?", so it has to be measured from the label the
   # payload actually carries and not from the pane that could not hold it.
-  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=40 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=60 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
   restore=$(printf '%s\n' "$out" | awk '/return at/ { print $(NF - 1); exit }')
   [ "${restore:-0}" -gt 0 ] || fail "the compact fallback must state a restore width in: $out"
-  header=$(printf '%s\n' "$out" | awk '/ ID +MODEL/ { print; exit }')
-  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=60 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
+  # A pane too narrow for the guidance folds it, so the claim is checked
+  # against the text rather than against where the line breaks fell.
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=40 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once \
+    | tr '\n' ' ' | tr -s ' ')
   assert_contains "$out" "return at $restore cols" \
     "the restore width is a property of the table, not of the pane reading it"
   out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$restore" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
@@ -889,6 +895,62 @@ SH
     "a pane that can afford the whole label must print the whole label"
   assert_contains "$wide_out" "AVAILABILITY" "a wide pane still gets the full table"
   pass "fm-quota-dash: an unbounded provider label is cut to the pane, not drawn past it"
+}
+
+test_no_rendered_line_exceeds_the_pane() {
+  local case_dir fakebin real_jq out flat cols longest header_col row_col
+  case_dir="$TMP_ROOT/every-line-fits"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  # Claude answers without a dispatch window and grok is left out entirely, so
+  # the render carries every line type that outgrows a narrow pane: both status
+  # facts, both caveats, the long AVAILABILITY note, the guidance and the
+  # remedy footer.
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"claude","plan":"max","windows":[
+    {"id":"model:fable","label":"Fable week","percentRemaining":60,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  # Fixed widths, each one a pane some line used to be drawn past: 65 is the
+  # full table with a note wider than the pane, 50 the remedy footer, 40 the
+  # guidance and the status facts, 30 all of them at once.
+  for cols in 65 50 40 30; do
+    out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$cols" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,grok --once)
+    longest=$(printf '%s\n' "$out" | awk '{ if (length > m) m = length } END { print m + 0 }')
+    [ "$longest" -le "$cols" ] \
+      || fail "no rendered line may exceed the $cols-column pane, longest was $longest in: $out"
+    # Folding is not an excuse to lose the disclosure: the text is checked
+    # whole, wherever the pane made the line break.
+    flat=$(printf '%s\n' "$out" | tr '\n' ' ' | tr -s ' ')
+    assert_contains "$flat" "UNKNOWN - dispatch limit not reported] claude" \
+      "the dispatch-limit-not-reported disclosure survives a $cols-column pane"
+    assert_contains "$flat" "weekly cap unmeasured" \
+      "Grok's unmeasured weekly cap survives a $cols-column pane"
+    assert_contains "$flat" "quota-axi --allow-keychain-prompt" \
+      "the remedy for an unreadable provider survives a $cols-column pane"
+    assert_contains "$flat" "Resources: 3" \
+      "every provider is still counted at a $cols-column pane"
+  done
+
+  # A folded row keeps the cells that did fit under their headers: the break
+  # moves the tail down, it does not reflow the columns.
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=65 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider claude,grok --once)
+  header_col=$(printf '%s\n' "$out" | awk '/AVAILABILITY/ { print index($0, "MODEL"); exit }')
+  row_col=$(printf '%s\n' "$out" | awk '/^ +2 claude / { print index($0, "claude"); exit }')
+  [ -n "$header_col" ] && [ "$header_col" = "$row_col" ] \
+    || fail "a folded row must stay in its columns (header col $header_col, row col $row_col) in: $out"
+  pass "fm-quota-dash: no rendered line is left for the terminal to wrap"
 }
 
 test_help_prints_the_whole_header() {
@@ -920,5 +982,6 @@ test_a_payload_jq_cannot_walk_lists_every_provider
 test_status_rows_are_measured_against_the_pane
 test_gauge_lines_shrink_below_the_preferred_bar
 test_an_unbounded_label_never_widens_a_line_past_the_pane
+test_no_rendered_line_exceeds_the_pane
 test_help_prints_the_whole_header
 test_other_providers_keep_reported_windows

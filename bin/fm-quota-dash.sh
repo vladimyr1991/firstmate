@@ -35,6 +35,11 @@
 # enough to outgrow the terminal would otherwise take the whole grid past the
 # edge with it, wrapping every row rather than losing its own tail.
 #
+# No rendered line is left to the terminal to wrap. A line the pane cannot hold
+# - a long note, a caveat, the guidance under the table - is folded onto
+# indented continuation lines, so every disclosure survives narrowing intact
+# and the viewport still counts one screen row per line it drew.
+#
 # Refresh is ONE HOUR by default, not htop's one second. Quota windows are
 # weekly, so a fast poll would redraw an unchanged picture while hammering each
 # provider's endpoint. No countdown is shown: a ticking number invites watching
@@ -106,6 +111,60 @@ if [ -t 1 ]; then
 else
   R=; B=; D=; GREEN=; AMBER=; RED=; CYAN=; BLUE=; HDR=; KEY=; LBL=; SEC=
 fi
+
+# The pane every rendered line is bounded by. render_all sets it from the
+# terminal before anything is drawn; the default only covers a caller that
+# prints a line before then.
+COLS=80
+
+# Colour costs no columns, so it is stripped back off before a line is measured.
+FIT_STRIP="s/$(printf '\033')\\[[0-9;]*m//g"
+
+# The ONE owner of "a rendered line fits the pane", and the last thing every
+# line in the dashboard passes through. A line that fits is printed exactly as
+# it was composed, colour and all. A line that does not is folded at word
+# boundaries onto indented continuation lines.
+#
+# Folding rather than truncating, because the lines that outgrow a narrow pane
+# are the ones carrying uncertainty - "dispatch limit not reported", Grok's
+# unmeasured cap, the command that would make an unreadable provider readable -
+# and a caveat cut in half to fit is a caveat the captain cannot act on. What
+# the pane cannot hold on one line is still stated in full on the next.
+#
+# Letting the terminal wrap instead is not the same thing: build() stores
+# logical lines and draw() shows `rows - 3` of them, so a line the terminal
+# wraps costs a viewport row nothing counted and walks the key bar off the
+# bottom of a short screen. Folding here keeps that arithmetic true.
+# The fold CUTS the line rather than reflowing its words: a table row's padding
+# is what puts its cells under their headers, and rejoining the words on a
+# single space would collapse exactly that. Everything up to the break keeps
+# the spacing it was composed with, and only the tail moves down.
+fit_line() {  # <styled>
+  local styled=$1 plain indent='   ' pad='' avail head rest
+  plain=$(printf '%s' "$styled" | sed "$FIT_STRIP")
+  [ "${#plain}" -gt "$COLS" ] || { printf '%s\n' "$styled"; return 0; }
+  [ "$COLS" -gt 12 ] || indent=
+  rest=$plain
+  avail=$COLS
+  while [ "${#rest}" -gt "$avail" ]; do
+    head=${rest:0:$avail}
+    # Break on a space when the cut lands mid-word; a word wider than the pane
+    # has no break to find and is carried over instead, never dropped.
+    case "${rest:$avail:1}" in
+      ' ') : ;;
+      *) case "$head" in *' '*) head=${head% *} ;; esac ;;
+    esac
+    [ -n "$head" ] || head=${rest:0:$avail}
+    printf '%s%s\n' "$pad" "$head"
+    rest=${rest:${#head}}
+    while [ "${rest# }" != "$rest" ]; do rest=${rest# }; done
+    pad=$indent
+    avail=$(( COLS - ${#indent} ))
+    [ "$avail" -ge 1 ] || avail=1
+  done
+  [ -z "$rest" ] || printf '%s%s\n' "$pad" "$rest"
+  return 0
+}
 
 # Colour follows the captain's own switching rule: below 20% remaining the plan
 # is to move work elsewhere, so that is where a gauge stops being calm.
@@ -309,7 +368,6 @@ elide() {  # <text> <max>
 # so nothing is cut until the pane genuinely cannot pay for it.
 CELL_MODEL_MAX=0 CELL_WIN_MAX=0
 TABLE_FIXED=13
-COLS=80
 
 model_cell() {  # <provider>
   elide "$1" "$CELL_MODEL_MAX"
@@ -366,9 +424,9 @@ gauge() {  # <n> <pct> <model> <window> <note> <width>
   # The caveat rides the gauge, which every terminal width shows, so a narrow
   # pane cannot turn a disclosed uncertainty into an unqualified number.
   caveat=$(caveat_suffix "$note")
-  printf '%s%2d%s [%s%s%s%s %s%s%5.1f%%%s%s]%s %s%s%s %s(%s)%s%s\n' \
+  fit_line "$(printf '%s%2d%s [%s%s%s%s %s%s%5.1f%%%s%s]%s %s%s%s %s(%s)%s%s' \
     "$CYAN" "$n" "$R" "$tone" "$pipes" "$R" "$spaces" "$B" "$tone" "$pct" "$R" "$CYAN" "$R" \
-    "$B" "$model" "$R" "$D" "$win" "$R" "$caveat"
+    "$B" "$model" "$R" "$D" "$win" "$R" "$caveat")"
 }
 
 availability_note() {
@@ -406,7 +464,7 @@ readable_pct() {  # <pct>
 
 section_title() {
   local label=$1
-  printf '%s%s%s\n' "$SEC" " $label " "$R"
+  fit_line "$(printf '%s%s%s' "$SEC" " $label " "$R")"
 }
 
 # Membership has one owner, and UNKNOWN is the catch-all rather than a fourth
@@ -444,13 +502,13 @@ render_gauges() {
     caveat=$(caveat_suffix "$note")
     model=$(model_cell "$prov")
     if [ "$pct" = unknown ]; then
-      printf '%s%2d%s [%s%s%s] %s%s%s%s\n' \
-        "$CYAN" "$_ID" "$R" "$AMBER" "$UNKNOWN_FACT" "$R" "$B" "$model" "$R" "$caveat"
+      fit_line "$(printf '%s%2d%s [%s%s%s] %s%s%s%s' \
+        "$CYAN" "$_ID" "$R" "$AMBER" "$UNKNOWN_FACT" "$R" "$B" "$model" "$R" "$caveat")"
     elif ! readable_pct "$pct"; then
       text=$UNREADABLE_FACT
       [ "$help" -eq 0 ] || text="$UNREADABLE_FACT - $UNREADABLE_HELP"
-      printf '%s%2d%s [%s%s%s] %s%s%s%s\n' \
-        "$CYAN" "$_ID" "$R" "$AMBER" "$text" "$R" "$B" "$model" "$R" "$caveat"
+      fit_line "$(printf '%s%2d%s [%s%s%s] %s%s%s%s' \
+        "$CYAN" "$_ID" "$R" "$AMBER" "$text" "$R" "$B" "$model" "$R" "$caveat")"
     else
       gauge "$_ID" "$pct" "$model" "$(gauge_window "$model" "$win" "$note")" "$note" "$width"
     fi
@@ -458,7 +516,7 @@ render_gauges() {
 $ROWS
 EOF
   if [ "$_ANY" -eq 0 ]; then
-    printf '%s  (none)%s\n' "$D" "$R"
+    fit_line "$(printf '%s  (none)%s' "$D" "$R")"
   fi
 }
 
@@ -570,14 +628,14 @@ render_table() {
   local sec prov plan win pct resets n win_cell rem_cell resets_cell note_cell
   n=$_ID_BASE
   _ANY=0
-  printf '%s%s%s\n' "$HDR" "$(table_line "$table_mode" \
+  fit_line "$(printf '%s%s%s' "$HDR" "$(table_line "$table_mode" \
     "$(printf '%*s'  "$TABLE_ID"    ID)" \
     "$(printf '%-*s' "$DRAW_MODEL"  MODEL)" \
     "$(printf '%-*s' "$TABLE_PLAN"  PLAN)" \
     "$(printf '%-*s' "$DRAW_WIN"    WINDOW)" \
     "$(printf '%*s'  "$TABLE_REM"   REMAIN)" \
     "$(printf '%-*s' "$TABLE_RESET" RESETS)" \
-    AVAILABILITY)" "$R"
+    AVAILABILITY)" "$R")"
   while IFS=$'\t' read -r sec prov plan win pct resets; do
     [ -n "$prov" ] || continue
     row_in_section "$sec" "$want" || continue
@@ -594,16 +652,16 @@ render_table() {
       rem_cell=$(printf '%s%*s%s' "$(tone_for "$pct")" "$TABLE_REM" "$(printf '%.1f%%' "$pct")" "$R")
       resets_cell=$(printf '%s%-*s%s' "$D" "$TABLE_RESET" "$(human_until "$resets")" "$R")
     fi
-    table_line "$table_mode" \
+    fit_line "$(table_line "$table_mode" \
       "$(printf '%s%*d%s' "$CYAN" "$TABLE_ID" "$n" "$R")" \
       "$(printf '%s%-*s%s' "$B" "$DRAW_MODEL" "$(model_cell "$prov")" "$R")" \
       "$(printf '%s%-*s%s' "$BLUE" "$TABLE_PLAN" "$plan" "$R")" \
-      "$win_cell" "$rem_cell" "$resets_cell" "$note_cell"
+      "$win_cell" "$rem_cell" "$resets_cell" "$note_cell")"
   done <<EOF
 $ROWS
 EOF
   if [ "$_ANY" -eq 0 ]; then
-    printf '%s  (none)%s\n' "$D" "$R"
+    fit_line "$(printf '%s  (none)%s' "$D" "$R")"
   fi
   _ID=$n
 }
@@ -694,20 +752,20 @@ EOF
 $(widest_column)
 EOF
     if [ "$table_mode" = compact ]; then
-      printf '%s  PLAN/RESETS/AVAILABILITY return at %d cols%s\n' "$D" "$grid" "$R"
+      fit_line "$(printf '%s  PLAN/RESETS/AVAILABILITY return at %d cols%s' "$D" "$grid" "$R")"
     fi
     if [ "$table_mode" != compact ] || [ "$needed" -gt "$grid" ]; then
-      printf '%s  full table needs %d cols (%s %d)%s\n' "$D" "$needed" "$wide_name" "$wide_w" "$R"
+      fit_line "$(printf '%s  full table needs %d cols (%s %d)%s' "$D" "$needed" "$wide_name" "$wide_w" "$R")"
     fi
   fi
 
   # The remedy a status row could not carry is printed once here instead, so
   # the pane that was too narrow for it loses the repetition, not the help.
   if [ "$unread" -eq 1 ] && [ "$help" -eq 0 ]; then
-    printf '%s  unreadable: %s%s\n' "$D" "$UNREADABLE_HELP" "$R"
+    fit_line "$(printf '%s  unreadable: %s%s' "$D" "$UNREADABLE_HELP" "$R")"
   fi
 
-  printf '%sResources:%s %s%d%s\n' "$CYAN" "$R" "$B" "$total" "$R"
+  fit_line "$(printf '%sResources:%s %s%d%s' "$CYAN" "$R" "$B" "$total" "$R")"
 }
 
 OUT=(); SCROLL=0
@@ -733,8 +791,8 @@ draw() {
     printf '%s\n' "${OUT[$i]}"; i=$(( i + 1 ))
   done
   [ "${#OUT[@]}" -le "$avail" ] || \
-    printf '%s  j/k scroll - %d-%d of %d%s\n' "$D" $(( SCROLL + 1 )) "$i" "${#OUT[@]}" "$R"
-  printf '%s r %s%sRefresh%s  %s q %s%sQuit%s\n' "$KEY" "$R" "$LBL" "$R" "$KEY" "$R" "$LBL" "$R"
+    fit_line "$(printf '%s  j/k scroll - %d-%d of %d%s' "$D" $(( SCROLL + 1 )) "$i" "${#OUT[@]}" "$R")"
+  fit_line "$(printf '%s r %s%sRefresh%s  %s q %s%sQuit%s' "$KEY" "$R" "$LBL" "$R" "$KEY" "$R" "$LBL" "$R")"
 }
 
 
