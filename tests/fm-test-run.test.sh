@@ -109,6 +109,8 @@ init_changed_fixture_repo() {
     fm-bearings-snapshot.test.sh \
     fm-backend-cmux.test.sh \
     fm-backend-zellij.test.sh \
+    fm-quota-freeze.test.sh \
+    fm-herdr-session-cleanup.test.sh \
     fm-backend-orca.test.sh; do
     printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/$script"
     chmod +x "$repo/tests/$script"
@@ -116,6 +118,7 @@ init_changed_fixture_repo() {
   : >"$repo/tests/lib.sh"
   : >"$repo/tests/fm-backend-herdr-eventwait.test.py"
   : >"$repo/bin/fm-supervisor-target-lib.sh"
+  : >"$repo/bin/fm-pr-lib.sh"
   : >"$repo/bin/unmapped-source.sh"
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
@@ -180,6 +183,32 @@ test_changed_dependency_selection_and_unmapped_failure() {
     || fail "unmapped changed source failure is not actionable: $(cat "$tmp/err")"
   rm -rf "$tmp"
   pass "changed selection covers dependents and fails closed for unmapped source"
+}
+
+test_reserved_check_slot_source_selects_the_suite_that_guards_it() {
+  local tmp repo listed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-reserved.XXXXXX")
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+
+  # bin/fm-pr-lib.sh owns the check-slot ids reserved for fleet-level polls, but
+  # the test binding a reservation to the poll it protects lives in the watcher
+  # suite. Selecting only the PR suite would let the reservation be renamed or
+  # dropped with its own guard never run, and a task could then take the slot.
+  printf '\n' >>"$repo/bin/fm-pr-lib.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-quota-freeze.test.sh" \
+    "a reserved-check-slot change does not select the suite binding the reservation to its poll"
+  # The same file carries the shape predicate that recognizes ids already on
+  # disk, whose guard - a task carrying a reserved name from before the
+  # reservation still gets its stale session cleaned up - lives in the backend
+  # suite. Without it a reservation could leak into that predicate unguarded.
+  assert_contains "$listed" "tests/fm-herdr-session-cleanup.test.sh" \
+    "a task-id predicate change does not select the suite guarding recognition of existing ids"
+  assert_contains "$listed" "tests/fm-pr-merge.test.sh" \
+    "a reserved-check-slot change stopped selecting its own PR coverage"
+  rm -rf "$tmp"
+  pass "changing the reserved check-slot ids selects the suites that guard them"
 }
 
 test_empty_selection_emits_summary() {
@@ -675,6 +704,7 @@ test_family_selection
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
+test_reserved_check_slot_source_selects_the_suite_that_guards_it
 test_empty_selection_emits_summary
 test_timing_markers_and_json
 test_aggregate_exit_behavior

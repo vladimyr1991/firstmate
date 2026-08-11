@@ -282,6 +282,25 @@ reset_fixture; : > "$FIXTURE_DIR/race"; assert_preserved "revalidation race"
 reset_fixture; printf '%s\n' "$TAB" > "$FIXTURE_DIR/active-tab"; assert_preserved "active target"
 reset_fixture; : > "$FIXTURE_DIR/focus-refuse"; assert_preserved "focus refusal"
 
+# A task id later reserved for a registry role was creatable before the
+# reservation landed, so a journal can carry it. Cleanup judges ids that already
+# exist, never ids being minted: if the reservation reached this filter the
+# journal would be skipped, its pane would stay open, and nothing else would
+# ever close it.
+SAVED_ID=$ID
+SAVED_TITLE=$TITLE
+ID=pm
+TITLE="└ $ID · p:$TOKEN"
+reset_fixture
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ ! -e "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] \
+  || fail "a stale projection for a pre-existing task named $ID kept its journal"
+[ "$(wc -l < "$CLOSE_LOG" | tr -d ' ')" = 1 ] \
+  || fail "a stale projection for a pre-existing task named $ID did not close exactly once"
+pass "a pre-existing task carrying a reserved id still has its stale projection cleaned up"
+ID=$SAVED_ID
+TITLE=$SAVED_TITLE
+
 INTEGRATION_ROOT="$TMP_ROOT/bootstrap-integration"
 mkdir -p "$INTEGRATION_ROOT/home/state" "$INTEGRATION_ROOT/home/data" "$INTEGRATION_ROOT/home/config"
 cp -R "$ROOT/bin" "$INTEGRATION_ROOT/bin"

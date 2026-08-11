@@ -136,7 +136,7 @@ family_for_basename() {
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
-    fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|\
+    fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|fm-limit-dialog.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
@@ -149,7 +149,7 @@ family_for_basename() {
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
-    fm-session-lock-ancestry.test.sh|\
+    fm-quota-freeze.test.sh|fm-session-lock-ancestry.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-triage.test.sh|\
     fm-watcher-lock.test.sh)
@@ -867,6 +867,14 @@ families_for_changed_path() {
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
       printf '%s\n' watcher-wake-lock
       ;;
+    bin/fm-quota-freeze*)
+      printf '%s\n' watcher-wake-lock
+      printf '%s\n' pure-contract-unit
+      ;;
+    bin/fm-limit-dialog.sh)
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' backend-dispatch
+      ;;
     bin/fm-afk*)
       printf '%s\n' afk
       printf '%s\n' real-herdr-gated
@@ -889,6 +897,22 @@ families_for_changed_path() {
     bin/fm-sessionstart-nudge.sh|bin/fm-tangle*|bin/fm-update.sh|\
     bin/fm-gate-refuse*|bin/fm-lock*|bin/fm-quota-axi-lib.sh)
       printf '%s\n' session-bootstrap
+      ;;
+    bin/fm-pr-lib.sh)
+      printf '%s\n' pr-forge
+      # Both task-id reservations live here - the check-slot ids and the freeze
+      # registry's role names - and the tests binding each to what it protects
+      # are in watcher-wake-lock. Without this either reservation could be
+      # renamed or dropped with its own guard never selected, and a task could
+      # then evict the fleet-wide poll from the shared slot or impersonate the
+      # board PM in the freeze registry.
+      printf '%s\n' watcher-wake-lock
+      # The same file carries the shape-only predicate that recognizes ids which
+      # already exist. Its guard - that a task carrying a reserved name from
+      # before the reservation still has its stale session cleaned up - lives in
+      # backend-dispatch, so a reservation leaking into that predicate would
+      # otherwise strand real sessions with no test selected to catch it.
+      printf '%s\n' backend-dispatch
       ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)
