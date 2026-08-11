@@ -27,17 +27,20 @@ The independence is the point: a model re-reading its own compression tends to r
 
 ```
 $ bin/fm-skill-compact-check.sh
+fm-skill-compact-check: firstmate-coding-guidelines changed baseline_tokens=3039 tokens=3429 delta=+390 (+12.8%) pointers=17 boundaries=11 scenarios=0
 fm-skill-compact-check: fmx-respond compacted baseline_tokens=10448 tokens=8603 delta=-1845 (-17.7%) pointers=43 boundaries=41 scenarios=30
-fm-skill-compact-check: harness-adapters compacted baseline_tokens=15173 tokens=14267 delta=-906 (-6.0%) pointers=96 boundaries=25 scenarios=38
-fm-skill-compact-check: secondmate-provisioning compacted baseline_tokens=6811 tokens=6324 delta=-487 (-7.2%) pointers=45 boundaries=29 scenarios=24
-fm-skill-compact-check: ok checked=26 changed=3 compacted=3 retired_boundaries=0
+fm-skill-compact-check: harness-adapters compacted baseline_tokens=15173 tokens=14255 delta=-918 (-6.1%) pointers=96 boundaries=25 scenarios=38
+fm-skill-compact-check: secondmate-provisioning compacted baseline_tokens=6811 tokens=6369 delta=-442 (-6.5%) pointers=45 boundaries=29 scenarios=24
+fm-skill-compact-check: ok checked=26 changed=4 compacted=3 retired_boundaries=0
 ```
+
+`firstmate-coding-guidelines` itself grew (+12.8%) documenting this gate, so it counts as `changed` rather than `compacted` and carries no fixture.
 
 | Skill | Baseline tokens | After | Delta | Scenarios | Control (original) | Blind (compacted) |
 |---|---|---|---|---|---|---|
-| secondmate-provisioning | 6811 | 6324 | -487 (-7.2%) | 24 | 24/24 | 24/24 |
+| secondmate-provisioning | 6811 | 6369 | -442 (-6.5%) | 24 | 24/24 | 24/24 |
 | fmx-respond | 10448 | 8603 | -1845 (-17.7%) | 30 | 30/30 | 30/30 |
-| harness-adapters | 15173 | 14267 | -906 (-6.0%) | 38 | 38/38 | 38/38 |
+| harness-adapters | 15173 | 14255 | -918 (-6.1%) | 38 | 38/38 | 38/38 |
 
 `retired_boundaries=0`: no stated safety boundary was retired in any of the three, so none of this needed the captain-merge path.
 
@@ -79,7 +82,7 @@ Only one of the two axes is machine-enforced.
 The check owns the size delta and refuses a material shrink that carries no fixture, but it cannot run the blind re-answer, because that needs a second vendor's model.
 So "the scenario suite passed 100%" is an agent-run result recorded here with its evidence, not something CI can assert - treat a compaction whose blind run was never done as unverified, however green the check is.
 
-`harness-adapters` compacted least (-6.0%) because it is dense per-adapter reference material rather than prose: most of its length is empirically verified facts with one owner each.
+`harness-adapters` compacted least (-6.1%) because it is dense per-adapter reference material rather than prose: most of its length is empirically verified facts with one owner each.
 Pushing it further would have meant deleting verified facts rather than duplication, so it was left there deliberately.
 
 ## Reproducing
