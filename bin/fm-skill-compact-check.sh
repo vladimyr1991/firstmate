@@ -202,10 +202,28 @@ BOUNDARY_FAMILIES = {
     "refuse": (r"refuse", r"refuses", r"refused", r"refusing", r"refusal"),
     "stop": (r"stop", r"stops", r"stopped", r"stopping"),
 }
+# Hyphen-joined uses are adjectival or are flag names, never imperatives:
+# "the never-observed zero-whitespace form" describes evidence, and
+# "--always-approve" is a launch flag. Excluding a hyphen on either side keeps
+# those out without weakening any real rule.
+#
+# "stop" needs its own rule. Harnesses name an event Stop, so "Stop hook",
+# "Stop payload", and "Stop `asyncRewake` continuation" are things rather than
+# rules, and counting them would flag every ordinary edit to an adapter fact.
+# As a rule verb, "stop" is lowercase mid-sentence ("stop and report") or
+# imperative at the start of a statement; a capitalized Stop mid-sentence is the
+# event. That split is what this encodes.
 BOUNDARY_RE = {
-    family: re.compile(r"(?<![A-Za-z])(?:" + "|".join(words) + r")(?![A-Za-z])", re.IGNORECASE)
+    family: re.compile(
+        r"(?<![A-Za-z-])(?:" + "|".join(words) + r")(?![A-Za-z_-])", re.IGNORECASE
+    )
     for family, words in BOUNDARY_FAMILIES.items()
+    if family != "stop"
 }
+BOUNDARY_RE["stop"] = re.compile(
+    r"(?<![A-Za-z-])(?:stops?|stopped|stopping)(?![A-Za-z_-])"
+    r"|^Stop(?:s|ped|ping)?(?![A-Za-z_-])"
+)
 
 STOPWORDS = {
     "that", "this", "with", "from", "them", "they", "then", "than", "when",

@@ -69,6 +69,11 @@ A new skill is dead weight if nothing loads it.
 Every new skill needs its load trigger declared inline: section 13 for agent-only reference skills, or the relevant operating section for anything else.
 State the trigger as a condition ("load before X", "load on Y wake"), never as a vague pointer.
 `bin/fm-skill-trigger-check.sh` enforces that every tracked skill is either declared `user-invocable: true` or named in `AGENTS.md`; whether the trigger reads as a condition rather than a pointer stays a review judgment.
+
+Rewriting a skill's prose is a behavior change, so verify it as one rather than by reading the diff.
+`bin/fm-skill-compact-check.sh` refuses a rewrite that silently drops a pointer or a never/always/must/refuse/stop statement, and a materially smaller skill must also carry a scenario fixture in `tests/skill-scenarios/`, answered blind on a different vendor from the one that wrote the rewrite.
+Collapsing a rule stated three times into a rule stated once is an ordinary consolidation; genuinely retiring a stated safety boundary exits 3 and goes to the captain for merge regardless of diff size.
+[`docs/verification/skill-compaction.md`](../../../docs/verification/skill-compaction.md) owns the procedure and the active evidence.
 Briefs for tasks that touch firstmate's own tracked material should tell the crewmate to load this skill.
 `bin/fm-brief.sh`'s `REPO` argument is a caller-supplied string with no reliable signal that it names firstmate's own repo, unlike a project registered in `data/projects.md`, so there is no clean point inside the scaffold to detect this case automatically.
 Firstmate adds this skill's load instruction to firstmate-repo briefs by hand instead.

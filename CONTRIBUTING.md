@@ -51,6 +51,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 - Changes to runtime session backends (`bin/fm-backend.sh`, `bin/backends/`, and the scripts that dispatch through them) keep current setup and limits in the relevant backend guide and active empirical evidence in [`docs/verification/runtime-backends.md`](docs/verification/runtime-backends.md).
 - [`docs/documentation-audiences.md`](docs/documentation-audiences.md) and its machine-consumed inventory own prose classification; run `bin/fm-doc-audience-check.sh` after documentation changes.
 - Every tracked skill under `.agents/skills/` needs a load trigger; run `bin/fm-skill-trigger-check.sh` after adding or renaming one.
+- Rewriting a skill's prose is verified by behavior, not by reading the diff; run `bin/fm-skill-compact-check.sh` after editing one, and see [`docs/verification/skill-compaction.md`](docs/verification/skill-compaction.md) for the two-axis gate and the blind re-answer procedure.
 - In Markdown, put each full sentence on its own line.
 - `README.md` stays a concise overview plus pointers: it never carries a wall of inline detail.
   Route detail to the most specific `docs/` file (architecture, configuration, or a backend guide) and link to it instead.
