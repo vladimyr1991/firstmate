@@ -28,6 +28,14 @@ Size alone is a loss wearing a better number.
 Write scenarios that probe decisions with a wrong answer available - a resolution order, an exclusion, a refusal, a boundary between two similar-looking cases.
 A scenario whose answer is obvious from the skill's title tests nothing.
 
+**Ask for the concrete outcome, not a bare yes or no.**
+A question answerable with "yes"/"no" can come back with the correct reasoning attached to a flipped label, and that flip reproduces on the unedited skill too - so it reads as a regression the edit did not cause.
+The first `fmx-respond` pass hit exactly this: "Does the reply post?" returned "No, it does not post. The explicit environment value wins and `off` is not truthy", which is the right rule and the wrong label, on both the original and the compacted text.
+Name the observable instead ("does the reply reach the relay or get recorded to `state/x-outbox/`?") so a wrong answer has to be wrong about something real.
+
+This is also why the control run matters: answer the fixtures against the ORIGINAL first.
+Without that baseline an unstable question looks like damage the compaction did.
+
 Format, enforced by `bin/fm-skill-compact-check.sh`:
 
 ```markdown

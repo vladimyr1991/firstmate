@@ -198,6 +198,51 @@ $(padding)"
   pass "retiring a stated safety boundary exits 3 and routes the change to the captain"
 }
 
+test_consolidated_boundary_passes_without_captain_merge() {
+  local repo out
+  repo=$(make_repo consolidated "Run \`bin/fm-thing.sh\` first.
+Never discard unlanded crewmate work without explicit captain authority.
+Remember: never discard unlanded crewmate work without explicit captain authority, and always check twice.
+$(padding)")
+  # The summary restating the rule goes; the statement that owns it stays.
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+Never discard unlanded crewmate work without explicit captain authority.
+$(padding)"
+  printf '# Retired\n\n- consolidated-boundary <<Remember: never discard unlanded crewmate work without explicit captain authority, and always check twice.>> -> <<Never discard unlanded crewmate work without explicit captain authority.>>: the summary restated the rule stated above it.\n' \
+    > "$repo/.agents/skills/demo/RETIRED.md"
+  out=$("$CHECK" --root "$repo" --baseline main) \
+    || fail "a verified consolidation was refused"
+  assert_contains "$out" "retired_boundaries=0" \
+    "a consolidation was counted as a retirement and would have demanded a captain merge"
+  pass "collapsing a rule stated twice into one statement passes without the captain-merge exit"
+}
+
+test_consolidation_naming_an_absent_survivor_fails() {
+  local repo
+  repo=$(make_repo bad-consolidation "Run \`bin/fm-thing.sh\` first.
+Never discard unlanded crewmate work without explicit captain authority.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+$(padding)"
+  printf '# Retired\n\n- consolidated-boundary <<Never discard unlanded crewmate work without explicit captain authority.>> -> <<Never discard unlanded work without the captain saying so.>>: claimed to survive elsewhere.\n' \
+    > "$repo/.agents/skills/demo/RETIRED.md"
+  run_expect_code 1 "not in the rewritten skill" "$CHECK" --root "$repo" --baseline main
+  pass "a deletion cannot be laundered into a consolidation by naming a survivor that is not there"
+}
+
+test_malformed_consolidation_line_fails() {
+  local repo
+  repo=$(make_repo bad-consolidation-syntax "Run \`bin/fm-thing.sh\` first.
+Never discard unlanded crewmate work without explicit captain authority.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+$(padding)"
+  printf -- '- consolidated-boundary <<Never discard unlanded crewmate work.>>: no survivor named here.\n' \
+    > "$repo/.agents/skills/demo/RETIRED.md"
+  run_expect_code 1 "is not a retirement entry" "$CHECK" --root "$repo" --baseline main
+  pass "a consolidation that names no survivor is refused rather than read as a retirement"
+}
+
 test_material_shrink_without_a_fixture_fails() {
   local repo
   repo=$(make_repo no-fixture "Run \`bin/fm-thing.sh\` first.
@@ -274,6 +319,9 @@ test_malformed_retirement_line_fails
 test_dropped_boundary_fails
 test_reworded_boundary_survives
 test_retired_boundary_requires_captain_merge
+test_consolidated_boundary_passes_without_captain_merge
+test_consolidation_naming_an_absent_survivor_fails
+test_malformed_consolidation_line_fails
 test_material_shrink_without_a_fixture_fails
 test_material_shrink_with_a_fixture_passes
 test_incomplete_fixture_fails

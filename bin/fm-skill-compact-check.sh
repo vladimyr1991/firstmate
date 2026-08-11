@@ -49,6 +49,20 @@
 # the captain for merge regardless of how small the diff looks, and a standing
 # yolo posture does not cover it.
 #
+# Collapsing a rule stated three times into a rule stated once is the whole
+# point of a compaction, and it is NOT a retirement - the rule still binds. That
+# case declares which statement absorbed it:
+#
+#   - consolidated-boundary <<Never do X, and also Y.>> -> <<Never do X.>>: the
+#     Notes summary restated the rule already stated under "Voice".
+#
+# This is verified rather than trusted: the named survivor must actually appear
+# in the rewritten skill and carry the same keyword family, so a deletion cannot
+# be laundered into a consolidation by asserting one. Because the rule survives,
+# a consolidation is an ordinary change and does not trigger the captain-merge
+# exit - which is what keeps that signal meaningful instead of firing on every
+# compaction.
+#
 # `--prompt <name>` prints the blind re-answer prompt: the rewritten skill plus
 # the scenario questions, with the expected answers and their anchors stripped
 # out. Blindness is the whole point of the exercise, so it is produced here
@@ -211,6 +225,10 @@ STOPWORDS = {
 }
 
 RETIRE_RE = re.compile(r"^\s*-\s+retired-(pointer|boundary)\s+<<(.+?)>>\s*:\s*(\S.*?)\s*$")
+CONSOLIDATE_RE = re.compile(
+    r"^\s*-\s+consolidated-boundary\s+<<(.+?)>>\s*->\s*<<(.+?)>>\s*:\s*(\S.*?)\s*$"
+)
+RETIRE_KEYWORDS = ("retired-pointer", "retired-boundary", "consolidated-boundary")
 
 
 class CheckError(Exception):
@@ -356,6 +374,23 @@ def pointers(text: str) -> set[str]:
     return found
 
 
+def normalize_statement(line: str) -> str:
+    """Whitespace- and emphasis-insensitive form, so a survivor can be named."""
+    return re.sub(r"\s+", " ", line.replace("**", "").replace("*", "")).strip()
+
+
+def declared_matches(baseline_terms: set[str], declared_terms: set[str]) -> bool:
+    """Does a RETIRED.md entry name this baseline statement?
+
+    Same threshold as boundary_survives, so declaring a statement is exactly as
+    hard as restating it, and a vague entry cannot cover a rule it never named.
+    """
+    if not baseline_terms or not declared_terms:
+        return False
+    required = max(1, math.ceil(len(baseline_terms) * 0.5))
+    return len(baseline_terms & declared_terms) >= required
+
+
 def significant_terms(line: str) -> set[str]:
     lowered = line.lower()
     return {t for t in RE_TERM.findall(lowered) if t not in STOPWORDS}
@@ -398,12 +433,13 @@ def boundary_survives(family: str, terms: set[str], candidates: list[tuple[str, 
     return False
 
 
-def load_retirements(skill: str) -> tuple[dict[str, str], list[tuple[str, str]]]:
+def load_retirements(skill: str) -> tuple[dict[str, str], list[tuple[str, str]], list[tuple[str, str]]]:
     path = ROOT / ".agents/skills" / skill / "RETIRED.md"
     retired_pointers: dict[str, str] = {}
     retired_boundaries: list[tuple[str, str]] = []
+    consolidated: list[tuple[str, str]] = []
     if not path.exists():
-        return retired_pointers, retired_boundaries
+        return retired_pointers, retired_boundaries, consolidated
     if path.is_symlink() or not path.is_file():
         fail(f"{skill}: RETIRED.md must be an ordinary file")
     try:
@@ -411,14 +447,26 @@ def load_retirements(skill: str) -> tuple[dict[str, str], list[tuple[str, str]]]
     except (OSError, UnicodeDecodeError) as exc:
         fail(f"{skill}: cannot read RETIRED.md: {exc}")
     for number, line in enumerate(lines, start=1):
-        if "retired-pointer" not in line and "retired-boundary" not in line:
+        if not any(keyword in line for keyword in RETIRE_KEYWORDS):
+            continue
+        consolidation = CONSOLIDATE_RE.match(line)
+        if consolidation:
+            subject = consolidation.group(1).strip()
+            survivor = consolidation.group(2).strip()
+            reason = consolidation.group(3).strip()
+            if not subject or not survivor:
+                fail(f"{skill}: RETIRED.md line {number} consolidates an empty statement")
+            if len(reason) < 8:
+                fail(f"{skill}: RETIRED.md line {number} needs a real reason, not {reason!r}")
+            consolidated.append((subject, survivor))
             continue
         match = RETIRE_RE.match(line)
         if not match:
             fail(
                 f"{skill}: RETIRED.md line {number} is not a retirement entry; "
-                "use `- retired-pointer <<subject>>: reason` or "
-                "`- retired-boundary <<subject>>: reason`"
+                "use `- retired-pointer <<subject>>: reason`, "
+                "`- retired-boundary <<subject>>: reason`, or "
+                "`- consolidated-boundary <<subject>> -> <<survivor>>: reason`"
             )
         kind, subject, reason = match.group(1), match.group(2).strip(), match.group(3).strip()
         if not subject:
@@ -429,7 +477,7 @@ def load_retirements(skill: str) -> tuple[dict[str, str], list[tuple[str, str]]]
             retired_pointers[subject] = reason
         else:
             retired_boundaries.append((subject, reason))
-    return retired_pointers, retired_boundaries
+    return retired_pointers, retired_boundaries, consolidated
 
 
 def scenario_path(skill: str) -> Path:
@@ -536,7 +584,7 @@ def check_skill(skill: str, path: str) -> dict:
     cur_tokens = estimated_tokens(current)
     delta = cur_tokens - base_tokens
 
-    retired_pointers, retired_boundaries = load_retirements(skill)
+    retired_pointers, retired_boundaries, consolidated = load_retirements(skill)
 
     base_pointers = pointers(base)
     cur_pointers = pointers(current)
@@ -550,17 +598,32 @@ def check_skill(skill: str, path: str) -> dict:
         )
 
     cur_boundaries = [(family, terms) for family, _, terms in boundaries(current)]
+    current_statements = {normalize_statement(s) for s in statement_lines(current)}
+
+    # A claimed survivor is checked against the rewritten text, so a deletion
+    # cannot be laundered into a consolidation by asserting one.
+    absorbed: list[set[str]] = []
+    for subject, survivor in consolidated:
+        if normalize_statement(survivor) not in current_statements:
+            fail(
+                f"{skill}: RETIRED.md claims a boundary was consolidated into a statement that "
+                f"is not in the rewritten skill: {survivor!r}"
+            )
+        absorbed.append(significant_terms(subject))
+
     retired_terms = [(subject, significant_terms(subject)) for subject, _ in retired_boundaries]
     lost: list[str] = []
     for family, statement, terms in boundaries(base):
         if boundary_survives(family, terms, cur_boundaries):
             continue
-        if any(
-            terms and rterms and len(terms & rterms) >= max(1, math.ceil(len(terms) * 0.5))
-            for _, rterms in retired_terms
-        ):
+        if any(declared_matches(terms, stated) for stated in absorbed):
             continue
-        lost.append(statement)
+        if any(declared_matches(terms, rterms) for _, rterms in retired_terms):
+            continue
+            # One statement can carry two keyword families ("never ... always ...").
+        # It is still one lost rule, so report it once.
+        if statement not in lost:
+            lost.append(statement)
     if lost:
         shown = "; ".join(f'"{s}"' for s in lost[:5])
         more = f" (+{len(lost) - 5} more)" if len(lost) > 5 else ""

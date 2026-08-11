@@ -148,6 +148,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/fmx-respond/RETIRED.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": ".agents/skills/fmx-respond/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -382,6 +386,10 @@
     {
       "path": "tests/skill-scenarios/README.md",
       "audience": "maintainer-architecture"
+    },
+    {
+      "path": "tests/skill-scenarios/fmx-respond.md",
+      "audience": "maintainer-verification"
     },
     {
       "path": "tests/skill-scenarios/secondmate-provisioning.md",
