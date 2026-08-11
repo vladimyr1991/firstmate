@@ -505,17 +505,17 @@ T
 }
 
 test_bare_payment_stems_are_refused() {
-  local dir rc name screen
+  local dir rc name
   dir=$(make_case bare-payment-stems)
 
   # Bare payment stems like "pay", "fee", "cost" are now caught by the extended
   # veto, preventing them from reaching the endpoint even when the timezone slot
   # no longer admits bare letters.
   for name in pay fee cost paid; do
-    screen="$dir/$name.txt"
     printf 'Claude usage limit reached.\n1. Stop and wait for the limit to reset at 5 %s\n2. Something else entirely\n' "$name" \
-      > "$screen"
+      > "$dir/screen.txt"
     : > "$dir/typed.txt"
+    : > "$dir/tmux.log"
     set +e
     run_live "$dir" --provider claude >/dev/null 2> "$dir/$name.err"
     rc=$?
@@ -523,6 +523,9 @@ test_bare_payment_stems_are_refused() {
     [ "$rc" -eq 3 ] || fail "an option with bare stem '$name' in the timezone slot was not refused (got $rc)"
     [ ! -s "$dir/typed.txt" ] \
       || fail "an option with '$name' reached the endpoint: $(cat "$dir/typed.txt")"
+    case "$(cat "$dir/tmux.log")" in
+      *send-keys*) fail "an option with bare stem '$name' sent a key to the pane" ;;
+    esac
   done
   pass "bare payment stems (pay, fee, cost, paid) are refused by the veto"
 }
