@@ -77,11 +77,14 @@ collapsing them sends the caller to record a freeze twice.
   5  the dialog was answered and the freeze IS recorded, but no poll is armed,
      so nothing is watching any open obligation until it is re-armed
 
-The upgrade option is never selected. Selection is an ALLOWLIST: an option is
-selectable only when its whole text reads as one of the enumerated
-wait-for-reset phrasings, and a paid-wording veto can still reject a match. A
-dialog whose options are not recognized is never guessed at - it refuses with
-exit 3 and sends no keystroke.
+The upgrade option is never selected. Two barriers decide a selection and DENY
+RUNS FIRST: a paid-wording veto is applied to the raw option text, so an option
+that mentions money is rejected whatever else it says, and only then must the
+option's whole text match the enumerated wait-for-reset ALLOWLIST. That
+allowlist admits the trailing detail a real dialog carries - a reset time, a
+duration, a timezone, a short parenthetical - through an enumerated vocabulary,
+never a wildcard. A dialog whose options are not recognized is never guessed at:
+it refuses with exit 3 and sends no keystroke.
 EOF
 }
 
@@ -174,11 +177,34 @@ options_of() {
 # verbatim for a human. Stalling is always correct; guessing is never. Spending
 # is the captain's decision alone, so no automation may select a paid option.
 #
-# The lead-in and trailing clause below are part of the allowlist rather than
-# exceptions to it: they widen the recognized phrasings by a fixed, enumerated
-# amount, never by anything the dialog itself supplies.
+# DENY RUNS FIRST. Wherever a deny check and an allow check are combined over
+# the same input, the deny check is applied to the RAW text before any allowlist
+# matching. A veto placed behind an allowlist is decorative: it only ever sees
+# input the allowlist already approved, so it documents a protection it cannot
+# provide. Ordered this way the payment veto genuinely rejects - it kills
+# anything that mentions money even if the allowlist would match it - and the
+# allowlist independently still refuses everything it does not positively
+# recognize.
+#
+# The lead-in, the trailing clause, and the trailing DETAIL below are part of
+# the allowlist rather than exceptions to it. A real dialog has to convey when
+# the limit comes back, so the safe option carries a reset time, a duration, a
+# timezone, or a short parenthetical; an allowlist that matched only the bare
+# sentence would refuse the SAFE option on nearly every real dialog and stall
+# the worker every time, which is the idle fleet this whole mechanism removes. A
+# guard that blocks the safe path as reliably as the unsafe one has not made
+# anything safer. So the detail is admitted through an enumerated vocabulary
+# only - never a wildcard, never a prefix match, never arbitrary trailing text -
+# and the one slot where dialog-supplied letters enter at all, the timezone
+# token, is bounded to a few characters and is exactly what the payment veto
+# ahead of it is there to police.
 WAIT_LEAD='((stop|pause|hold)( and|,)?[[:space:]]+|just[[:space:]]+|please[[:space:]]+)?'
-WAIT_TAIL='([[:space:]]*[,;]?[[:space:]]*(and[[:space:]]+)?(then[[:space:]]+)?(automatically[[:space:]]+)?(continue|resume|retry|try[[:space:]]+again)([[:space:]]+automatically)?)?[[:space:]]*[.!]?'
+WAIT_CLOCK='[0-9]{1,2}([:.][0-9]{2})?[[:space:]]*(am|pm)?([[:space:]]+[A-Z]{2,4})?'
+WAIT_DURATION='[0-9]{1,3}[[:space:]]+(second|seconds|minute|minutes|hour|hours)'
+WAIT_WHEN="([[:space:]]+(at|around|by)[[:space:]]+${WAIT_CLOCK}|[[:space:]]+in[[:space:]]+${WAIT_DURATION})?"
+WAIT_CONTINUE='([[:space:]]*[,;]?[[:space:]]*(and[[:space:]]+)?(then[[:space:]]+)?(automatically[[:space:]]+)?(continue|resume|retry|try[[:space:]]+again)([[:space:]]+automatically)?)?'
+WAIT_PAREN='([[:space:]]*\((recommended|default)\))?'
+WAIT_TAIL="${WAIT_WHEN}${WAIT_CONTINUE}${WAIT_PAREN}[[:space:]]*[.!]?"
 WAIT_ALLOWLIST="\
 ${WAIT_LEAD}wait([[:space:]]+(for|until))?([[:space:]]+(the|my|your|this))?([[:space:]]+(usage|rate|quota|model))?([[:space:]]+(limit|limits|window|cap))?([[:space:]]+(to|will))?[[:space:]]+reset(s|ting)?${WAIT_TAIL}"
 
@@ -197,10 +223,9 @@ is_recognized_wait_option() {
   return 1
 }
 
-# The independent SECOND barrier, never the only one. It can reject an option
-# the allowlist already accepted, but it is not what makes an option safe: an
-# option this does not match is still refused unless the allowlist recognized
-# it.
+# The deny half of the boundary, and it runs FIRST on the raw option text at
+# every site that selects. Whatever the allowlist would say, an option that
+# mentions money is not selectable.
 is_paid_option() {
   printf '%s' "$1" | grep -qiE 'upgrade|buy|purchase|subscribe|billing|payment|checkout|credit card|add (funds|credits)'
 }
@@ -272,7 +297,7 @@ scan() {  # <capture>
     seen="$seen$key"
     ALL_OPTIONS="$ALL_OPTIONS$number. $text
 "
-    if is_recognized_wait_option "$text" && ! is_paid_option "$text"; then
+    if ! is_paid_option "$text" && is_recognized_wait_option "$text"; then
       matches=$((matches + 1))
       WAIT_NUMBER=$number
       WAIT_TEXT=$text
@@ -303,16 +328,16 @@ case "$SCAN_RC" in
 esac
 
 # Belt and braces before any keystroke leaves this script: the selection must
-# still be a recognized wait-for-reset option and must not read as a paid one.
+# not read as a paid option and must still be a recognized wait-for-reset one.
 # This is the last gate before money can be spent, so it does not trust the scan
-# above, and it re-applies the allowlist first rather than only the veto.
+# above, and it applies the two checks in the same deny-first order.
 case "$WAIT_NUMBER" in
   ''|*[!0-9]*) die "the selected option is not a plain number" ;;
 esac
 [ "${#WAIT_NUMBER}" -le 2 ] || die "the selected option number is out of range"
+! is_paid_option "$WAIT_TEXT" || die "refusing to select an option that could spend money"
 is_recognized_wait_option "$WAIT_TEXT" \
   || die "the selected option is not a recognized wait-for-reset choice"
-! is_paid_option "$WAIT_TEXT" || die "refusing to select an option that could spend money"
 
 printf 'limit-dialog: detected\n'
 printf 'wait-option: %s\n' "$WAIT_NUMBER"

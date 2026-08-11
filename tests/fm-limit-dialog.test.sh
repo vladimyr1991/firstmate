@@ -420,8 +420,86 @@ Wait for the limit to reset
 Wait for reset
 Wait until the usage limit resets
 Pause and wait for the limit to reset, then continue
+Stop and wait for the limit to reset at 3pm
+Wait for the limit to reset (recommended)
+Stop and wait for the limit to reset in 47 minutes
+Wait until your usage limit resets at 17:00 UTC
 VARIANTS
   pass "close variants of the wait-for-reset option are recognized, not just the one observed sentence"
+}
+
+test_the_safe_option_carrying_a_reset_time_is_answered_not_stalled() {
+  local dir rc typed
+  dir=$(make_case trailing-detail)
+  # A real dialog has to say when the limit comes back, so the safe option
+  # carries that detail. Refusing it is safe on the money axis and useless on
+  # every other one: the worker stays parked and the fleet sits idle, which is
+  # the incident this whole mechanism exists to remove.
+  cat > "$dir/screen.txt" <<'T'
+Claude usage limit reached.
+1. Stop and wait for the limit to reset at 3pm
+2. Upgrade to Max for higher limits
+T
+  set +e
+  run_live "$dir" --provider claude > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] \
+    || fail "the safe option carrying a reset time was not answered (exit $rc): $(cat "$dir/err")"
+  typed=$(cat "$dir/typed.txt")
+  [ "$typed" = 1 ] || fail "the waiting option was not the key typed (typed [$typed])"
+  case "$(cat "$dir/tmux.log")" in
+    *'literal=1 arg=2'*) fail "the upgrade option was typed" ;;
+  esac
+  [ -f "$dir/home/state/quota-frozen/task-a" ] \
+    || fail "answering the dialog did not record the freeze it created"
+  pass "the safe option carrying its reset time is answered and armed, not stalled"
+}
+
+test_payment_language_is_refused_even_when_the_allowlist_shape_matches() {
+  local dir rc err
+  dir=$(make_case veto-over-allowlist)
+  # The timezone slot is the one place the allowlist admits letters the dialog
+  # supplies, so it is the one place money wording can reach an otherwise
+  # allowlist-shaped option. The veto runs on the raw text ahead of the
+  # allowlist precisely so it can reject here rather than document a barrier it
+  # never sees input for.
+  cat > "$dir/screen.txt" <<'T'
+Claude usage limit reached.
+1. Stop and wait for the limit to reset at 6 BUY
+2. Something else entirely
+T
+  set +e
+  run_live "$dir" --provider claude > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  err=$(cat "$dir/err")
+  [ "$rc" -eq 3 ] || fail "an allowlist-shaped option carrying payment language was not refused (got $rc)"
+  [ ! -s "$dir/typed.txt" ] \
+    || fail "an option carrying payment language reached the endpoint: $(cat "$dir/typed.txt")"
+  case "$(cat "$dir/tmux.log")" in
+    *send-keys*) fail "an option carrying payment language sent a key to the pane" ;;
+  esac
+  [ ! -e "$dir/home/state/quota-frozen/task-a" ] || fail "a refused dialog still recorded a freeze"
+  assert_contains "$err" 'Stop and wait for the limit to reset at 6 BUY' \
+    "the refusal did not report the vetoed option text verbatim"
+
+  # A wait sentence with an unsafe alternative appended. The closed-vocabulary
+  # tail and the payment veto must each refuse it on their own.
+  cat > "$dir/screen.txt" <<'T'
+Claude usage limit reached.
+1. Stop and wait for limit to reset or upgrade now
+2. Something else entirely
+T
+  : > "$dir/typed.txt"
+  set +e
+  run_live "$dir" --provider claude >/dev/null 2> "$dir/err2"
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "a wait sentence with an upgrade alternative appended was not refused (got $rc)"
+  [ ! -s "$dir/typed.txt" ] \
+    || fail "a wait sentence with an upgrade alternative appended reached the endpoint"
+  pass "an option that mentions money is never selected, whatever shape the rest of it has"
 }
 
 test_an_unrecognized_option_is_never_typed_into_the_pane() {
@@ -555,6 +633,8 @@ test_a_recorded_freeze_a_live_poll_watches_is_not_reported_as_no_resume
 test_a_recorded_freeze_with_no_poll_armed_is_reported_apart_from_a_missing_record
 test_answering_without_a_provider_still_answers_but_reports_no_resume
 test_close_variants_of_the_waiting_option_are_still_recognized
+test_the_safe_option_carrying_a_reset_time_is_answered_not_stalled
+test_payment_language_is_refused_even_when_the_allowlist_shape_matches
 test_an_unrecognized_option_is_never_typed_into_the_pane
 test_a_paywall_dialog_never_reaches_the_endpoint
 test_a_saved_capture_cannot_answer_a_live_dialog
