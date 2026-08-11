@@ -46,8 +46,16 @@
 # a clock instead of reading the gauges, and press `r` when you cannot wait.
 #
 # The dashboard shows only quota windows that can bound a model the fleet
-# dispatches to. Per-product windows for products the fleet does not dispatch
-# to stay in quota-axi's source data but are not dashboard resources. Grok's
+# dispatches to, and quota-axi is what says which those are: its
+# quotaSemantics.effectiveAvailability lists one entry per scope, and the
+# entry for the UNQUALIFIED scope - all_models, all_products - names in its
+# boundedBy the windows that limit an ordinary dispatch. Windows that bound
+# only a qualified scope (product:imagine, model:fable) are that product's
+# limit, not the fleet's; account credits bound every product and are named by
+# the fleet scope, so they stay. Per-product windows for products the fleet
+# does not dispatch to stay in quota-axi's source data but are not dashboard
+# resources. A payload without that statement falls back to the same relation
+# read off the window id, which quota-axi qualifies with its scope. Grok's
 # shared credits also carry an explicit unmeasured-weekly-cap warning, because
 # a healthy prepaid balance does not prove that Grok can accept another worker.
 # That warning rides the gauge, which every terminal width draws, so a narrow
@@ -120,6 +128,80 @@ COLS=80
 # Colour costs no columns, so it is stripped back off before a line is measured.
 FIT_STRIP="s/$(printf '\033')\\[[0-9;]*m//g"
 
+SGR_RESET=$'\033[0m'
+
+# A styled line split into its VISIBLE characters, each carrying the escape
+# sequences that immediately precede it. Measuring and cutting then happen in
+# the same units - columns - and a cut between two visible characters can never
+# land inside a sequence.
+VIS_CHARS=() VIS_PRE=()
+split_styled() {  # <styled>
+  local s=$1 n i=0 j pend='' ch c
+  n=${#s}
+  VIS_CHARS=(); VIS_PRE=()
+  while [ "$i" -lt "$n" ]; do
+    ch=${s:$i:1}
+    if [ "$ch" = $'\033' ]; then
+      j=$(( i + 1 ))
+      if [ "${s:$j:1}" = '[' ]; then
+        j=$(( j + 1 ))
+        while [ "$j" -lt "$n" ]; do
+          c=${s:$j:1}; j=$(( j + 1 ))
+          case "$c" in [0-9\;]) ;; *) break ;; esac
+        done
+      else
+        j=$(( j + 1 ))
+      fi
+      pend=$pend${s:$i:$(( j - i ))}
+      i=$j
+      continue
+    fi
+    VIS_PRE+=("$pend"); VIS_CHARS+=("$ch"); pend=''
+    i=$(( i + 1 ))
+  done
+}
+
+# The styling in force at the current point of the walk. A fold breaks a line
+# between two characters that were meant to share it, so the state has to be
+# carried across the break by hand: the terminal has no memory of it once the
+# newline closes the styling out.
+SGR_STATE=''
+sgr_apply() {  # <escape-sequences>
+  local esc=$1 part parts
+  IFS=$'\033' read -r -a parts <<< "$esc"
+  for part in ${parts+"${parts[@]}"}; do
+    case "$part" in
+      '') continue ;;
+      # Only SGR (…m) is styling; any other sequence is passed through where it
+      # was written rather than reopened on a continuation line.
+      *m) ;;
+      *) continue ;;
+    esac
+    case "$part" in
+      '[m'|'[0m') SGR_STATE='' ;;
+      *) SGR_STATE=$SGR_STATE$'\033'$part ;;
+    esac
+  done
+}
+
+# One folded piece: the visible characters [start, start+len) with the styling
+# that was in force reopened at its head and closed at its tail, so the piece
+# renders exactly as that stretch of the unfolded line would have.
+styled_segment() {  # <start> <len> <pad>
+  local i=$1 end=$(( $1 + $2 )) pad=$3 out
+  out=$pad$SGR_STATE
+  while [ "$i" -lt "$end" ]; do
+    if [ -n "${VIS_PRE[$i]}" ]; then
+      out=$out${VIS_PRE[$i]}
+      sgr_apply "${VIS_PRE[$i]}"
+    fi
+    out=$out${VIS_CHARS[$i]}
+    i=$(( i + 1 ))
+  done
+  [ -z "$SGR_STATE" ] || out=$out$SGR_RESET
+  printf '%s\n' "$out"
+}
+
 # The ONE owner of "a rendered line fits the pane", and the last thing every
 # line in the dashboard passes through. A line that fits is printed exactly as
 # it was composed, colour and all. A line that does not is folded at word
@@ -139,12 +221,21 @@ FIT_STRIP="s/$(printf '\033')\\[[0-9;]*m//g"
 # is what puts its cells under their headers, and rejoining the words on a
 # single space would collapse exactly that. Everything up to the break keeps
 # the spacing it was composed with, and only the tail moves down.
+#
+# The fold is measured on the colour-stripped copy and PRINTED from the styled
+# one. Folding the stripped copy instead would hand a narrow pane plain text:
+# the amber on a status row, the dim on a caveat and the tone on a gauge are
+# the fastest thing to read on the line, and losing them exactly where the pane
+# is tightest is the degradation the rest of this fold exists to prevent.
 fit_line() {  # <styled>
-  local styled=$1 plain indent='   ' pad='' avail head rest
+  local styled=$1 plain indent='   ' pad='' avail head rest start
   plain=$(printf '%s' "$styled" | sed "$FIT_STRIP")
   [ "${#plain}" -gt "$COLS" ] || { printf '%s\n' "$styled"; return 0; }
   [ "$COLS" -gt 12 ] || indent=
+  split_styled "$styled"
+  SGR_STATE=
   rest=$plain
+  start=0
   avail=$COLS
   while [ "${#rest}" -gt "$avail" ]; do
     head=${rest:0:$avail}
@@ -155,14 +246,22 @@ fit_line() {  # <styled>
       *) case "$head" in *' '*) head=${head% *} ;; esac ;;
     esac
     [ -n "$head" ] || head=${rest:0:$avail}
-    printf '%s%s\n' "$pad" "$head"
+    styled_segment "$start" "${#head}" "$pad"
+    start=$(( start + ${#head} ))
     rest=${rest:${#head}}
-    while [ "${rest# }" != "$rest" ]; do rest=${rest# }; done
+    # The spaces the break swallowed are still part of the line, so the walk
+    # steps over them too - and over the styling they carried, which a later
+    # piece may be relying on.
+    while [ "${rest# }" != "$rest" ]; do
+      rest=${rest# }
+      [ -z "${VIS_PRE[$start]:-}" ] || sgr_apply "${VIS_PRE[$start]}"
+      start=$(( start + 1 ))
+    done
     pad=$indent
     avail=$(( COLS - ${#indent} ))
     [ "$avail" -ge 1 ] || avail=1
   done
-  [ -z "$rest" ] || printf '%s%s\n' "$pad" "$rest"
+  [ -z "$rest" ] || styled_segment "$start" "${#rest}" "$pad"
   return 0
 }
 
@@ -260,12 +359,32 @@ ROWS_PROGRAM=$(cat <<'JQ'
     (.provider | tostring) as $p | (.plan // "?") as $plan |
     (($p == "claude") or ($p == "codex") or ($p == "grok")) as $dispatch_provider |
     [ .windows[]? ] as $reported |
+    # Which windows bound a dispatch is quota-axi's own statement, never a list
+    # of window ids restated here. quotaSemantics.effectiveAvailability carries
+    # one entry per scope, and each entry's boundedBy names the windows that
+    # limit that scope. The FLEET scope is the UNQUALIFIED one - "all_models",
+    # "all_products" - because a worker is dispatched to a provider, not to one
+    # of its products. A window that appears only under a qualified scope
+    # ("product:imagine", "model:fable") bounds that product alone; account
+    # credits bound everything the account can do, so the fleet scope names
+    # them and they are kept. An id-based allowlist could not say any of this:
+    # it dropped a real credits balance the day the vendor renamed the window
+    # and admitted a new product window the day the vendor added one.
+    [ .quotaSemantics.effectiveAvailability[]?
+      | select(((.scope // "") | tostring | test(":")) | not)
+      | .boundedBy[]? | tostring ] as $fleet_bounding |
     [ $reported[] |
+      ((.id // "") | tostring) as $wid |
       select(
-        if $p == "claude" then .id == "five_hour" or .id == "seven_day"
-        elif $p == "codex" then .id == "weekly"
-        elif $p == "grok" then .id == "credits"
-        else true
+        if ($fleet_bounding | length) > 0 then
+          (($fleet_bounding | index($wid)) != null)
+        else
+          # No such statement in the payload - an older schema, or a provider
+          # quota-axi reports windows for without semantics. The same relation
+          # is then read off the id, which quota-axi qualifies with the scope
+          # it belongs to: an id carrying a scope qualifier is that product's
+          # or model's window, and an unqualified one bounds the account.
+          (($wid | test(":")) | not)
         end
       )
     ] as $dispatch_windows |
@@ -362,12 +481,15 @@ elide() {  # <text> <max>
 
 # Caps for the two cells that carry that text, derived once per render from the
 # pane. They are the COMPACT table's budget, because compact is the narrowest
-# grid the dashboard draws: ID, REMAIN and the three separators cost 13
-# columns, and MODEL is served first - a row that cannot say which provider it
-# describes says nothing at all. A wide pane sets caps no real label reaches,
-# so nothing is cut until the pane genuinely cannot pay for it.
+# grid the dashboard draws: what its fixed columns cost is MEASURED from an
+# empty compact row (see compact_fixed), never restated as a constant here -
+# a second copy of the layout arithmetic is how retuning a column reintroduces
+# the wrapping this budget exists to prevent. MODEL is served first: a row that
+# cannot say which provider it describes says nothing at all. A wide pane sets
+# caps no real label reaches, so nothing is cut until the pane genuinely cannot
+# pay for it.
 CELL_MODEL_MAX=0 CELL_WIN_MAX=0
-TABLE_FIXED=13
+TABLE_FIXED=0
 
 model_cell() {  # <provider>
   elide "$1" "$CELL_MODEL_MAX"
@@ -558,8 +680,20 @@ TABLE_ID=3 TABLE_REM=7 TABLE_RESET=9 TABLE_NOTE_MIN=12
 TABLE_MODEL=5 TABLE_PLAN=4 TABLE_WIN=6 TABLE_NOTE=12
 DRAW_MODEL=5 DRAW_WIN=6
 
+# What a compact row spends on everything except MODEL and WINDOW, taken by
+# rendering one with both of them empty rather than by re-adding ID, REMAIN and
+# the separators by hand - the same bargain table_width() makes for the grid.
+compact_fixed() {
+  local line
+  line=$(table_line compact \
+    "$(printf '%*s' "$TABLE_ID" '')" '' '' '' \
+    "$(printf '%*s' "$TABLE_REM" '')" '' '')
+  printf '%d' "${#line}"
+}
+
 measure_table() {
   local sec prov plan win pct resets cell
+  TABLE_FIXED=$(compact_fixed)
   TABLE_MODEL=5 TABLE_PLAN=4 TABLE_WIN=6 TABLE_NOTE=$TABLE_NOTE_MIN
   while IFS=$'\t' read -r sec prov plan win pct resets; do
     [ -n "$prov" ] || continue

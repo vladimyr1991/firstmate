@@ -164,9 +164,10 @@ SH
   assert_contains "$out" " 90.0%" "a readable percentage must survive the dispatch filter"
   assert_not_contains "$out" "UNREADABLE - run: quota-axi --allow-keychain-prompt] kimi" \
     "quota that WAS read must never be reported as unreadable"
-  assert_contains "$out" "UNKNOWN - dispatch limit not reported] grok" \
-    "a Grok window that is not credits must not stand in for the dispatch limit"
-  assert_not_contains "$out" "42.0%" "a non-dispatch Grok window's number must not be shown as headroom"
+  assert_contains "$out" "grok (credits)" \
+    "an account-wide window keeps its place when the vendor names it something new"
+  assert_contains "$out" " 42.0%" \
+    "a credits balance is a dispatch bound whatever its window id is called"
   assert_contains "$out" "UNREADABLE" "a provider reporting no windows at all is still unreadable"
   pass "fm-quota-dash: unfiltered providers keep the windows quota-axi reported"
 }
@@ -953,6 +954,187 @@ SH
   pass "fm-quota-dash: no rendered line is left for the terminal to wrap"
 }
 
+# Runs <script-file> with its stdout on a real pty and echoes what it drew,
+# with the pty's carriage returns removed. Colour is the thing under test here
+# and the dashboard only colours a terminal, so a pipe cannot see it at all.
+# script(1) spells this differently on BSD and util-linux; both are tried, and
+# a machine with neither reports a skip rather than a false pass.
+fm_pty_run() {  # <script-file>
+  local file=$1 out="$1.pty"
+  script -q /dev/null bash "$file" > "$out" 2>/dev/null || :
+  [ -s "$out" ] || script -q -c "bash '$file'" /dev/null > "$out" 2>/dev/null || :
+  [ -s "$out" ] || return 1
+  tr -d '\r' < "$out"
+}
+
+# Every escape sequence removed, so a line can be measured in the columns it
+# actually occupies.
+fm_strip_ansi() {
+  sed "s/$(printf '\033')\[[0-9;]*m//g"
+}
+
+test_folded_lines_keep_their_colour() {
+  local case_dir fakebin real_jq runner out plain folded caveat_line status_line longest
+  case_dir="$TMP_ROOT/folded-colour"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  # Claude answers with no dispatch window and grok is left out entirely, so
+  # the two longest coloured lines - the amber status fact and grok's dim
+  # caveat - both outgrow a 40-column pane and have to fold.
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"claude","plan":"max","windows":[
+    {"id":"model:fable","label":"Fable week","percentRemaining":60,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  mkdir -p "$case_dir"
+  runner="$case_dir/render.sh"
+  cat > "$runner" <<SH
+export PATH='$fakebin:$BASE_PATH'
+export COLUMNS=40
+export FM_HOME='$case_dir/home'
+exec '$ROOT/bin/fm-quota-dash.sh' --provider claude,grok --once
+SH
+  out=$(fm_pty_run "$runner") || {
+    pass "fm-quota-dash: folded lines keep their colour (skipped: no usable script(1) pty)"
+    return 0
+  }
+  printf '%s\n' "$out" | grep -q "$(printf '\033')\[" \
+    || fail "the dashboard must colour a terminal at all, got: $out"
+
+  # A continuation line exists at this width, which is what makes the rest of
+  # the case a claim about folded output rather than about unfolded output.
+  folded=$(printf '%s\n' "$out" | grep -c '^   [^ ]')
+  [ "${folded:-0}" -gt 0 ] || fail "a 40-column pane must fold something in: $out"
+
+  status_line=$(printf '%s\n' "$out" | grep '^   .*reported' | head -1)
+  [ -n "$status_line" ] || fail "the folded tail of the status row is missing from: $out"
+  printf '%s' "$status_line" | grep -q "$(printf '\033')\[3[0-9]m" \
+    || fail "a folded status row must reopen its colour, got: $(printf '%s' "$status_line" | cat -v)"
+
+  caveat_line=$(printf '%s\n' "$out" | grep '^   .*unmeasured)' | head -1)
+  [ -n "$caveat_line" ] || fail "the folded tail of Grok's caveat is missing from: $out"
+  printf '%s' "$caveat_line" | grep -q "$(printf '\033')\[2m" \
+    || fail "a folded caveat must stay dim, got: $(printf '%s' "$caveat_line" | cat -v)"
+
+  # Colour costs no columns, so preserving it must not cost the pane either.
+  plain=$(printf '%s\n' "$out" | fm_strip_ansi)
+  longest=$(printf '%s\n' "$plain" | awk '{ if (length > m) m = length } END { print m + 0 }')
+  [ "$longest" -le 40 ] \
+    || fail "no coloured line may exceed the 40-column pane, longest was $longest in: $plain"
+  plain=$(printf '%s\n' "$plain" | tr '\n' ' ' | tr -s ' ')
+  assert_contains "$plain" "UNKNOWN - dispatch limit not reported] claude" \
+    "the folded status row still states its fact in full"
+  assert_contains "$plain" "weekly cap unmeasured" \
+    "the folded caveat still states the unmeasured weekly cap"
+  pass "fm-quota-dash: semantic colour survives a folded line"
+}
+
+test_dispatch_windows_come_from_quota_semantics() {
+  local case_dir fakebin real_jq out weekly_block
+  case_dir="$TMP_ROOT/semantics-filter"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  # Two windows quota-axi has never emitted before: "monthly_allowance" bounds
+  # the account-wide scope, and "seat_pool" bounds only one product's scope
+  # despite an unqualified id. Neither is in any list the dashboard keeps, so
+  # only the payload's own boundedBy statement can tell them apart.
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"grok","plan":"heavy",
+   "windows":[
+     {"id":"monthly_allowance","kind":"weekly","label":"allowance","percentRemaining":64,"resetsAt":"2030-01-07T01:00:00Z"},
+     {"id":"seat_pool","kind":"credits","label":"Seat pool","percentRemaining":26,"resetsAt":"2030-01-07T01:00:00Z"},
+     {"id":"product:imagine","kind":"credits","label":"Imagine","percentRemaining":13,"resetsAt":"2030-01-07T01:00:00Z"}],
+   "quotaSemantics":{"effectiveAvailability":[
+     {"scope":"all_products","boundedBy":["monthly_allowance"]},
+     {"scope":"product:imagine","boundedBy":["monthly_allowance","seat_pool","product:imagine"]}]}}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$WIDE" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider grok --once)
+  weekly_block=$(printf '%s\n' "$out" | sed -n '/WEEKLY LIMIT/,/DAILY LIMIT/p')
+  assert_contains "$weekly_block" "grok (allowance)" \
+    "a window quota-axi says bounds the account-wide scope is a dispatch limit, whatever its id"
+  assert_contains "$out" " 64.0%" "the fleet-scope window's number must be shown as headroom"
+  assert_not_contains "$out" "dispatch limit not reported" \
+    "a provider whose fleet scope IS bounded must not be reported as unmeasured"
+  assert_not_contains "$out" "Seat pool" \
+    "a window that bounds only one product's scope is that product's limit, not the fleet's"
+  assert_not_contains "$out" "26.0%" "a product-scoped window's number must not surface as headroom"
+  assert_not_contains "$out" "Imagine" "a product window must stay out however new it is"
+  assert_not_contains "$out" "13.0%" "a product window's number must stay out with it"
+  pass "fm-quota-dash: quota-axi's own scope statement decides which windows bound dispatch"
+}
+
+test_compact_layout_follows_its_column_widths() {
+  local case_dir fakebin real_jq variant out header row cols
+  case_dir="$TMP_ROOT/compact-widths"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"codex","plan":"plus","windows":[
+    {"id":"weekly","kind":"weekly","label":"weekly rolling enterprise allocation window","percentRemaining":50,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  # The compact table's budget must come from the columns it actually draws.
+  # Widening REMAIN is the cheapest way to ask that question of the running
+  # program: a budget that restated the old arithmetic keeps composing rows
+  # wider than the pane, and every one of them folds.
+  mkdir -p "$case_dir"
+  variant="$case_dir/wider-remain.sh"
+  sed 's/TABLE_REM=7/TABLE_REM=11/' "$ROOT/bin/fm-quota-dash.sh" > "$variant"
+  chmod +x "$variant"
+  cmp -s "$variant" "$ROOT/bin/fm-quota-dash.sh" \
+    && fail "the REMAIN column width must be a declared width this case can widen"
+
+  cols=40
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$cols" FM_HOME="$case_dir/home" "$variant" --provider codex --once)
+  header=$(printf '%s\n' "$out" | awk '/ ID +MODEL/ { print; exit }')
+  assert_not_contains "$header" "AVAILABILITY" \
+    "a $cols-column pane must still be drawing the compact table"
+  assert_contains "$header" "REMAIN" \
+    "a wider REMAIN column must still fit its own header on the header line"
+  row=$(printf '%s\n' "$out" | awk '/^ *[0-9]+ codex /  { print; exit }')
+  assert_contains "$row" "50.0%" \
+    "a compact row must keep its REMAIN cell on the row, not folded onto the next line"
+  [ "${#row}" -le "$cols" ] \
+    || fail "a compact row must fit the $cols-column pane, got ${#row} in: $out"
+  printf '%s\n' "$out" | grep -q '^   *[0-9.]*%$' \
+    && fail "no table cell may be folded onto a continuation line in: $out"
+  pass "fm-quota-dash: the compact table's budget is derived from its own columns"
+}
+
 test_help_prints_the_whole_header() {
   local out
   out=$("$ROOT/bin/fm-quota-dash.sh" --help)
@@ -983,5 +1165,8 @@ test_status_rows_are_measured_against_the_pane
 test_gauge_lines_shrink_below_the_preferred_bar
 test_an_unbounded_label_never_widens_a_line_past_the_pane
 test_no_rendered_line_exceeds_the_pane
+test_folded_lines_keep_their_colour
+test_dispatch_windows_come_from_quota_semantics
+test_compact_layout_follows_its_column_widths
 test_help_prints_the_whole_header
 test_other_providers_keep_reported_windows
