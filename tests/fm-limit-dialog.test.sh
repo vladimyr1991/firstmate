@@ -321,6 +321,66 @@ test_a_freeze_that_cannot_be_recorded_reports_no_resume_not_the_child_code() {
   pass "a dialog answered while the freeze is refused exits 4, never the freeze script's own code"
 }
 
+test_a_recorded_freeze_a_live_poll_watches_is_not_reported_as_no_resume() {
+  local dir rc
+  dir=$(make_case live-poll)
+  printf '%s\n' "$OBSERVED_DIALOG" > "$dir/screen.txt"
+
+  # A poll is already armed for an earlier obligation. The poll is fleet-wide,
+  # so it watches obligations recorded after it was written, including the one
+  # this dialog is about.
+  FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" PATH="$dir/fakebin:$BASE_PATH" \
+    "$ROOT/bin/fm-quota-freeze.sh" add --subject pm --provider claude --action respawn >/dev/null \
+    || fail "the setup freeze that arms the poll failed"
+
+  # state/ becomes unwritable, so the freeze this dialog records lands in the
+  # registry subdirectory but the poll cannot be refreshed. Nothing is lost: the
+  # record is on disk and the live poll is watching it.
+  chmod 0500 "$dir/home/state"
+  set +e
+  run_live "$dir" --provider claude > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  chmod 0700 "$dir/home/state"
+
+  [ "$rc" -eq 0 ] \
+    || fail "an answered dialog whose freeze is recorded and watched was not reported as done (exit $rc)"
+  [ "$(cat "$dir/typed.txt")" = 1 ] || fail "the dialog was not answered"
+  [ -f "$dir/home/state/quota-frozen/task-a" ] || fail "the freeze was not recorded"
+  case "$(cat "$dir/err")" in
+    *'no resume was armed'*)
+      fail "a recorded obligation a live poll is watching was reported as having no resume" ;;
+  esac
+  pass "an answered dialog whose freeze is recorded and already watched reports success, not a missing resume"
+}
+
+test_a_recorded_freeze_with_no_poll_armed_is_reported_apart_from_a_missing_record() {
+  local dir rc
+  dir=$(make_case unwatched-freeze)
+  printf '%s\n' "$OBSERVED_DIALOG" > "$dir/screen.txt"
+  # The registry directory exists so the record can still land, but no poll is
+  # armed and state/ cannot be written, so none can be. The obligation is real
+  # and unwatched, which is different work from a freeze that was never
+  # recorded: re-arm the poll, never record the freeze again.
+  mkdir -p "$dir/home/state/quota-frozen/.notified"
+  chmod 0700 "$dir/home/state/quota-frozen" "$dir/home/state/quota-frozen/.notified"
+
+  chmod 0500 "$dir/home/state"
+  set +e
+  run_live "$dir" --provider claude > "$dir/out" 2> "$dir/err"
+  rc=$?
+  set -e
+  chmod 0700 "$dir/home/state"
+
+  [ "$rc" -eq 5 ] \
+    || fail "a recorded but unwatched obligation did not get its own exit code (got $rc)"
+  [ "$(cat "$dir/typed.txt")" = 1 ] || fail "the dialog was not answered"
+  [ -f "$dir/home/state/quota-frozen/task-a" ] || fail "the freeze was not recorded"
+  assert_contains "$(cat "$dir/err")" 'do not record the freeze again' \
+    "the report did not distinguish a recorded obligation from an unrecorded one"
+  pass "a recorded obligation with no poll armed is reported apart from a freeze that was never recorded"
+}
+
 test_answering_without_a_provider_still_answers_but_reports_no_resume() {
   local dir rc
   dir=$(make_case no-provider)
@@ -419,6 +479,8 @@ test_answering_selects_wait_and_never_upgrade
 test_a_pane_that_has_not_repainted_is_a_warning_not_a_failed_answer
 test_an_unreadable_pane_after_a_confirmed_answer_is_a_warning_not_a_failure
 test_a_freeze_that_cannot_be_recorded_reports_no_resume_not_the_child_code
+test_a_recorded_freeze_a_live_poll_watches_is_not_reported_as_no_resume
+test_a_recorded_freeze_with_no_poll_armed_is_reported_apart_from_a_missing_record
 test_answering_without_a_provider_still_answers_but_reports_no_resume
 test_a_paywall_dialog_never_reaches_the_endpoint
 test_a_saved_capture_cannot_answer_a_live_dialog

@@ -87,13 +87,19 @@
 #   4. A POLL ALREADY ARMED. The poll is fleet-wide - one file watching the
 #      whole registry, enumerated at run time - so an armed poll is already
 #      watching every obligation, including ones recorded after it was written.
-#      A later arming attempt that fails may roll back only the artifacts THAT
-#      attempt actually published; a poll it did not publish stays, because
-#      disarming it would stop the wakes for every other open obligation too.
+#      A later arming attempt that fails must leave the armed pair EXACTLY as it
+#      found it: it publishes over a live check and trust, so rolling back by
+#      deleting what it wrote would strand the pre-existing check with no trust
+#      binding, which bin/fm-watch.sh rejects as an unauthenticated state check.
+#      The pair is therefore copied aside before the first overwrite and put
+#      back if the attempt does not complete. An armed poll is never disarmed by
+#      a failure, because that would stop the wakes for every other open
+#      obligation too, and a failed arming is never reported as a lost wake.
 #
-# Rolling back artifacts this mechanism has not yet published (an unpublished
-# poll's own temporaries) is the one permitted rollback, and it may never reach
-# a registry record or an already-live poll.
+# Restoring the slot to what it held when an attempt began, and discarding that
+# attempt's own unpublished temporaries, is the one permitted rollback; it may
+# never reach a registry record, and never leaves a live check unbound or bound
+# to a trust that does not describe it.
 
 # The reserved check id this poll publishes under. Not a task id: see
 # fm_task_id_creation_valid in bin/fm-pr-lib.sh, which refuses it at task
@@ -140,6 +146,18 @@ FM_QUOTA_RESET_UNVERIFIED_GRACE_SECS=900
 FM_QUOTA_RESET_UNANCHORED_GRACE_SECS=21600
 FM_QUOTA_RESET_UNANCHORED_RESURFACE_SECS=21600
 
+# The one exit code bin/fm-quota-freeze.sh add produces that is neither plain
+# success nor "nothing happened": the obligation is committed to disk but no
+# poll is watching it. It lives here because it is a contract between two
+# scripts - bin/fm-limit-dialog.sh reads it from the child and reports its own
+# distinct outcome for it, and .agents/skills/quota-autoresume/SKILL.md tells
+# firstmate what to do about it - and "re-arm the poll" is different work from
+# "record the freeze". A single definition is what keeps the three outcomes
+# (recorded and watched, recorded but unwatched, not recorded) from collapsing
+# back into one at any hop.
+# shellcheck disable=SC2034  # read by the scripts that source this file: bin/fm-quota-freeze.sh exits with it and bin/fm-limit-dialog.sh branches on it.
+FM_QUOTA_FREEZE_EXIT_UNWATCHED=5
+
 # Roles that freeze without being a task: firstmate's own deferred work, and
 # the board PM, which exists only while firstmate spawns it and so can never
 # recover itself.
@@ -161,6 +179,8 @@ FM_QUOTA_RESET_POLL_CHECK_DEST=
 FM_QUOTA_RESET_POLL_TRUST_DEST=
 FM_QUOTA_RESET_POLL_CHECK_PUBLISHED=0
 FM_QUOTA_RESET_POLL_TRUST_PUBLISHED=0
+FM_QUOTA_RESET_POLL_PRIOR_CHECK=
+FM_QUOTA_RESET_POLL_PRIOR_TRUST=
 FM_QUOTA_RESET_POLL_STATE=
 FM_QUOTA_RESET_POLL_STATE_DEVICE=
 
@@ -591,11 +611,25 @@ window_remaining() {
   printf '%s\\n' "\$out"
 }
 
-# How long this record stays quiet between wakes, from the only thing that
-# decides it: whether the record has a recorded reset to anchor on. Deliberately
-# cheap and local - it reads one line of one file and never touches quota-axi -
-# because it gates whether the record is looked at at all.
-record_repeat() {  # <record-path>
+# Seconds since this subject's wake was surfaced, or nothing at all when it
+# never was. Deliberately cheap and local - it reads one small file and never
+# touches quota-axi - because it gates whether the record is looked at at all.
+marker_age() {  # <subject>
+  local subject=\$1 marker marked
+  marker="\$NOTIFIED/\$subject"
+  [ -f "\$marker" ] && [ ! -L "\$marker" ] || return 0
+  marked=\$(cat "\$marker" 2>/dev/null) || marked=
+  case "\$marked" in
+    ''|*[!0-9]*) marked=\$now ;;
+  esac
+  printf '%s\\n' "\$((now - marked))"
+}
+
+# Whether the record carries NO recorded reset (resets_at_epoch=0, the explicit
+# "no clock evidence" sentinel). This answers only half of "may the long quiet
+# span apply here"; the verdict answers the other half, and both halves must
+# hold. Deliberately cheap and local for the same reason as marker_age.
+record_unanchored() {  # <record-path>
   local rec=\$1 line epoch=
   while IFS= read -r line; do
     case "\$line" in
@@ -603,13 +637,9 @@ record_repeat() {  # <record-path>
     esac
   done 2>/dev/null < "\$rec"
   case "\$epoch" in
-    ''|*[!0-9]*) printf '%s\\n' "\$RESURFACE"; return 0 ;;
+    ''|*[!0-9]*) return 1 ;;
   esac
-  if [ "\$epoch" -gt 0 ]; then
-    printf '%s\\n' "\$RESURFACE"
-  else
-    printf '%s\\n' "\$UNANCHORED_RESURFACE"
-  fi
+  [ "\$epoch" -eq 0 ]
 }
 
 # Read one record and decide what, if anything, firstmate should be told about
@@ -714,13 +744,15 @@ for rec in "\$DIR"/*; do
   esac
   records=\$((records + 1))
 
-  marker="\$NOTIFIED/\$subject"
-  if [ -f "\$marker" ] && [ ! -L "\$marker" ]; then
-    marked=\$(cat "\$marker" 2>/dev/null) || marked=
-    case "\$marked" in
-      ''|*[!0-9]*) marked=\$now ;;
-    esac
-    [ "\$((now - marked))" -ge "\$(record_repeat "\$rec")" ] || continue
+  # Gated on the STANDARD span alone, which every verdict is entitled to. The
+  # longer unanchored span belongs to the UNVERIFIED verdict, never to a
+  # recovery, so it cannot be decided here - before the reading that produces
+  # the verdict exists. Deciding it from the record alone is what once withheld
+  # a CONFIRMED recovery for six hours, which is the idle-fleet-at-full-quota
+  # stall this whole mechanism exists to remove.
+  age=\$(marker_age "\$subject")
+  if [ -n "\$age" ] && [ "\$age" -lt "\$RESURFACE" ]; then
+    continue
   fi
   pending="\$pending \$subject"
 done
@@ -737,6 +769,24 @@ if [ -n "\$pending" ]; then
   for subject in \$pending; do
     verdict=\$(evaluate_record "\$DIR/\$subject" "\$subject")
     [ -n "\$verdict" ] || continue
+    # The repeat span is chosen HERE, from the verdict, and the long unanchored
+    # one is earned by exactly one combination: an UNVERIFIED verdict on a
+    # record with no recorded reset. A freeze time predicts nothing about when
+    # capacity returns, so nagging every half hour about a window quota-axi
+    # simply cannot see is noise. A RECOVERY is the opposite - direct evidence
+    # that capacity is back - so it always repeats on the standard span, however
+    # the record is anchored. Deriving the span from the record alone loses that
+    # distinction, and has done so once already during a restructure.
+    case "\$verdict" in
+      *,unverified)
+        if record_unanchored "\$DIR/\$subject"; then
+          age=\$(marker_age "\$subject")
+          if [ -n "\$age" ] && [ "\$age" -lt "\$UNANCHORED_RESURFACE" ]; then
+            continue
+          fi
+        fi
+        ;;
+    esac
     ready="\$ready \$subject(\$verdict)"
     to_mark="\$to_mark \$subject"
   done
@@ -775,32 +825,92 @@ exit 0
 EOF
 }
 
+fm_quota_reset_poll_discard_prior() {
+  [ -z "$FM_QUOTA_RESET_POLL_PRIOR_CHECK" ] || rm -f -- "$FM_QUOTA_RESET_POLL_PRIOR_CHECK"
+  [ -z "$FM_QUOTA_RESET_POLL_PRIOR_TRUST" ] || rm -f -- "$FM_QUOTA_RESET_POLL_PRIOR_TRUST"
+  FM_QUOTA_RESET_POLL_PRIOR_CHECK=
+  FM_QUOTA_RESET_POLL_PRIOR_TRUST=
+}
+
 fm_quota_reset_poll_cleanup() {
+  # An attempt torn down mid-publication - a signal between the two renames -
+  # must still put back the pair that was armed before it, or it leaves the
+  # reserved slot bound to a trust that does not describe its check, which the
+  # watcher rejects as an unauthenticated state check. A completed attempt has
+  # already cleared both flags, so this can never undo a successful arming.
+  if [ "$FM_QUOTA_RESET_POLL_CHECK_PUBLISHED" -eq 1 ] \
+    || [ "$FM_QUOTA_RESET_POLL_TRUST_PUBLISHED" -eq 1 ]; then
+    fm_quota_reset_poll_revoke_final || true
+  fi
   [ -z "$FM_QUOTA_RESET_POLL_CHECK_TMP" ] || rm -f -- "$FM_QUOTA_RESET_POLL_CHECK_TMP"
   [ -z "$FM_QUOTA_RESET_POLL_TRUST_TMP" ] || rm -f -- "$FM_QUOTA_RESET_POLL_TRUST_TMP"
   FM_QUOTA_RESET_POLL_CHECK_TMP=
   FM_QUOTA_RESET_POLL_TRUST_TMP=
+  fm_quota_reset_poll_discard_prior
+}
+
+# Copy whatever pair is armed in the reserved slot aside, before the first
+# overwrite. The slot is fleet-wide and is re-armed over a LIVE pair, so
+# "delete what this attempt published" is not enough of a rollback: deleting a
+# trust this attempt replaced strands the PRE-EXISTING check with no binding at
+# all, and bin/fm-watch.sh then rejects it as an unauthenticated state check on
+# every sweep - a noisy wake plus a dead poll, with nothing watching any open
+# obligation. Failing to take the copy fails the arming outright, because an
+# attempt that cannot restore what it is about to overwrite must not start.
+fm_quota_reset_poll_capture_prior() {
+  local state=$FM_QUOTA_RESET_POLL_STATE
+  fm_quota_reset_poll_discard_prior
+  umask 077
+  if [ -f "$FM_QUOTA_RESET_POLL_CHECK_DEST" ] && [ ! -L "$FM_QUOTA_RESET_POLL_CHECK_DEST" ]; then
+    FM_QUOTA_RESET_POLL_PRIOR_CHECK=$(mktemp "$state/.fm-quota-reset-prior-check.XXXXXX") || return 1
+    cat -- "$FM_QUOTA_RESET_POLL_CHECK_DEST" > "$FM_QUOTA_RESET_POLL_PRIOR_CHECK" || return 1
+    chmod 0700 "$FM_QUOTA_RESET_POLL_PRIOR_CHECK" || return 1
+  fi
+  if [ -f "$FM_QUOTA_RESET_POLL_TRUST_DEST" ] && [ ! -L "$FM_QUOTA_RESET_POLL_TRUST_DEST" ]; then
+    FM_QUOTA_RESET_POLL_PRIOR_TRUST=$(mktemp "$state/.fm-quota-reset-prior-trust.XXXXXX") || return 1
+    cat -- "$FM_QUOTA_RESET_POLL_TRUST_DEST" > "$FM_QUOTA_RESET_POLL_PRIOR_TRUST" || return 1
+    chmod 0600 "$FM_QUOTA_RESET_POLL_PRIOR_TRUST" || return 1
+  fi
+}
+
+# Put one artifact back exactly as it was: the captured copy when there was one,
+# and otherwise absent, because a slot that held nothing before this attempt
+# must hold nothing after it.
+fm_quota_reset_poll_restore_one() {  # <dest> <captured-copy> <mode>
+  local dest=$1 copy=$2 mode=$3
+  if [ -n "$copy" ] && [ -f "$copy" ]; then
+    chmod "$mode" "$copy" || return 1
+    mv -f -- "$copy" "$dest" || return 1
+    return 0
+  fi
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    rm -f -- "$dest" || return 1
+  fi
+  return 0
 }
 
 # Roll back a half-published poll. This is the commit invariant's one permitted
-# rollback, and it is scoped to exactly what THIS attempt published: a poll that
-# was already armed when the attempt began is a committed result of its own,
-# watching the whole registry, so tearing it down over an unrelated publish
-# failure would stop the wakes for every open obligation at once. Anything not
-# renamed into place by this attempt is therefore left alone.
+# rollback, and it may only ever restore the slot to what it held when this
+# attempt began: a poll that was already armed is a committed result of its own,
+# watching the whole registry, so neither leaving this attempt's fragments in
+# place nor tearing the live pair down is acceptable. An attempt that published
+# nothing rolls back nothing at all, so an abandoned preparation never touches
+# the live pair.
 fm_quota_reset_poll_revoke_final() {
   local failed=0
-  if [ "$FM_QUOTA_RESET_POLL_CHECK_PUBLISHED" -eq 1 ]; then
+  if [ "$FM_QUOTA_RESET_POLL_CHECK_PUBLISHED" -eq 1 ] \
+    || [ "$FM_QUOTA_RESET_POLL_TRUST_PUBLISHED" -eq 1 ]; then
     FM_QUOTA_RESET_POLL_CHECK_PUBLISHED=0
-    if [ -e "$FM_QUOTA_RESET_POLL_CHECK_DEST" ] || [ -L "$FM_QUOTA_RESET_POLL_CHECK_DEST" ]; then
-      rm -f -- "$FM_QUOTA_RESET_POLL_CHECK_DEST" || failed=1
-    fi
-  fi
-  if [ "$FM_QUOTA_RESET_POLL_TRUST_PUBLISHED" -eq 1 ]; then
     FM_QUOTA_RESET_POLL_TRUST_PUBLISHED=0
-    if [ -e "$FM_QUOTA_RESET_POLL_TRUST_DEST" ] || [ -L "$FM_QUOTA_RESET_POLL_TRUST_DEST" ]; then
-      rm -f -- "$FM_QUOTA_RESET_POLL_TRUST_DEST" || failed=1
-    fi
+    # The check goes back first: while the trust is the one this attempt wrote,
+    # the slot describes a check that is not there, and restoring the check is
+    # what ends that window.
+    fm_quota_reset_poll_restore_one "$FM_QUOTA_RESET_POLL_CHECK_DEST" \
+      "$FM_QUOTA_RESET_POLL_PRIOR_CHECK" 0700 || failed=1
+    FM_QUOTA_RESET_POLL_PRIOR_CHECK=
+    fm_quota_reset_poll_restore_one "$FM_QUOTA_RESET_POLL_TRUST_DEST" \
+      "$FM_QUOTA_RESET_POLL_PRIOR_TRUST" 0600 || failed=1
+    FM_QUOTA_RESET_POLL_PRIOR_TRUST=
   fi
   return "$failed"
 }
@@ -813,6 +923,7 @@ fm_quota_reset_poll_prepare() {
   umask 077
   FM_QUOTA_RESET_POLL_CHECK_PUBLISHED=0
   FM_QUOTA_RESET_POLL_TRUST_PUBLISHED=0
+  fm_quota_reset_poll_discard_prior
   FM_QUOTA_RESET_POLL_STATE=$state
   FM_QUOTA_RESET_POLL_CHECK_DEST="$state/$FM_QUOTA_RESET_POLL_ID.check.sh"
   FM_QUOTA_RESET_POLL_TRUST_DEST="$state/$FM_QUOTA_RESET_POLL_ID.check-trust"
@@ -847,9 +958,11 @@ fm_quota_reset_poll_publish_prepared() {
   [ -n "$FM_QUOTA_RESET_POLL_CHECK_TMP" ] && [ -n "$FM_QUOTA_RESET_POLL_TRUST_TMP" ] || return 1
   fm_pr_regular_destination_on_device_or_absent "$FM_QUOTA_RESET_POLL_TRUST_DEST" "$FM_QUOTA_RESET_POLL_STATE_DEVICE" || return 1
   fm_pr_regular_destination_on_device_or_absent "$FM_QUOTA_RESET_POLL_CHECK_DEST" "$FM_QUOTA_RESET_POLL_STATE_DEVICE" || return 1
+  fm_quota_reset_poll_capture_prior || { fm_quota_reset_poll_discard_prior; return 1; }
 
   if ! mv -f -- "$FM_QUOTA_RESET_POLL_TRUST_TMP" "$FM_QUOTA_RESET_POLL_TRUST_DEST"; then
     fm_quota_reset_poll_revoke_final || true
+    fm_quota_reset_poll_discard_prior
     return 1
   fi
   FM_QUOTA_RESET_POLL_TRUST_TMP=
@@ -857,14 +970,22 @@ fm_quota_reset_poll_publish_prepared() {
   if ! fm_pr_regular_destination_on_device_or_absent "$FM_QUOTA_RESET_POLL_CHECK_DEST" "$FM_QUOTA_RESET_POLL_STATE_DEVICE" \
     || ! mv -f -- "$FM_QUOTA_RESET_POLL_CHECK_TMP" "$FM_QUOTA_RESET_POLL_CHECK_DEST"; then
     fm_quota_reset_poll_revoke_final || true
+    fm_quota_reset_poll_discard_prior
     return 1
   fi
   FM_QUOTA_RESET_POLL_CHECK_TMP=
   FM_QUOTA_RESET_POLL_CHECK_PUBLISHED=1
   if ! fm_custom_check_registered "$FM_QUOTA_RESET_POLL_STATE" "$FM_QUOTA_RESET_POLL_ID"; then
     fm_quota_reset_poll_revoke_final || true
+    fm_quota_reset_poll_discard_prior
     return 1
   fi
+  # The attempt is complete, so nothing may roll it back: the pair in the slot
+  # is now a committed result of its own, and the copies of the pair it replaced
+  # exist only to serve a rollback that can no longer happen.
+  FM_QUOTA_RESET_POLL_CHECK_PUBLISHED=0
+  FM_QUOTA_RESET_POLL_TRUST_PUBLISHED=0
+  fm_quota_reset_poll_discard_prior
 }
 
 fm_quota_reset_poll_armed() {

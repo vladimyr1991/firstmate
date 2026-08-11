@@ -62,12 +62,18 @@ resume by itself once the window recovers.
   --from-capture   read pane text from a file instead of capturing it live
   --lines          how many pane lines to capture (default 60)
 
-Exit codes:
-  0  the dialog was answered and, when a provider was given, the resume armed
+Exit codes. 4 and 5 are deliberately distinct: after 4 the obligation has to be
+recorded, while after 5 it already exists and only the poll needs re-arming, so
+collapsing them sends the caller to record a freeze twice.
+  0  the dialog was answered and, when a provider was given, the freeze is
+     recorded and a poll is watching it
   1  no dialog detected, or answering it failed
   2  usage error
   3  a dialog was found but its options are ambiguous; nothing was sent
-  4  the dialog was answered but no resume was armed
+  4  the dialog was answered but NO freeze was recorded, so nothing will resume
+     this work until one is recorded
+  5  the dialog was answered and the freeze IS recorded, but no poll is armed,
+     so nothing is watching any open obligation until it is re-armed
 
 The upgrade option is never selected. If exactly one option does not identify
 itself as the waiting option, this refuses with exit 3 and sends no keystroke.
@@ -330,9 +336,18 @@ if [ -z "$PROVIDER" ]; then
 fi
 # The freeze script has its own exit table (a contested check slot is 3 there,
 # an ambiguous dialog is 3 here), so its code is never propagated verbatim: a
-# caller reading 3 would believe no keystroke was sent. Every failure to arm is
-# reported as the one thing that actually happened - the dialog was answered and
-# no resume was armed - with the child's own error already on stderr.
+# caller reading 3 would believe no keystroke was sent. It is instead mapped
+# onto the one thing that actually happened, and its three outcomes stay
+# distinct all the way out of this script: the child reports 0 when the
+# obligation is both recorded and watched - including when a poll that was
+# already armed still watches it after a failed refresh - and its own dedicated
+# code when the record landed with nothing armed. Reporting either of those as
+# "no resume was armed" would send the caller to record a freeze that exists.
+if [ "$FREEZE_RC" -eq "$FM_QUOTA_FREEZE_EXIT_UNWATCHED" ]; then
+  printf 'note: the dialog was answered and the freeze for %s is recorded, but no poll is armed; re-arm it with the command on stderr above - do not record the freeze again\n' \
+    "$ID" >&2
+  exit 5
+fi
 if [ "$FREEZE_RC" -ne 0 ]; then
   printf 'note: the dialog was answered but recording the freeze failed (fm-quota-freeze.sh add exited %s); no resume was armed\n' \
     "$FREEZE_RC" >&2

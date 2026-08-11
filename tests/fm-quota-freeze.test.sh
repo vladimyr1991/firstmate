@@ -108,6 +108,13 @@ J
  {"provider":"grok","state":{"stale":false},"windows":[
    {"id":"credits","percentRemaining":0}]}]}
 J
+  # The same credits window with capacity genuinely back, still carrying no
+  # resetsAt: a verified recovery on a record that has no clock anchor at all.
+  cat > "$dir/no-reset-recovered.json" <<'J'
+{"schemaVersion":3,"providers":[
+ {"provider":"grok","state":{"stale":false},"windows":[
+   {"id":"credits","percentRemaining":100}]}]}
+J
   # The same provider once quota-axi stops modelling that window.
   cat > "$dir/no-reset-gone.json" <<'J'
 {"schemaVersion":3,"providers":[
@@ -373,6 +380,93 @@ test_an_obligation_with_no_recorded_reset_still_surfaces() {
   pass "an obligation frozen on a window with no reset time surfaces as unverified on its own longer spans"
 }
 
+test_a_recovery_on_an_unanchored_record_repeats_on_the_standard_span() {
+  local dir out marker
+  dir=$(make_case unanchored-recovery)
+  setup_root "$dir"
+  run_freeze "$dir" no-reset.json add --subject task-a --provider grok --action nudge >/dev/null \
+    || fail "a window with no reset time was refused"
+  marker="$dir/home/state/quota-frozen/.notified/task-a"
+
+  # The long grace and repeat exist for the verdict that has nothing to verify.
+  # A recovery has verified evidence that capacity is back, so the record's
+  # missing reset time says nothing about how soon it may be repeated.
+  out=$(run_poll "$dir" no-reset-recovered.json)
+  [ "$out" = 'quota reset ready: task-a(grok/credits,recovered)' ] \
+    || fail "a verified recovery on an unanchored record did not wake firstmate: [$out]"
+
+  out=$(run_poll "$dir" no-reset-recovered.json)
+  [ -z "$out" ] || fail "the recovery woke firstmate again inside its quiet window: $out"
+
+  # One STANDARD quiet window later. Charging this obligation the six-hour
+  # unanchored span would withhold a confirmed recovery for six hours - the
+  # idle-fleet-at-full-quota stall this whole mechanism exists to remove.
+  printf '%s\n' "$(( $(date +%s) - FM_QUOTA_RESET_RESURFACE_SECS - 60 ))" > "$marker"
+  out=$(run_poll "$dir" no-reset-recovered.json)
+  assert_contains "$out" 'task-a(grok/credits,recovered)' \
+    "an undischarged recovery on an unanchored record was withheld past the standard repeat span"
+
+  # The same record, the same span, but now with nothing to verify from: the
+  # unverified verdict still waits for its own much longer span.
+  printf '%s\n' "$(( $(date +%s) - FM_QUOTA_RESET_RESURFACE_SECS - 60 ))" > "$marker"
+  perl -i -pe 's/^frozen_at=.*$/"frozen_at=" . (time - 30_000)/e' \
+    "$dir/home/state/quota-frozen/task-a"
+  out=$(run_poll "$dir" no-reset-gone.json)
+  [ -z "$out" ] \
+    || fail "an unverified verdict on an unanchored record repeated on the standard span: $out"
+  pass "a recovery repeats on the standard span whatever the record is anchored on"
+}
+
+test_a_failed_re_arm_leaves_the_previously_armed_pair_intact() {
+  local dir out check trust before_check before_trust
+  dir=$(make_case rearm-failure)
+  setup_root "$dir"
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "first freeze failed"
+  run_freeze "$dir" exhausted.json add --subject pm --provider claude --action respawn >/dev/null \
+    || fail "second freeze failed"
+  check="$dir/home/state/$POLL_CHECK"
+  trust="$dir/home/state/$POLL_TRUST"
+  before_check=$(shasum -a 256 "$check" | awk '{print $1}')
+  before_trust=$(shasum -a 256 "$trust" | awk '{print $1}')
+
+  # A re-arm whose CHECK cannot be renamed into the slot after its trust has
+  # already replaced the live one: state/ becoming momentarily unwritable, or a
+  # second arming run interleaving with this one. The pair being published over
+  # is live and fleet-wide, so a rollback that only deletes what this attempt
+  # wrote would leave the previous check with no trust that describes it, which
+  # the watcher rejects as an unauthenticated state check - a dead poll plus a
+  # noisy wake, with nothing watching ANY open obligation.
+  (
+    state="$dir/home/state"
+    fm_quota_reset_poll_prepare "$state" || exit 1
+    doomed=$FM_QUOTA_RESET_POLL_CHECK_TMP
+    # shellcheck disable=SC2329 # Invoked indirectly: the publication under test calls mv.
+    mv() {
+      local dest=${*: -1} src=${*: -2:1}
+      [ "$src" = "$doomed" ] && [ "$dest" = "$state/$POLL_CHECK" ] && return 1
+      command mv "$@"
+    }
+    ! fm_quota_reset_poll_publish_prepared || exit 1
+    fm_quota_reset_poll_cleanup
+    exit 0
+  ) || fail "the fixture did not produce a re-arm that fails between its two renames"
+
+  [ "$(shasum -a 256 "$check" | awk '{print $1}')" = "$before_check" ] \
+    || fail "the failed re-arm did not leave the previously armed check in place"
+  [ "$(shasum -a 256 "$trust" | awk '{print $1}')" = "$before_trust" ] \
+    || fail "the failed re-arm left the live check bound to a trust that does not describe it"
+  fm_custom_check_registered "$dir/home/state" "$FM_QUOTA_RESET_POLL_ID" \
+    || fail "the failed re-arm left the reserved slot unregistered, so the watcher would reject it"
+
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' \
+    "the surviving poll no longer wakes for its obligations"
+  assert_contains "$out" 'pm(claude/five_hour,recovered)' \
+    "the surviving poll no longer wakes for its obligations"
+  pass "a re-arm that fails after publishing its trust restores the pair that was armed"
+}
+
 test_a_record_survives_a_marker_clear_it_cannot_perform() {
   local dir out record marker rc
   dir=$(make_case marker-unclearable)
@@ -628,7 +722,13 @@ test_an_unarmed_freeze_is_reported_as_an_unwatched_obligation() {
   set -e
   chmod 0700 "$dir/home/state"
 
-  [ "$rc" -ne 0 ] || fail "a freeze whose poll could not be armed still reported success"
+  # A dedicated code, not just "non-zero": the caller has to tell "the record is
+  # there and unwatched" from "nothing was recorded", because one needs a re-arm
+  # and the other needs the freeze recording from scratch.
+  [ "$rc" -eq "$FM_QUOTA_FREEZE_EXIT_UNWATCHED" ] \
+    || fail "an unwatched obligation did not produce its dedicated exit code (got $rc)"
+  assert_contains "$(cat "$dir/out")" 'frozen: pm (role) on claude/five_hour' \
+    "the recorded freeze was not reported"
   err=$(cat "$dir/err")
   assert_contains "$err" 'is NOT armed' \
     "the failure did not state that no poll is armed"
@@ -680,10 +780,21 @@ test_an_arming_failure_with_a_live_poll_says_the_wake_is_still_watched() {
   set -e
   chmod 0700 "$dir/home/state"
 
-  [ "$rc" -ne 0 ] || fail "a freeze whose poll could not be refreshed reported plain success"
+  # Both durable results this add owes are in hand: the record is on disk and a
+  # fleet-wide poll is watching it. Reporting that as a failure is how the
+  # caller - bin/fm-limit-dialog.sh, and firstmate behind it - is told to record
+  # a freeze that already exists.
+  [ "$rc" -eq 0 ] || fail "a recorded freeze a live poll is watching was reported as a failure (exit $rc)"
+  assert_contains "$(cat "$dir/out")" 'frozen: pm (role) on claude/five_hour' \
+    "the recorded freeze was not reported"
+  assert_contains "$(cat "$dir/out")" 'watched:' \
+    "the outcome did not distinguish an already-armed poll from a freshly armed one"
   err=$(cat "$dir/err")
   assert_contains "$err" 'is NOT lost' \
     "the failure claimed the wake was lost while a poll was still watching the registry"
+  case "$err" in
+    *'error:'*) fail "a refresh that lost nothing was reported as an error: $err" ;;
+  esac
   fm_custom_check_registered "$dir/home/state" "$FM_QUOTA_RESET_POLL_ID" \
     || fail "the failed refresh disarmed the poll that was already watching the registry"
 
@@ -825,7 +936,9 @@ test_help_documents_usage() {
   assert_contains "$out" '--provider' "help text missing --provider documentation"
   assert_contains "$out" 'resolve <subject>' "help text missing resolve documentation"
   assert_contains "$out" 'exit code 4' "help text does not document the unobservable-limit refusal"
-  pass "--help documents the registry commands and the refusal it can produce"
+  assert_contains "$out" "$FM_QUOTA_FREEZE_EXIT_UNWATCHED  recorded but NOT watched" \
+    "help text does not document the recorded-but-unwatched outcome as its own exit code"
+  pass "--help documents the registry commands, its exit codes, and the refusal it can produce"
 }
 
 test_add_records_the_obligation_and_arms_the_poll
@@ -835,6 +948,8 @@ test_invalid_input_is_refused_with_no_side_effect
 test_poll_is_silent_until_headroom_actually_returns
 test_a_freeze_at_the_floor_is_not_immediately_declared_recovered
 test_an_obligation_with_no_recorded_reset_still_surfaces
+test_a_recovery_on_an_unanchored_record_repeats_on_the_standard_span
+test_a_failed_re_arm_leaves_the_previously_armed_pair_intact
 test_a_record_survives_a_marker_clear_it_cannot_perform
 test_recovery_wakes_exactly_once_then_resurfaces_only_after_the_quiet_window
 test_a_re_freeze_is_not_suppressed_by_the_earlier_wake

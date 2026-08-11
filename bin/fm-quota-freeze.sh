@@ -68,6 +68,20 @@ resolve <subject>
   removal is the one way to lose the work again. When the registry empties,
   the poll retires itself.
 
+Exit codes (add). They distinguish the three outcomes that matter, because a
+recorded obligation reported as unrecorded invites the caller to record it
+twice, and an unwatched one reported as watched loses the wake:
+  0  recorded AND watched: the poll was armed, or was already armed and still
+     watches the whole registry after a refresh that did not land (a warning
+     names the refresh command; the obligation itself is safe)
+  $FM_QUOTA_FREEZE_EXIT_UNWATCHED  recorded but NOT watched: the obligation is on disk and nothing is armed,
+     so no open obligation is being watched until the named command re-arms it
+  1  nothing was recorded
+  2  usage error
+  3  the reserved check slot is held by another check; nothing was recorded
+  4  no window of that provider is exhausted, so a reset cannot be observed;
+     nothing was recorded
+
 The poll is armed as an intentional custom check under the reserved id
 "$FM_QUOTA_RESET_POLL_ID", which no task can hold, so it never contests a task's own
 merge or CI watch for a check slot. It re-reads quota-axi on every sweep and is
@@ -167,47 +181,68 @@ open_subjects() {
 
 # The record is deliberately kept when arming fails: per the commit invariant in
 # bin/fm-quota-freeze-lib.sh's header, nothing after the record lands may undo
-# it. An obligation nobody watches is recoverable, a lost obligation is not.
-# What must not happen is the failure reading as more or less than what actually
-# happened, so it reports the true state of the fleet-wide poll - which is one
-# file watching the whole registry, not this subject - and names the exact
-# command that arms it again, INCLUDING the note, without which re-arming would
+# it OR misreport it. An obligation nobody watches is recoverable, a lost
+# obligation is not, and an obligation reported as neither recorded nor watched
+# when it is both sends the caller to record it a second time.
+#
+# So this reports the true state of the fleet-wide poll - which is one file
+# watching the whole registry, not this subject - and names the exact command
+# that arms it again, INCLUDING the note, without which re-arming would
 # overwrite the record with an empty one and discard the only thing that says
-# what resuming actually requires.
+# what resuming actually requires. Echoes the outcome the caller must branch on:
+# "watched" when a live poll still covers the registry, "unwatched" when nothing
+# does.
 arm_failed() {  # <reason> <subject> <provider> <window> <action> <note>
   local reason=$1 subject=$2 provider=$3 window=$4 action=$5 note=$6 rearm
   printf -v rearm 'fm-quota-freeze.sh add --subject %q --provider %q --window %q --action %q' \
     "$subject" "$provider" "$window" "$action"
   [ -z "$note" ] || printf -v rearm '%s --note %q' "$rearm" "$note"
-  printf 'error: %s\n' "$reason" >&2
   if fm_quota_reset_poll_armed "$STATE"; then
-    printf 'error: the freeze for %s is recorded in state/quota-frozen/%s and the poll already armed at state/%s.check.sh still watches the whole registry, so the wake for %s/%s is NOT lost; that poll was simply not refreshed\n' \
+    # Both durable results this add owes are in hand: the record is on disk and
+    # a poll is watching it. The refresh that failed is the only thing missing,
+    # so it is a warning - calling it an error here is what told firstmate to
+    # redo work that was already done.
+    printf 'warning: %s\n' "$reason" >&2
+    printf 'warning: the freeze for %s is recorded in state/quota-frozen/%s and the poll already armed at state/%s.check.sh still watches the whole registry, so the wake for %s/%s is NOT lost; that poll was simply not refreshed\n' \
       "$subject" "$subject" "$FM_QUOTA_RESET_POLL_ID" "$provider" "$window" >&2
-    printf 'error: refresh it when convenient with: %s\n' "$rearm" >&2
-    exit 1
+    printf 'warning: refresh it when convenient with: %s\n' "$rearm" >&2
+    printf 'watched\n'
+    return 0
   fi
+  printf 'error: %s\n' "$reason" >&2
   printf 'error: the freeze for %s is recorded in state/quota-frozen/%s but state/%s.check.sh is NOT armed\n' \
     "$subject" "$subject" "$FM_QUOTA_RESET_POLL_ID" >&2
   printf 'error: that poll is fleet-wide - one check for the whole registry - so nothing is watching ANY of these %s open obligation(s) until it is armed again:%s\n' \
     "$(fm_quota_freeze_count "$STATE")" "$(open_subjects)" >&2
   printf 'error: re-arm it with: %s\n' "$rearm" >&2
-  exit 1
+  printf 'unwatched\n'
+  return 0
 }
 
+# Echoes exactly one of: armed (this attempt published the poll), watched (this
+# attempt failed but a live fleet-wide poll still covers the registry),
+# unwatched (nothing is armed). Never exits: the record is already committed by
+# the time this runs, and only the caller may decide how a committed record plus
+# a poll state is reported.
 arm_poll() {  # <subject> <provider> <window> <action> <note>
-  local subject=$1 provider=$2 window=$3 action=$4 note=$5
+  local subject=$1 provider=$2 window=$3 action=$4 note=$5 outcome
   trap fm_quota_reset_poll_cleanup EXIT
   trap 'exit 1' HUP INT TERM
-  fm_quota_reset_poll_prepare "$STATE" \
-    || arm_failed "could not prepare the quota reset poll" "$subject" "$provider" "$window" "$action" "$note"
-  fm_quota_reset_poll_publish_prepared \
-    || arm_failed "could not publish the quota reset poll" "$subject" "$provider" "$window" "$action" "$note"
+  if ! fm_quota_reset_poll_prepare "$STATE"; then
+    outcome=$(arm_failed "could not prepare the quota reset poll" "$subject" "$provider" "$window" "$action" "$note")
+  elif ! fm_quota_reset_poll_publish_prepared; then
+    outcome=$(arm_failed "could not publish the quota reset poll" "$subject" "$provider" "$window" "$action" "$note")
+  else
+    outcome=armed
+  fi
+  fm_quota_reset_poll_cleanup
   trap - EXIT
+  printf '%s\n' "$outcome"
 }
 
 cmd_add() {
   local subject='' kind='' provider='' window='' action='' note=''
-  local json line window_id remaining resets_at epoch frozen_at
+  local json line window_id remaining resets_at epoch frozen_at outcome
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --subject) [ "$#" -ge 2 ] || usage_error "--subject requires a value"; subject=$2; shift 2 ;;
@@ -282,10 +317,22 @@ EOF
   fm_quota_freeze_record_write "$STATE" "$subject" "$kind" "$provider" "$window_id" \
     "$resets_at" "$epoch" "$action" "$frozen_at" "$note" \
     || die "could not record the quota freeze"
-  arm_poll "$subject" "$provider" "$window_id" "$action" "$note"
+  outcome=$(arm_poll "$subject" "$provider" "$window_id" "$action" "$note")
+  # The record landed, so the freeze is always reported as recorded. Only the
+  # poll's state decides the exit code, and only "nothing is watching" is a
+  # failure of this command: a live poll already covers the whole registry.
   printf 'frozen: %s (%s) on %s/%s resets_at=%s action=%s\n' \
     "$subject" "$kind" "$provider" "$window_id" "$resets_at" "$action"
-  printf 'armed: state/%s.check.sh\n' "$FM_QUOTA_RESET_POLL_ID"
+  case "$outcome" in
+    armed)
+      printf 'armed: state/%s.check.sh\n' "$FM_QUOTA_RESET_POLL_ID" ;;
+    watched)
+      printf 'watched: state/%s.check.sh was already armed and still watches this obligation; its refresh did not land\n' \
+        "$FM_QUOTA_RESET_POLL_ID" ;;
+    *)
+      printf 'unwatched: state/%s.check.sh is not armed\n' "$FM_QUOTA_RESET_POLL_ID"
+      exit "$FM_QUOTA_FREEZE_EXIT_UNWATCHED" ;;
+  esac
 }
 
 notified_at() {

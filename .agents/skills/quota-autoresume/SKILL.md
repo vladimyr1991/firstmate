@@ -60,6 +60,13 @@ There is nothing to observe, so the poll could only either stay silent forever o
 Reroute instead: for grok specifically, tear the worker down while its worktree is still clean and respawn the same task on another vendor.
 Tell the captain when a vendor is out for the week, since that changes what the fleet can be dispatched onto.
 
+### When add exits 5
+
+The obligation is on disk and no poll is watching it - not the same thing as a failed registration.
+The poll is fleet-wide, so nothing is watching **any** open obligation until it is armed again.
+Run the re-arm command `add` printed on stderr, which carries the recorded note, and do not record the freeze a second time.
+A `watched:` line, or a warning that the refresh did not land, is exit 0 instead: the poll already armed watches the whole registry, so that obligation is covered and nothing is owed.
+
 ## On a `quota reset ready` wake
 
 1. Read the registry with `bin/fm-quota-freeze.sh list` before anything else.
@@ -98,7 +105,11 @@ Two boundaries hold absolutely:
 
 Choosing to wait only unparks the pane; it does not make the work continue when the limit lifts.
 That is why the freeze is armed as part of answering the dialog rather than left as a separate step to remember.
-If the tool exits 4, the dialog was answered but nothing was armed - record the freeze before ending the turn.
+Its exit codes say which of the two durable results is missing, and they are not interchangeable:
+
+- **4** - the dialog was answered but **no freeze was recorded**. Record it before ending the turn.
+- **5** - the dialog was answered and **the freeze is already recorded**, but no poll is armed. Re-arm with the command on stderr; recording the freeze again would only overwrite the record that is already there.
+- **0** - answered, recorded, and watched. A warning that the poll could not be refreshed still means 0: the poll that was already armed watches the whole registry, including this obligation, so nothing is owed.
 A warning that the dialog is still in the pane output, or that the pane could not be re-read at all, is not a failed answer: the selection was sent, confirmed, and recorded before either could happen, so read the pane rather than running the tool again, which would type a second selection into a live composer.
 
 ## What the captain hears
