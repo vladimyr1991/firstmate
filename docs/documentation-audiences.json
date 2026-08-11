@@ -378,6 +378,14 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "tests/skill-scenarios/README.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "tests/skill-scenarios/secondmate-provisioning.md",
+      "audience": "maintainer-verification"
     }
   ]
 }
