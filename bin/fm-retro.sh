@@ -38,11 +38,46 @@
 #      `collect` REFUSES instead of degrading. A refusal that names its reason is
 #      strictly better than a quiet zero.
 #
-# The same invariant governs every other write path here: `complete` unions
-# lesson keys and never drops one and carries forward attestation keys it does
-# not recognize, the frame is seeded only when the file does not exist, and block
-# rewrites leave every line outside their own markers untouched, so human
-# narrative added to data/<id>/retro.md survives both commands. This invariant arrived independently from two unrelated tasks
+# THE VALIDATOR-STRICTNESS RULE, which this script owns alongside that invariant:
+# ANY VALIDATOR GUARDING AN IRREVERSIBLE ACTION MUST BE AT LEAST AS STRICT AS THE
+# WRITERS WHOSE OUTPUT IT VALIDATES. Otherwise the strictest check in the system
+# is neutralized by the weakest one standing in front of the destructive step, and
+# here that step is teardown: `verify` is what stands between a record and the
+# erasure of state/<id>.status and state/<id>.meta, so a record `collect` and
+# `complete` refuse to touch must never be certified as good enough to erase them
+# by. The enumeration below therefore covers every path that WRITES, VALIDATES, or
+# GATES the record, not only the ones that write. The earlier wording of this
+# audit said "every write path", and that wording is precisely why the validator
+# was missed.
+#
+#   WRITE. `collect` rewrites only the facts block and `complete` only the
+#   attestation block, so either may run first, again, or after the other;
+#   `complete` unions lesson keys and never drops one; both carry forward keys they
+#   do not recognize; `ensure_retro_frame` seeds the frame only when the file does
+#   not exist; `write_block` leaves every line outside its own markers untouched,
+#   so human narrative added to data/<id>/retro.md survives both commands; and the
+#   rewrite lands through a temp file replaced in one `mv`.
+#
+#   VALIDATE. `record_marker_damage` reads the WHOLE record's marker frame in one
+#   pass and names the damage it finds: a block left unterminated, a headless one
+#   whose open marker is gone, a duplicate of either block, or two blocks
+#   interleaved. Every command runs it before anything else it does, on the whole
+#   record rather than on the one block it cares about, because damage in the
+#   sibling block is exactly what the next command would swallow.
+#
+#   GATE. `verify` is read-only and refuses everything the write paths refuse, per
+#   the rule above. bin/fm-teardown.sh turns its non-zero exit into a refusal that
+#   names the fixing commands, before it erases anything; `--force` stays the one
+#   documented human override, and it says what it costs.
+#
+# A damaged record must never reach a laxer path by making a stricter one read
+# empty. That is why the structural check runs BEFORE any decision that keys off
+# an empty block: with the facts open marker removed, `read_block` finds nothing,
+# and an emptiness that means DAMAGE would otherwise be read as a record that
+# simply has no facts yet - bypassing both the structural refusal and consequence
+# 3, and appending a second, all-`unknown` facts block behind the real one.
+#
+# This invariant arrived independently from two unrelated tasks
 # (fm-lessons-learned and fm-quota-autoresume), which is why it is stated here as
 # a rule rather than patched at the one call site that exposed it.
 #
@@ -102,6 +137,9 @@ FACTS_OPEN='<!-- fm-retro:facts v1 -->'
 FACTS_CLOSE='<!-- /fm-retro:facts -->'
 ATTEST_OPEN='<!-- fm-retro:attestation v1 -->'
 ATTEST_CLOSE='<!-- /fm-retro:attestation -->'
+
+DAMAGE_WRITE_CLAUSE='refusing to rewrite through structural damage that would swallow the rest of the record'
+DAMAGE_GATE_CLAUSE='refusing to certify a structurally damaged record for teardown, which would erase the volatile records it can no longer be re-collected from; repair the file by hand, then re-run bin/fm-retro.sh collect and complete'
 
 usage() {
   awk '
@@ -165,22 +203,70 @@ block_value() {  # <block-body> <key>
   printf '%s\n' "$1" | sed -n "s/^$2=//p" | tail -1
 }
 
-# 0 when <file> has no structural marker damage for the given block: either the
-# open marker is absent entirely, or it is present and followed by its close.
-# An open marker with no close makes every later line - narrative, the sibling
-# block, the trailing text - read as this block's body, which is how a rewrite
-# would silently swallow the rest of the record into one block.
-block_markers_intact() {  # <file> <open-marker> <close-marker>
-  local file=$1 open=$2 close=$3 line inside=0
+# Name the record's structural marker damage, or print nothing when the frame is
+# sound: each block either absent entirely, or opened exactly once and closed
+# before anything else opens. One pass over the whole file covers every way the
+# frame breaks, in both directions:
+#
+#   - UNTERMINATED - an open marker with no close. Every later line, the
+#     narrative, the sibling block, the trailing text, reads as this block's body,
+#     so a rewrite relocates all of it inside the block being written.
+#   - HEADLESS - a close marker with no open before it, which is what removing an
+#     open marker leaves behind. `read_block` needs the open marker, so this block
+#     reads EMPTY, and emptiness caused by damage is indistinguishable from a
+#     record that has no facts yet unless it is named here.
+#   - DUPLICATE - a second copy of a block. Readers disagree about which one is
+#     authoritative, so a rewrite of the first silently contradicts the second.
+#   - INTERLEAVED - one block opened inside the other. A rewrite of the outer
+#     block would delete the inner one outright.
+#
+# Every one of them is refused rather than written or certified through, and the
+# file is left exactly as it is for a human to repair.
+record_marker_damage() {  # <file>
+  local file=$1 line inside='' seen_facts=0 seen_attest=0
   [ -f "$file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
-    if [ "$inside" = 1 ]; then
-      [ "$line" = "$close" ] && inside=0
-      continue
-    fi
-    [ "$line" = "$open" ] && inside=1
+    case "$line" in
+      "$FACTS_OPEN")
+        [ -z "$inside" ] || { printf 'a facts block opened inside the %s block' "$inside"; return 0; }
+        [ "$seen_facts" = 0 ] || { printf 'a duplicate facts block'; return 0; }
+        inside=facts
+        seen_facts=1
+        ;;
+      "$FACTS_CLOSE")
+        case "$inside" in
+          facts) inside='' ;;
+          '') printf 'a headless facts block (a close marker with no open marker before it)'; return 0 ;;
+          *) printf 'a facts close marker inside the %s block' "$inside"; return 0 ;;
+        esac
+        ;;
+      "$ATTEST_OPEN")
+        [ -z "$inside" ] || { printf 'an attestation block opened inside the %s block' "$inside"; return 0; }
+        [ "$seen_attest" = 0 ] || { printf 'a duplicate attestation block'; return 0; }
+        inside=attestation
+        seen_attest=1
+        ;;
+      "$ATTEST_CLOSE")
+        case "$inside" in
+          attestation) inside='' ;;
+          '') printf 'a headless attestation block (a close marker with no open marker before it)'; return 0 ;;
+          *) printf 'an attestation close marker inside the %s block' "$inside"; return 0 ;;
+        esac
+        ;;
+    esac
   done < "$file"
-  [ "$inside" = 0 ]
+  [ -z "$inside" ] || printf 'an unterminated %s block' "$inside"
+}
+
+# Refuse a structurally damaged record, naming the damage and what the caller was
+# about to do to it. Every command calls this FIRST, before it reads or decides
+# anything, so no path can be reached through a block that reads empty only
+# because its markers are gone.
+assert_record_structure() {  # <file> <refusal-clause>
+  local file=$1 clause=$2 damage
+  damage=$(record_marker_damage "$file")
+  [ -n "$damage" ] || return 0
+  fail "$file has $damage; $clause"
 }
 
 # Rewrite one delimited block in place, creating the file and the block when
@@ -197,12 +283,11 @@ write_block() {  # <file> <open-marker> <close-marker> <body>
   local file=$1 open=$2 close=$3 body=$4 tmp line inside=0 seen=0
   # Guard the WHOLE record, not just the block being written. Damage in the
   # sibling block is what the next command would swallow, so writing either
-  # block while the other is unterminated would persist a record already known
-  # to be structurally broken.
-  block_markers_intact "$file" "$FACTS_OPEN" "$FACTS_CLOSE" \
-    || fail "$file has an unterminated facts block; refusing to rewrite through structural damage that would swallow the rest of the record"
-  block_markers_intact "$file" "$ATTEST_OPEN" "$ATTEST_CLOSE" \
-    || fail "$file has an unterminated attestation block; refusing to rewrite through structural damage that would swallow the rest of the record"
+  # block while the other is broken would persist a record already known to be
+  # structurally damaged. The commands check this before they decide anything;
+  # the check is repeated here so no future caller can reach the writer without
+  # it.
+  assert_record_structure "$file" "$DAMAGE_WRITE_CLAUSE"
   case "$body" in
     ''|*$'\n') : ;;
     *) body="$body"$'\n' ;;
@@ -402,6 +487,10 @@ command_collect() {
   [ -f "$meta" ] || [ -f "$status_file" ] || [ -d "$DATA/$id" ] \
     || fail "task $id is not owned by the active home $FM_HOME"
 
+  # BEFORE the read below, because the refusal that follows it keys off an empty
+  # facts block: a headless block reads empty, and an emptiness that means damage
+  # must never be mistaken for a record that has no facts yet.
+  assert_record_structure "$file" "$DAMAGE_WRITE_CLAUSE"
   PREVIOUS_FACTS=$(read_block "$file" "$FACTS_OPEN" "$FACTS_CLOSE")
   # Consequence 3 of the durable-record invariant: past teardown there is nothing
   # left to read, so a re-collect could only overwrite real evidence with
@@ -487,6 +576,9 @@ command_complete() {
   shift
   file=$(retro_path "$id")
   [ -f "$file" ] || fail "task $id has no collected facts; run: bin/fm-retro.sh collect $id"
+  # Before the emptiness check below, which would otherwise send a human to
+  # `collect` over damage that `collect` also refuses.
+  assert_record_structure "$file" "$DAMAGE_WRITE_CLAUSE"
   [ -n "$(read_block "$file" "$FACTS_OPEN" "$FACTS_CLOSE")" ] \
     || fail "task $id has an empty facts block; run: bin/fm-retro.sh collect $id"
   if [ "$#" -eq 1 ] && [ "$1" = --none ]; then
@@ -516,6 +608,11 @@ command_verify() {
   validate_slug origin-id "$id"
   file=$(retro_path "$id")
   [ -f "$file" ] || fail "task $id has no retro record at $file"
+  # The validator-strictness rule: this gate stands in front of the erase, so it
+  # refuses exactly what the write paths refuse, first and by name. Passing a
+  # record `collect` and `complete` will not touch would let teardown destroy the
+  # only records it could ever be repaired from.
+  assert_record_structure "$file" "$DAMAGE_GATE_CLAUSE"
   [ -n "$(read_block "$file" "$FACTS_OPEN" "$FACTS_CLOSE")" ] \
     || fail "task $id has no collected facts in $file"
   body=$(read_block "$file" "$ATTEST_OPEN" "$ATTEST_CLOSE")

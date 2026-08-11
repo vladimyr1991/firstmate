@@ -20,6 +20,8 @@
 #   (l) --none never clears lesson keys an earlier attestation committed
 #   (m) a key this version does not emit survives a re-collect unchanged
 #   (n) the same holds for the attestation block across a re-complete
+#   (o) an unterminated block is refused by every command, writers and gate alike
+#   (p) a headless block is refused too, never read as "no facts yet" nor twinned
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -515,13 +517,61 @@ test_structural_marker_damage_is_refused_not_rewritten() {
     collect task-r1
   run_retro_expect_failure "$home" "refusing to rewrite through structural damage" \
     complete task-r1 another-lesson
+  # The gate has to be at least as strict as the writers it validates: verify
+  # stands in front of a teardown that erases the volatile records this damaged
+  # file could otherwise never be re-collected from.
+  run_retro_expect_failure "$home" "structurally damaged record" verify task-r1
   [ "$(cat "$home/data/task-r1/retro.md")" = "$before" ] \
     || fail "a refused write still modified the damaged record"
   assert_grep "TRAILING_NARRATIVE" "$home/data/task-r1/retro.md" \
     "the refusal must leave the trailing narrative exactly where it was"
   assert_grep "lessons_reviewed=1" "$home/data/task-r1/retro.md" \
     "the refusal must leave the attestation where it was"
-  pass "structural marker damage is refused by name, never rewritten through"
+  pass "structural marker damage is refused by name, never rewritten or certified through"
+}
+
+# The mirror of the case above, and the reason the detector cannot be one-sided.
+# Removing an OPEN marker makes the block read EMPTY rather than swallow the rest
+# of the record, so every check that keys off an empty block - the structural
+# refusal in the writer, and the post-teardown refusal that protects collected
+# facts - would be bypassed at once, and collect would append a second, all
+# `unknown` facts block behind the real counts.
+test_headless_block_is_refused_and_never_gains_a_second_block() {
+  local home file before
+  home=$(make_home headless-facts)
+  fm_write_meta "$home/state/task-r1.meta" "kind=ship" "mode=no-mistakes"
+  printf 'blocked: needed help\ndone: landed\n' > "$home/state/task-r1.status"
+  file="$home/data/task-r1/retro.md"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed"
+  run_retro "$home" complete task-r1 a-real-lesson >/dev/null || fail "complete failed"
+  [ "$(fact "$home" blocked_events)" = 1 ] \
+    || fail "the fixture must start from a record that KNOWS a blocked event happened"
+  printf '\n## Narrative\n\nHand-written prose that must survive.\n' >> "$file"
+
+  grep -v '^<!-- fm-retro:facts v1 -->$' "$file" > "$file.damaged"
+  mv "$file.damaged" "$file"
+  # Past teardown, where an empty facts block would otherwise be indistinguishable
+  # from a first collect with nothing left to read.
+  rm "$home/state/task-r1.status" "$home/state/task-r1.meta"
+  before=$(cat "$file")
+
+  run_retro_expect_failure "$home" "headless facts block" collect task-r1
+  run_retro_expect_failure "$home" "headless facts block" complete task-r1 another-lesson
+  run_retro_expect_failure "$home" "headless facts block" verify task-r1
+
+  [ "$(cat "$file")" = "$before" ] \
+    || fail "a refused command still modified the headless record"
+  [ "$(grep -c '^<!-- fm-retro:facts v1 -->$' "$file")" = 0 ] \
+    || fail "a second facts block was appended behind the damaged one"
+  assert_no_grep "blocked_events=unknown" "$file" \
+    "a known count must never be contradicted by a later, poorer block"
+  assert_grep "blocked_events=1" "$file" \
+    "the counts the record already held must survive the refusal"
+  assert_grep "lesson_keys=a-real-lesson" "$file" \
+    "the attestation must survive the refusal"
+  assert_grep "Hand-written prose that must survive" "$file" \
+    "narrative prose outside both blocks must survive the refusal"
+  pass "a headless block is refused by every command and never gains an all-unknown twin"
 }
 
 test_collect_refuses_an_unknown_task() {
@@ -545,4 +595,5 @@ test_complete_preserves_attestation_keys_it_does_not_recognize
 test_recollect_after_teardown_refuses_and_preserves_everything
 test_complete_none_never_clears_attested_lessons
 test_structural_marker_damage_is_refused_not_rewritten
+test_headless_block_is_refused_and_never_gains_a_second_block
 test_collect_refuses_an_unknown_task

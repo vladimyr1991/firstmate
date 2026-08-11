@@ -694,6 +694,76 @@ test_retro_artifacts_survive_teardown() {
   pass "retro artifacts survive the cleanup that erases the volatile task records"
 }
 
+# Replace the no-op treehouse mock with one that records every invocation, so a
+# test can prove the worktree return - the irreversible step this gate stands in
+# front of - never ran, rather than only that the refusal was printed.
+record_treehouse_calls() {  # <case-dir>
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/treehouse-calls"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# A gate that passes what the writers refuse is worse than no gate: teardown
+# would erase state/task-x1.status and state/task-x1.meta, and the damaged record
+# can never be re-collected from them afterwards. The damage here is applied to a
+# record the real bin/fm-retro.sh wrote, so this fixture encodes no file format.
+test_landed_ship_with_a_damaged_retro_record_refuses() {
+  local case_dir rc file before
+  case_dir=$(make_case retro-damaged)
+  write_meta_only "$case_dir" local-only ship
+  printf 'blocked: needed help\ndone: landed\n' > "$case_dir/state/task-x1.status"
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  attest_retro "$case_dir"
+  record_treehouse_calls "$case_dir"
+
+  file="$case_dir/data/task-x1/retro.md"
+  grep -v '^<!-- /fm-retro:facts -->$' "$file" > "$file.damaged"
+  mv "$file.damaged" "$file"
+  before=$(cat "$file")
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "retro-damaged: a structurally damaged retro record passed the lessons-learned gate"
+  assert_grep "has not passed the lessons-learned gate" "$case_dir/stderr" \
+    "retro-damaged: the refusal did not name the lessons-learned gate"
+  assert_grep "structurally damaged record" "$case_dir/stderr" \
+    "retro-damaged: the refusal did not say the record itself is damaged"
+  assert_grep "facts block" "$case_dir/stderr" \
+    "retro-damaged: the refusal did not name the damaged block"
+  # The destructive path must not have run at all.
+  assert_present "$case_dir/state/task-x1.status" \
+    "retro-damaged: the refused teardown erased the volatile status record"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "retro-damaged: the refused teardown erased the volatile metadata record"
+  assert_absent "$case_dir/treehouse-calls" \
+    "retro-damaged: the refused teardown still returned the worktree"
+  [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD)" = fm/task-x1 ] \
+    || fail "retro-damaged: the refused teardown still detached and dropped the task branch"
+  [ "$(cat "$file")" = "$before" ] \
+    || fail "retro-damaged: the refused teardown modified the damaged record"
+
+  # And the documented bypass still works on exactly the same task.
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "retro-damaged: --force must still tear down a task the gate refused"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "retro-damaged: --force should have cleared the volatile metadata record"
+  assert_present "$case_dir/treehouse-calls" \
+    "retro-damaged: --force should have returned the worktree"
+  pass "a structurally damaged retro record refuses teardown before anything is erased, and --force still bypasses it"
+}
+
 test_local_only_fork_remote_allows() {
   local case_dir rc
   case_dir=$(make_case fork-allow)
@@ -2022,6 +2092,7 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
 
 test_landed_ship_without_retro_refuses
 test_landed_ship_with_retro_allows
+test_landed_ship_with_a_damaged_retro_record_refuses
 test_unlanded_ship_without_retro_refuses_for_unlanded_work_first
 test_dirty_ship_without_retro_refuses_for_dirty_work_first
 test_forced_teardown_skips_the_retro_gate
