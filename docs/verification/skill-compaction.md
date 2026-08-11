@@ -75,6 +75,10 @@ Boundary matching pairs statements by keyword family and shared significant term
 It reliably catches deletion, which is the failure mode compaction causes.
 It does not prove that a surviving statement still *means* the same thing - that is the scenario suite's job, and no amount of string matching substitutes for it.
 
+Only one of the two axes is machine-enforced.
+The check owns the size delta and refuses a material shrink that carries no fixture, but it cannot run the blind re-answer, because that needs a second vendor's model.
+So "the scenario suite passed 100%" is an agent-run result recorded here with its evidence, not something CI can assert - treat a compaction whose blind run was never done as unverified, however green the check is.
+
 `harness-adapters` compacted least (-6.0%) because it is dense per-adapter reference material rather than prose: most of its length is empirically verified facts with one owner each.
 Pushing it further would have meant deleting verified facts rather than duplication, so it was left there deliberately.
 
