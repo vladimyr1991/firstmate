@@ -823,6 +823,74 @@ SH
   pass "fm-quota-dash: a gauge bar shrinks past its preferred width rather than wrapping"
 }
 
+test_an_unbounded_label_never_widens_a_line_past_the_pane() {
+  local case_dir fakebin real_jq out cols longest header wide_out restore
+  case_dir="$TMP_ROOT/long-label"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  # A window label is vendor prose, so its length is not the dashboard's to
+  # assume: 42 characters here is what a wordier provider would cost.
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"codex","plan":"plus","windows":[
+    {"id":"weekly","kind":"weekly","label":"weekly rolling enterprise allocation window","percentRemaining":50,"resetsAt":"2030-01-07T01:00:00Z"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  # Fixed narrow widths: the compact table is what a pane this size gets, and
+  # it must fit the pane it was chosen for.
+  for cols in 40 60; do
+    out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$cols" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
+    header=$(printf '%s\n' "$out" | awk '/ ID +MODEL/ { print; exit }')
+    assert_not_contains "$header" "AVAILABILITY" \
+      "a $cols-column pane cannot hold the grid, so this case must exercise the compact table"
+    longest=$(printf '%s\n' "$out" | awk '/ ID +MODEL/ || /^ *[0-9]+ [a-z]/ { if (length > m) m = length } END { print m + 0 }')
+    [ "${longest:-0}" -gt 0 ] || fail "could not measure the compact table at $cols columns in: $out"
+    [ "$longest" -le "$cols" ] \
+      || fail "no table line may exceed the $cols-column pane, longest was $longest in: $out"
+    longest=$(printf '%s\n' "$out" | awk '/^ *[0-9]+ \[/ { if (length > m) m = length } END { print m + 0 }')
+    [ "$longest" -le "$cols" ] \
+      || fail "no gauge line may exceed the $cols-column pane, longest was $longest in: $out"
+    assert_contains "$out" "~" "a label cut to fit must say so rather than appear complete"
+    assert_contains "$out" " 50.0%" "cutting the label must not cost the number beside it"
+    assert_contains "$out" "weekly rolling" "the head of the label is what survives the cut"
+  done
+
+  # Cutting a cell must not move the width the guidance names: that number
+  # answers "widen to what?", so it has to be measured from the label the
+  # payload actually carries and not from the pane that could not hold it.
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=40 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
+  restore=$(printf '%s\n' "$out" | awk '/return at/ { print $(NF - 1); exit }')
+  [ "${restore:-0}" -gt 0 ] || fail "the compact fallback must state a restore width in: $out"
+  header=$(printf '%s\n' "$out" | awk '/ ID +MODEL/ { print; exit }')
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=60 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
+  assert_contains "$out" "return at $restore cols" \
+    "the restore width is a property of the table, not of the pane reading it"
+  out=$(PATH="$fakebin:$BASE_PATH" COLUMNS="$restore" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
+  header=$(printf '%s\n' "$out" | awk '/ ID +MODEL/ { print; exit }')
+  assert_contains "$header" "AVAILABILITY" \
+    "widening to the stated width must actually restore the dropped columns"
+  assert_contains "$out" "weekly rolling enterprise allocation window" \
+    "the width that restores the columns restores the whole label with them"
+
+  # The cut is the pane's doing, not a new ceiling: a pane with room prints the
+  # label whole.
+  wide_out=$(PATH="$fakebin:$BASE_PATH" COLUMNS=200 FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider codex --once)
+  assert_contains "$wide_out" "weekly rolling enterprise allocation window" \
+    "a pane that can afford the whole label must print the whole label"
+  assert_contains "$wide_out" "AVAILABILITY" "a wide pane still gets the full table"
+  pass "fm-quota-dash: an unbounded provider label is cut to the pane, not drawn past it"
+}
+
 test_help_prints_the_whole_header() {
   local out
   out=$("$ROOT/bin/fm-quota-dash.sh" --help)
@@ -851,5 +919,6 @@ test_failed_run_does_not_claim_a_provider_reported_no_limit
 test_a_payload_jq_cannot_walk_lists_every_provider
 test_status_rows_are_measured_against_the_pane
 test_gauge_lines_shrink_below_the_preferred_bar
+test_an_unbounded_label_never_widens_a_line_past_the_pane
 test_help_prints_the_whole_header
 test_other_providers_keep_reported_windows

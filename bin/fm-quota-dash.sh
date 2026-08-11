@@ -30,6 +30,11 @@
 # information is never dropped silently and the two widths are never confused.
 # The gauges - and with them Grok's caveat - survive every width.
 #
+# Cells carrying the provider's own text - a window label above all - are cut
+# to what the pane affords and marked with a trailing ~. One vendor label long
+# enough to outgrow the terminal would otherwise take the whole grid past the
+# edge with it, wrapping every row rather than losing its own tail.
+#
 # Refresh is ONE HOUR by default, not htop's one second. Quota windows are
 # weekly, so a fast poll would redraw an unchanged picture while hammering each
 # provider's endpoint. No countdown is shown: a ticking number invites watching
@@ -284,6 +289,32 @@ caveat_width() {  # <note>
   printf '%d' $(( ${#suffix} - ${#D} - ${#R} ))
 }
 
+# A window label is vendor prose and a provider name is whatever was asked
+# for: both are unbounded, and an unbounded cell is what puts a line past the
+# pane no matter how carefully the rest of the layout is measured. One owner
+# cuts them to what the pane affords and marks the cut, so a long label costs
+# its own tail instead of the alignment of every row around it.
+ELIDE_MARK='~'
+elide() {  # <text> <max>
+  local text=$1 max=$2
+  { [ "$max" -le 0 ] || [ "${#text}" -le "$max" ]; } && { printf '%s' "$text"; return; }
+  printf '%s%s' "${text:0:$(( max > ${#ELIDE_MARK} ? max - ${#ELIDE_MARK} : 0 ))}" "$ELIDE_MARK"
+}
+
+# Caps for the two cells that carry that text, derived once per render from the
+# pane. They are the COMPACT table's budget, because compact is the narrowest
+# grid the dashboard draws: ID, REMAIN and the three separators cost 13
+# columns, and MODEL is served first - a row that cannot say which provider it
+# describes says nothing at all. A wide pane sets caps no real label reaches,
+# so nothing is cut until the pane genuinely cannot pay for it.
+CELL_MODEL_MAX=0 CELL_WIN_MAX=0
+TABLE_FIXED=13
+COLS=80
+
+model_cell() {  # <provider>
+  elide "$1" "$CELL_MODEL_MAX"
+}
+
 # Everything on a gauge line except the bar itself: "NN [" + " NNN.N%]" + " "
 # + model + " (" + window + ")" plus any caveat - measured, not guessed, so the
 # bar shrinks by exactly what the rest of the line needs instead of wrapping.
@@ -291,15 +322,28 @@ line_overhead() {  # <model> <window> <note>
   printf '%d' $(( 16 + ${#1} + ${#2} + $(caveat_width "$3") ))
 }
 
+# A gauge line budgets its window separately from the table's column: the table
+# is a grid and must spend one width on every row, while a gauge line owes only
+# itself. Sharing the table's cap would cut "Daily $0/$5" off the image row for
+# columns a different row's long label wanted.
+gauge_window() {  # <model> <window> <note>
+  local max
+  max=$(( COLS - 17 - ${#1} - $(caveat_width "$3") ))
+  [ "$max" -ge 1 ] || max=1
+  elide "$2" "$max"
+}
+
 # One bar width for the whole stack, taken from the LONGEST line in ROWS. A
 # per-row width made two rows at the same percentage draw different bar
 # lengths and knocked the numbers out of column - the gauges are read by
 # comparing them, so equal percentages must look equal.
 gauge_width() {  # <cols>
-  local cols=$1 longest=0 overhead width sec prov plan win pct resets
+  local cols=$1 longest=0 overhead width sec prov plan win pct resets note model
   while IFS=$'\t' read -r sec prov plan win pct resets; do
     [ -n "$prov" ] || continue
-    overhead=$(line_overhead "$prov" "$win" "$(availability_note "$prov")")
+    note=$(availability_note "$prov")
+    model=$(model_cell "$prov")
+    overhead=$(line_overhead "$model" "$(gauge_window "$model" "$win" "$note")" "$note")
     [ "$overhead" -le "$longest" ] || longest=$overhead
   done <<EOF
 $ROWS
@@ -344,9 +388,13 @@ UNREADABLE_FACT='UNREADABLE'
 UNREADABLE_HELP='run: quota-axi --allow-keychain-prompt'
 UNKNOWN_FACT='UNKNOWN - dispatch limit not reported'
 
-# What a status row costs: "NN [" + text + "] " + provider + any caveat.
+# What a status row costs: "NN [" + text + "] " + provider + any caveat. The
+# note is looked up from the provider as it was configured, never from the cell
+# the row prints: a name cut to fit is still that provider's row.
 status_width() {  # <text> <provider>
-  printf '%d' $(( 6 + ${#1} + ${#2} + $(caveat_width "$(availability_note "$2")") ))
+  local model
+  model=$(model_cell "$2")
+  printf '%d' $(( 6 + ${#1} + ${#model} + $(caveat_width "$(availability_note "$2")") ))
 }
 
 # True only for a percentage the dashboard may draw. "unknown" is a disclosure,
@@ -385,7 +433,7 @@ EOF
 # Print gauges for one section. Updates global _ID and _ANY.
 render_gauges() {
   local want=$1 width=$2 help=$3
-  local sec prov plan win pct resets note caveat text
+  local sec prov plan win pct resets note caveat text model
   _ANY=0
   while IFS=$'\t' read -r sec prov plan win pct resets; do
     [ -n "$prov" ] || continue
@@ -394,16 +442,17 @@ render_gauges() {
     _ID=$(( _ID + 1 ))
     note=$(availability_note "$prov")
     caveat=$(caveat_suffix "$note")
+    model=$(model_cell "$prov")
     if [ "$pct" = unknown ]; then
       printf '%s%2d%s [%s%s%s] %s%s%s%s\n' \
-        "$CYAN" "$_ID" "$R" "$AMBER" "$UNKNOWN_FACT" "$R" "$B" "$prov" "$R" "$caveat"
+        "$CYAN" "$_ID" "$R" "$AMBER" "$UNKNOWN_FACT" "$R" "$B" "$model" "$R" "$caveat"
     elif ! readable_pct "$pct"; then
       text=$UNREADABLE_FACT
       [ "$help" -eq 0 ] || text="$UNREADABLE_FACT - $UNREADABLE_HELP"
       printf '%s%2d%s [%s%s%s] %s%s%s%s\n' \
-        "$CYAN" "$_ID" "$R" "$AMBER" "$text" "$R" "$B" "$prov" "$R" "$caveat"
+        "$CYAN" "$_ID" "$R" "$AMBER" "$text" "$R" "$B" "$model" "$R" "$caveat"
     else
-      gauge "$_ID" "$pct" "$prov" "$win" "$note" "$width"
+      gauge "$_ID" "$pct" "$model" "$(gauge_window "$model" "$win" "$note")" "$note" "$width"
     fi
   done <<EOF
 $ROWS
@@ -415,8 +464,12 @@ EOF
 
 # A row with no readable number carries no window and no reset either: those
 # cells say "-" rather than borrowing a value the number cannot support.
-window_cell() {  # <window> <pct>
+window_text() {  # <window> <pct>
   if readable_pct "$2"; then printf '%s' "$1"; else printf '-'; fi
+}
+
+window_cell() {  # <window> <pct>
+  elide "$(window_text "$1" "$2")" "$CELL_WIN_MAX"
 }
 
 note_cell() {  # <provider> <pct>
@@ -445,6 +498,7 @@ table_line() {  # <mode> <id> <model> <plan> <window> <remaining> <resets> <note
 # fixed guess is what makes a table wrap the day a cell outgrows it.
 TABLE_ID=3 TABLE_REM=7 TABLE_RESET=9 TABLE_NOTE_MIN=12
 TABLE_MODEL=5 TABLE_PLAN=4 TABLE_WIN=6 TABLE_NOTE=12
+DRAW_MODEL=5 DRAW_WIN=6
 
 measure_table() {
   local sec prov plan win pct resets cell
@@ -453,13 +507,27 @@ measure_table() {
     [ -n "$prov" ] || continue
     [ "${#prov}" -le "$TABLE_MODEL" ] || TABLE_MODEL=${#prov}
     [ "${#plan}" -le "$TABLE_PLAN" ] || TABLE_PLAN=${#plan}
-    cell=$(window_cell "$win" "$pct")
+    cell=$(window_text "$win" "$pct")
     [ "${#cell}" -le "$TABLE_WIN" ] || TABLE_WIN=${#cell}
     cell=$(note_cell "$prov" "$pct")
     [ "${#cell}" -le "$TABLE_NOTE" ] || TABLE_NOTE=${#cell}
   done <<EOF
 $ROWS
 EOF
+  # What the data asks for and what the pane can pay are two different numbers,
+  # and each answers a different question. TABLE_* stays the natural width, so
+  # "widen to N and the columns come back" keeps naming the width that really
+  # restores them rather than one derived from the pane already too narrow.
+  # DRAW_* is what the header and the rows are padded to - capped, so a label
+  # the pane cannot afford loses its own tail instead of the grid's alignment.
+  CELL_MODEL_MAX=$(( COLS - TABLE_FIXED - 1 ))
+  [ "$CELL_MODEL_MAX" -ge 1 ] || CELL_MODEL_MAX=1
+  DRAW_MODEL=$TABLE_MODEL
+  [ "$DRAW_MODEL" -le "$CELL_MODEL_MAX" ] || DRAW_MODEL=$CELL_MODEL_MAX
+  CELL_WIN_MAX=$(( COLS - TABLE_FIXED - DRAW_MODEL ))
+  [ "$CELL_WIN_MAX" -ge 1 ] || CELL_WIN_MAX=1
+  DRAW_WIN=$TABLE_WIN
+  [ "$DRAW_WIN" -le "$CELL_WIN_MAX" ] || DRAW_WIN=$CELL_WIN_MAX
 }
 
 # What the full table costs, taken by rendering one of its lines at the
@@ -504,9 +572,9 @@ render_table() {
   _ANY=0
   printf '%s%s%s\n' "$HDR" "$(table_line "$table_mode" \
     "$(printf '%*s'  "$TABLE_ID"    ID)" \
-    "$(printf '%-*s' "$TABLE_MODEL" MODEL)" \
+    "$(printf '%-*s' "$DRAW_MODEL"  MODEL)" \
     "$(printf '%-*s' "$TABLE_PLAN"  PLAN)" \
-    "$(printf '%-*s' "$TABLE_WIN"   WINDOW)" \
+    "$(printf '%-*s' "$DRAW_WIN"    WINDOW)" \
     "$(printf '%*s'  "$TABLE_REM"   REMAIN)" \
     "$(printf '%-*s' "$TABLE_RESET" RESETS)" \
     AVAILABILITY)" "$R"
@@ -515,7 +583,7 @@ render_table() {
     row_in_section "$sec" "$want" || continue
     _ANY=1
     n=$(( n + 1 ))
-    win_cell=$(printf '%-*s' "$TABLE_WIN" "$(window_cell "$win" "$pct")")
+    win_cell=$(printf '%-*s' "$DRAW_WIN" "$(window_cell "$win" "$pct")")
     note_cell=$(note_cell "$prov" "$pct")
     resets_cell=$(printf '%-*s' "$TABLE_RESET" -)
     if [ "$pct" = unknown ]; then
@@ -528,7 +596,7 @@ render_table() {
     fi
     table_line "$table_mode" \
       "$(printf '%s%*d%s' "$CYAN" "$TABLE_ID" "$n" "$R")" \
-      "$(printf '%s%-*s%s' "$B" "$TABLE_MODEL" "$prov" "$R")" \
+      "$(printf '%s%-*s%s' "$B" "$DRAW_MODEL" "$(model_cell "$prov")" "$R")" \
       "$(printf '%s%-*s%s' "$BLUE" "$TABLE_PLAN" "$plan" "$R")" \
       "$win_cell" "$rem_cell" "$resets_cell" "$note_cell"
   done <<EOF
@@ -550,6 +618,10 @@ render_all() {
   cols=${COLUMNS:-}
   case "$cols" in ''|*[!0-9]*|0) cols=$( { tput cols; } 2>/dev/null || echo 80) ;; esac
   case "$cols" in ''|*[!0-9]*|0) cols=80 ;; esac
+  # The pane every cell is measured against. It is set before anything is
+  # measured, because a width derived after the fact is a width the layout has
+  # already spent.
+  COLS=$cols
   # The mode is decided by what the table MEASURES, never by a constant: a
   # threshold below the layout's real cost picks a table that then wraps, which
   # is worse than the compact one it was meant to avoid. Compact is reserved
