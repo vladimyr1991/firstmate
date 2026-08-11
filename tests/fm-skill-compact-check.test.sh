@@ -296,6 +296,59 @@ test_blind_prompt_omits_the_answers() {
   pass "the blind re-answer prompt carries the skill and the questions, never the answers"
 }
 
+test_baseline_prompt_renders_the_pre_edit_text() {
+  local repo out
+  repo=$(make_repo control-prompt "Run \`bin/fm-thing.sh\` first.
+A sentence only the baseline contains.
+Never skip the check.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+Never skip the check.
+$(padding)"
+  write_fixture "$repo" 2
+  out=$("$CHECK" --root "$repo" --prompt demo --baseline main) \
+    || fail "the control prompt failed to render"
+  assert_contains "$out" "A sentence only the baseline contains." \
+    "the control prompt did not render the pre-edit skill text"
+  assert_contains "$out" "**Question:**" "the control prompt carried no questions"
+  case "$out" in
+    *"Expected answer"*) fail "the control prompt leaked a recorded answer" ;;
+  esac
+  pass "a baseline prompt renders the pre-edit skill with the current questions"
+}
+
+test_working_tree_prompt_does_not_use_the_baseline() {
+  local repo out
+  repo=$(make_repo working-prompt "Run \`bin/fm-thing.sh\` first.
+A sentence only the baseline contains.
+Never skip the check.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+Never skip the check.
+$(padding)"
+  write_fixture "$repo" 2
+  out=$("$CHECK" --root "$repo" --prompt demo) || fail "the working-tree prompt failed to render"
+  case "$out" in
+    *"A sentence only the baseline contains."*)
+      fail "the working-tree prompt rendered baseline text instead of the rewrite" ;;
+  esac
+  pass "without a baseline the prompt renders the rewritten skill, not the pre-edit text"
+}
+
+test_baseline_prompt_for_a_new_skill_fails() {
+  local repo
+  repo=$(make_repo new-skill-prompt "Run \`bin/fm-thing.sh\` first.
+Never skip the check.
+$(padding)")
+  mkdir -p "$repo/.agents/skills/fresh"
+  printf -- '---\nname: fresh\ndescription: fixture\nuser-invocable: false\n---\n\n# fresh\n' \
+    > "$repo/.agents/skills/fresh/SKILL.md"
+  write_fixture "$repo" 1
+  cp "$repo/tests/skill-scenarios/demo.md" "$repo/tests/skill-scenarios/fresh.md"
+  run_expect_code 1 "no control text" "$CHECK" --root "$repo" --prompt fresh --baseline main
+  pass "a control prompt for a skill that did not exist at baseline says so instead of rendering nothing"
+}
+
 test_prompt_for_a_skill_without_a_fixture_fails() {
   run_expect_code 1 "no scenario fixture" "$CHECK" --prompt diagnostic-reasoning
   pass "a blind prompt for a skill with no fixture fails instead of rendering an empty exercise"
@@ -326,5 +379,8 @@ test_material_shrink_without_a_fixture_fails
 test_material_shrink_with_a_fixture_passes
 test_incomplete_fixture_fails
 test_blind_prompt_omits_the_answers
+test_baseline_prompt_renders_the_pre_edit_text
+test_working_tree_prompt_does_not_use_the_baseline
+test_baseline_prompt_for_a_new_skill_fails
 test_prompt_for_a_skill_without_a_fixture_fails
 test_usage_errors

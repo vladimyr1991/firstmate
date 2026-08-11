@@ -5,7 +5,7 @@
 #   bin/fm-skill-compact-check.sh
 #   bin/fm-skill-compact-check.sh --skill <name>...
 #   bin/fm-skill-compact-check.sh --root <repo> [--baseline <git-ref>]
-#   bin/fm-skill-compact-check.sh --prompt <name>
+#   bin/fm-skill-compact-check.sh --prompt <name> [--baseline <git-ref>]
 #
 # A skill is prose, and prose cannot be verified by diffing it. Its PURPOSE,
 # though, is to make an agent decide correctly, and decisions are testable:
@@ -68,6 +68,13 @@
 # out. Blindness is the whole point of the exercise, so it is produced here
 # rather than assembled by hand each time - a leaked expected answer turns the
 # independent re-answer into an expensive way to read your own conclusion back.
+#
+# Adding `--baseline <ref>` renders the same questions against the PRE-EDIT
+# skill instead. Answer that control first: a scenario can come back wrong
+# because the question is unstable rather than because the edit broke anything,
+# and only the control tells those apart. It reads the old text straight out of
+# git, so producing a control never means stashing or checking out over live
+# work.
 #
 # Scope is every skill whose SKILL.md differs from the baseline ref, so an
 # ordinary skill edit is checked for silent pointer loss too. A skill that
@@ -142,9 +149,17 @@ resolve_baseline() {
 if [ -n "$PROMPT_SKILL" ]; then
   [ -z "$SKILLS" ] \
     || { printf 'fm-skill-compact-check: --prompt renders one skill; drop --skill\n' >&2; exit 2; }
-  # Rendering the prompt reads only the current text and the fixture, so it
-  # needs no baseline and stays usable on a detached or baseline-less checkout.
-  BASE_REF=
+  if [ -n "$BASELINE" ]; then
+    # `--prompt --baseline <ref>` renders the CONTROL prompt: the skill as it
+    # stood before the edit, with the current questions. Answering that first is
+    # what makes a later mismatch attributable to the edit, and without it the
+    # only way to get the pre-edit text is to stash or check out over live work.
+    BASE_REF=$(resolve_baseline)
+  else
+    # Otherwise the prompt reads the current text, so it stays usable on a
+    # detached or baseline-less checkout.
+    BASE_REF=
+  fi
 else
   BASE_REF=$(resolve_baseline)
 fi
@@ -534,15 +549,29 @@ BLIND_FIELDS = ("**Situation:**", "**Question:**")
 
 
 def render_blind_prompt(skill: str) -> str:
-    """The rewritten skill plus questions only - never the recorded answers."""
-    skill_path = ROOT / ".agents/skills" / skill / "SKILL.md"
+    """The skill plus questions only - never the recorded answers.
+
+    With a baseline ref this renders the pre-edit text (the control prompt);
+    without one it renders the working tree.
+    """
+    relative = f".agents/skills/{skill}/SKILL.md"
+    skill_path = ROOT / relative
     if not skill_path.is_file():
         fail(f"no such tracked skill: {skill}")
     fixture = scenario_path(skill)
     if not fixture.is_file():
         fail(f"{skill}: no scenario fixture at {SCENARIO_DIR}/{skill}.md")
+    skill_text = ""
+    if BASE_REF:
+        baseline = baseline_text(relative)
+        if baseline is None:
+            fail(f"{skill}: not present at baseline {BASE_REF}, so there is no control text")
+        skill_text = baseline
     try:
-        skill_text = skill_path.read_text(encoding="utf-8")
+        if not BASE_REF:
+            skill_text = skill_path.read_text(encoding="utf-8")
+        # The questions always come from the working tree: a control run must
+        # ask exactly the questions the compacted run will be asked.
         fixture_text = fixture.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         fail(f"{skill}: cannot read prompt inputs: {exc}")

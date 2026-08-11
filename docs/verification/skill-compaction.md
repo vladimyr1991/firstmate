@@ -12,6 +12,7 @@ Size alone is a loss wearing a better number, so neither axis is sufficient on i
 - `bin/fm-skill-compact-check.sh` - the deterministic half. Pointer survival, safety-boundary survival, size delta, and fixture presence.
 - `tests/skill-scenarios/<skill>.md` - the behavioral half. Answers derived from the pre-edit skill.
 - `bin/fm-skill-compact-check.sh --prompt <skill>` - renders the blind re-answer prompt with expected answers and anchors stripped.
+- `bin/fm-skill-compact-check.sh --prompt <skill> --baseline <ref>` - renders the same questions against the pre-edit skill, read straight out of git, so producing a control never means stashing over live work.
 
 Size comes from `bin/fm-startup-memory-budget-lib.sh` (`fm_startup_memory_estimated_tokens_for_bytes`, `ceil(UTF-8 bytes / 3)`), the repository's existing estimator, so this gate and the startup budget cannot disagree about the size of the same file.
 
@@ -83,5 +84,6 @@ Pushing it further would have meant deleting verified facts rather than duplicat
 bin/fm-skill-compact-check.sh                      # all changed skills, both axes
 bin/fm-skill-compact-check.sh --skill fmx-respond  # one skill
 bin/fm-skill-compact-check.sh --prompt fmx-respond # blind re-answer prompt
-bash tests/fm-skill-compact-check.test.sh          # 19 behavior tests for the gate itself
+bin/fm-skill-compact-check.sh --prompt fmx-respond --baseline <ref>   # control prompt
+bash tests/fm-skill-compact-check.test.sh          # 22 behavior tests for the gate itself
 ```

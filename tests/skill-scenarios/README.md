@@ -17,6 +17,9 @@ The fixture is a regression baseline, so its answers must predate the change the
 `bin/fm-skill-compact-check.sh --prompt <skill>` prints the rewritten skill plus the questions, with the expected answers and anchors stripped out.
 Feed that prompt to a **different vendor** from whoever wrote the rewrite, then compare its answers to the recorded ones.
 
+Adding `--baseline <ref>` renders the same questions against the pre-edit skill, straight out of git.
+Run that control first, and never stash or check out over live work to produce one.
+
 The independence matters for the same reason it matters in the browser evaluation gate: an agent re-reading its own compression tends to recover the meaning it intended rather than the meaning that survived on the page.
 A different model has no such memory, so an answer that changes localizes precisely what was dropped.
 
