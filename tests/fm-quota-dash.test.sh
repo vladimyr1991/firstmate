@@ -2,8 +2,8 @@
 # Behavior tests for the dispatch-focused quota dashboard presentation.
 #
 # quota-axi remains the source of all quota data. The dashboard must show only
-# the account windows that affect Firstmate's dispatch decisions and must make
-# Grok's unmeasured weekly cap visible alongside its prepaid credits number.
+# the account windows that affect Firstmate's dispatch decisions, group them
+# by cycle, and make Grok's unmeasured weekly cap visible beside its credits.
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -13,16 +13,17 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-quota-dash-tests)
 
 test_dispatch_windows_and_grok_caveat() {
-  local case_dir fakebin real_jq out
+  local case_dir fakebin real_jq out weekly_block grok_reset
   case_dir="$TMP_ROOT/dispatch-windows"
   fakebin=$(fm_fakebin "$case_dir")
   real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+  grok_reset=$(date -u -v+4d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+4 days' +%Y-%m-%dT%H:%M:%SZ)
 
   cat > "$fakebin/jq" <<SH
 #!/usr/bin/env bash
 exec '$real_jq' "\$@"
 SH
-  cat > "$fakebin/quota-axi" <<'SH'
+  cat > "$fakebin/quota-axi" <<SH
 #!/usr/bin/env bash
 cat <<'JSON'
 {"providers":[
@@ -33,9 +34,9 @@ cat <<'JSON'
   {"provider":"codex","plan":"plus","windows":[
     {"id":"weekly","label":"week","percentRemaining":50,"resetsAt":"2030-01-07T01:00:00Z","pace":{"status":"on_pace"}}]},
   {"provider":"grok","windows":[
-    {"id":"credits","label":"credits","percentRemaining":42,"resetsAt":"2030-01-07T01:00:00Z","pace":{"status":"on_pace"}},
-    {"id":"product:imagine","label":"Imagine","percentRemaining":26,"resetsAt":"2030-01-07T01:00:00Z","pace":{"status":"on_pace"}},
-    {"id":"product:grok_build","label":"Grok Build","percentRemaining":74,"resetsAt":"2030-01-07T01:00:00Z","pace":{"status":"on_pace"}}]}
+    {"id":"credits","kind":"credits","label":"credits","percentRemaining":42,"resetsAt":"$grok_reset","pace":{"status":"on_pace"}},
+    {"id":"product:imagine","kind":"credits","label":"Imagine","percentRemaining":26,"resetsAt":"2030-01-07T01:00:00Z","pace":{"status":"on_pace"}},
+    {"id":"product:grok_build","kind":"credits","label":"Grok Build","percentRemaining":74,"resetsAt":"2030-01-07T01:00:00Z","pace":{"status":"on_pace"}}]}
 ]}
 JSON
 SH
@@ -45,11 +46,43 @@ SH
   assert_contains "$out" "claude (session)" "Claude's five-hour dispatch window must be shown"
   assert_contains "$out" "claude (week)" "Claude's seven-day dispatch window must be shown"
   assert_contains "$out" "codex (week)" "Codex's weekly dispatch window must be shown"
-  assert_contains "$out" "grok (credits; weekly cap unmeasured)" "Grok credits must disclose the unmeasured weekly cap"
+  weekly_block=$(printf '%s\n' "$out" | sed -n '/WEEKLY LIMIT/,/DAILY LIMIT/p')
+  assert_contains "$weekly_block" "grok (credits)" "Grok credits with a reset must appear in WEEKLY LIMIT"
+  assert_contains "$out" "weekly cap unmeasured" "Grok credits must disclose the unmeasured weekly cap"
+  assert_contains "$out" "3d" "the Grok reset about four days away must render as about three days remaining"
   assert_not_contains "$out" "Fable week" "model-specific Claude noise must stay out of the dashboard"
   assert_not_contains "$out" "Imagine" "Grok Imagine product credits must stay out of the dashboard"
   assert_not_contains "$out" "Grok Build" "Grok Build product credits must stay out of the dashboard"
-  pass "fm-quota-dash: dispatch windows remain visible and Grok's weekly cap is explicit"
+  pass "fm-quota-dash: dispatch windows are filtered and Grok credits are weekly"
+}
+
+test_credits_near_reset_stay_weekly() {
+  local case_dir fakebin real_jq out weekly_block reset
+  case_dir="$TMP_ROOT/credits-near-reset"
+  fakebin=$(fm_fakebin "$case_dir")
+  real_jq=$(command -v jq 2>/dev/null) || fail "jq is required for quota dashboard tests"
+  reset=$(date -u -v+1d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)
+
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+exec '$real_jq' "\$@"
+SH
+  cat > "$fakebin/quota-axi" <<SH
+#!/usr/bin/env bash
+cat <<'JSON'
+{"providers":[
+  {"provider":"grok","plan":"heavy","windows":[
+    {"id":"credits","kind":"credits","label":"credits","percentRemaining":42,"resetsAt":"$reset"}]}
+]}
+JSON
+SH
+  chmod +x "$fakebin/jq" "$fakebin/quota-axi"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --provider grok --once)
+  weekly_block=$(printf '%s\n' "$out" | sed -n '/WEEKLY LIMIT/,/DAILY LIMIT/p')
+  assert_contains "$weekly_block" "grok (credits)" \
+    "a credit balance with one day left must not move to DAILY LIMIT"
+  pass "fm-quota-dash: reset time is never mistaken for a credit cycle length"
 }
 
 test_default_providers_include_grok() {
@@ -81,7 +114,8 @@ SH
   asked=$(cat "$case_dir/asked" 2>/dev/null || printf '')
   [ "$asked" = "claude,codex,grok" ] \
     || fail "the default dashboard must query claude,codex,grok - quota-axi was asked for: ${asked:-<nothing>}"
-  assert_contains "$out" "grok (credits; weekly cap unmeasured)" "Grok's weekly cap warning must appear without an explicit --provider"
+  assert_contains "$out" "grok (credits)" "Grok's credits must appear without an explicit --provider"
+  assert_contains "$out" "weekly cap unmeasured" "Grok's weekly cap warning must appear without an explicit --provider"
   pass "fm-quota-dash: Grok is part of the default dispatch view"
 }
 
@@ -143,8 +177,8 @@ SH
   chmod +x "$fakebin/jq" "$fakebin/quota-axi"
 
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" "$ROOT/bin/fm-quota-dash.sh" --once)
-  assert_contains "$out" "grok (credits; weekly cap unmeasured)" \
-    "prepaid credits with no reset timestamp must still disclose the weekly cap"
+  assert_contains "$out" "grok (credits)" \
+    "prepaid credits with no reset timestamp must remain visible"
   header_col=$(printf '%s\n' "$out" | awk '/AVAILABILITY/ { print index($0, "AVAILABILITY"); exit }')
   row=$(printf '%s\n' "$out" | awk '/^ *[0-9]+ grok /  { print; exit }')
   note_col=$(printf '%s\n' "$row" | awk '{ print index($0, "weekly cap unmeasured") }')
@@ -204,6 +238,7 @@ test_help_prints_the_whole_header() {
 }
 
 test_dispatch_windows_and_grok_caveat
+test_credits_near_reset_stay_weekly
 test_default_providers_include_grok
 test_missing_reset_keeps_columns_aligned
 test_noise_only_provider_reports_unknown_headroom

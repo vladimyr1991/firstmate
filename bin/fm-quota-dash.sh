@@ -9,16 +9,23 @@
 # captain reads the gauges in a second and only drops to the table when one of
 # them has gone amber.
 #
+# Two top-level sections keep short-cycle and long-cycle limits from blending:
+#   WEEKLY LIMIT - windows of about a week (kind weekly, billing credits, or
+#                  multi-day cycles)
+#   DAILY LIMIT  - short cycles (session/5h, true daily, image daily cap)
+# A flat list made a green weekly bar hide an exhausted session. Sectioning
+# answers "is the week burned?" and "is today's/session budget burned?" apart.
+#
 # Refresh is ONE HOUR by default, not htop's one second. Quota windows are
 # weekly, so a fast poll would redraw an unchanged picture while hammering each
 # provider's endpoint. No countdown is shown: a ticking number invites watching
 # a clock instead of reading the gauges, and press `r` when you cannot wait.
 #
-# The dashboard shows only the quota windows that drive dispatch: Claude's
-# session and week, Codex's week, and Grok's shared credits. Product windows
-# stay in quota-axi's source data but are not dashboard resources. Grok credits
-# also carry an explicit unmeasured-weekly-cap warning, because a healthy
-# prepaid balance does not prove that Grok can accept another worker.
+# The dashboard shows only quota windows that can bound a model the fleet
+# dispatches to. Per-product windows for products the fleet does not dispatch
+# to stay in quota-axi's source data but are not dashboard resources. Grok's
+# shared credits also carry an explicit unmeasured-weekly-cap warning, because
+# a healthy prepaid balance does not prove that Grok can accept another worker.
 #
 # A dispatch provider that answers with quota data but none of those windows
 # gets one explicit "dispatch limit not reported" row carrying no number at
@@ -63,8 +70,9 @@ if [ -t 1 ]; then
   R=$'\033[0m'; B=$'\033[1m'; D=$'\033[2m'
   GREEN=$'\033[32m'; AMBER=$'\033[33m'; RED=$'\033[31m'; CYAN=$'\033[36m'; BLUE=$'\033[34m'
   HDR=$'\033[46m\033[30m'; KEY=$'\033[42m\033[30m'; LBL=$'\033[44m\033[37m'
+  SEC=$'\033[45m\033[30m'
 else
-  R=; B=; D=; GREEN=; AMBER=; RED=; CYAN=; BLUE=; HDR=; KEY=; LBL=
+  R=; B=; D=; GREEN=; AMBER=; RED=; CYAN=; BLUE=; HDR=; KEY=; LBL=; SEC=
 fi
 
 # Colour follows the captain's own switching rule: below 20% remaining the plan
@@ -74,25 +82,25 @@ tone_for() {
     'BEGIN { if (p < 5) printf "%s", r; else if (p < 20) printf "%s", a; else printf "%s", g }'
 }
 
-# Padded to a fixed VISIBLE width here: the colour escapes carry no width, so
-# %-16s applied to the coloured string at the call site would count them and
-# leave the AVAILABILITY column shifting with the pace text.
-pace_label() {
-  local text tone
-  case "$1" in
-    on_pace) text='on pace';       tone=$GREEN ;;
-    behind)  text='over-spending'; tone=$RED ;;
-    ahead)   text='under budget';  tone=$CYAN ;;
-    *)       text='-';             tone=$D ;;
-  esac
-  printf '%s%-16s%s' "$tone" "$text" "$R"
-}
-
+# quota-axi emits ISO-8601 in UTC (Z or +00:00). macOS date -j without -u
+# treats the clock fields as local time, so a reset still an hour out already
+# rendered as "now" under CEST. Always parse the Y-M-DTh:m:s fields as UTC.
 human_until() {
-  local t now d
+  local raw base t now d
   [ -n "$1" ] && [ "$1" != null ] || { printf '?'; return; }
-  t=$(date -j -f '%Y-%m-%dT%H:%M:%S' "${1%%.*}" +%s 2>/dev/null) \
-    || t=$(date -d "$1" +%s 2>/dev/null) || { printf '?'; return; }
+  raw=$1
+  base=$raw
+  # Drop fractional seconds, then a trailing Z or numeric offset.
+  base=${base%%.*}
+  case "$base" in
+    *Z) base=${base%Z} ;;
+    *[+-][0-9][0-9]:[0-9][0-9]) base=${base%[+-][0-9][0-9]:[0-9][0-9]} ;;
+    *[+-][0-9][0-9][0-9][0-9]) base=${base%[+-][0-9][0-9][0-9][0-9]} ;;
+  esac
+  t=$(date -j -u -f '%Y-%m-%dT%H:%M:%S' "$base" +%s 2>/dev/null) \
+    || t=$(date -u -d "$raw" +%s 2>/dev/null) \
+    || t=$(date -d "$raw" +%s 2>/dev/null) \
+    || { printf '?'; return; }
   now=$(date +%s); d=$(( t - now ))
   [ "$d" -gt 0 ] || { printf 'now'; return; }
   if   [ "$d" -ge 86400 ]; then printf '%dd %dh' $(( d / 86400 )) $(( d % 86400 / 3600 ))
@@ -101,14 +109,39 @@ human_until() {
   fi
 }
 
+# BSD seq counts DOWN when first > last (seq 1 0 prints 1 and 0). A 0% bar
+# must be empty, so never call seq with a non-positive count.
+repeat_char() {
+  local ch=$1 n=$2
+  [ "$n" -gt 0 ] 2>/dev/null || return 0
+  printf "%${n}s" '' | tr ' ' "$ch"
+}
+
 # Rows are collected once per refresh into a TSV cache, so the gauge block and
 # the detail table below it can never disagree about the same number.
+# Columns: section  provider  plan  window  pct  resets
+# section is "week" or "day" - see bucket rule in collect().
 ROWS=
 
 collect() {
   local json img
   json=$(quota-axi --provider "$PROVIDERS" --json 2>/dev/null)
+  # Bucket rule (single owner of week vs day):
+  #   week - kind weekly, billing credits with a reset, label mentions week,
+  #          or cycle >= 2 days
+  #   day  - everything shorter (session/5h, true daily, unknown short)
+  # Time remaining is not a cycle length: a weekly credit balance may have one
+  # day left, so reset-bearing credits remain weekly at every point in cycle.
   ROWS=$(printf '%s' "$json" | jq -r '
+    def cycle_secs:
+      (.windowSeconds // .pace.cycleSeconds // 0);
+    def section:
+      if (.kind // "") == "weekly" then "week"
+      elif ((.kind // "") == "credits" and ((.resetsAt? // "") != "")) then "week"
+      elif ((.label // "") | test("week"; "i")) then "week"
+      elif (cycle_secs >= 172800) then "week"
+      else "day"
+      end;
     .providers[]? | (.provider) as $p | (.plan // "?") as $plan |
     (if $p == "grok" then "weekly cap unmeasured" else "-" end) as $note |
     (($p == "claude") or ($p == "codex") or ($p == "grok")) as $dispatch_provider |
@@ -126,19 +159,18 @@ collect() {
     # would silently shift every later column; no field is ever emitted empty.
     (if ($dispatch_windows | length) > 0 then
       $dispatch_windows[] |
-      [$p, $plan, (.label // .id // "window"),
-       ((.percentRemaining // -1) | tostring),
-       (.resetsAt // ""), (.pace.status // "?"), $note]
+      [section, $p, $plan, (.label // .id // "window"),
+       ((.percentRemaining // -1) | tostring), (.resetsAt // "")]
     elif $dispatch_provider and ($reported | length) > 0 then
-      [$p, $plan, "-", "unknown", "", "?", $note]
-    else [$p, $plan, "-", "-1", "", "?", $note] end)
+      ["day", $p, $plan, "-", "unknown", ""]
+    else ["day", $p, $plan, "-", "-1", ""] end)
     | map(tostring | if . == "" then "-" else . end) | @tsv' 2>/dev/null)
 
   img=$(image_row) && ROWS="${ROWS}${ROWS:+$'\n'}${img}"
 }
 
 image_row() {
-  local home ledger cap spent today pct
+  local home ledger cap spent today pct reset
   home="${FM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
   ledger="${FM_STATE_OVERRIDE:-$home/state}/image-gen-spend.tsv"
   cap=5
@@ -148,75 +180,163 @@ image_row() {
   [ ! -f "$ledger" ] || spent=$(awk -F'\t' -v d="$today" '$1 == d { s += $4 } END { printf "%.4f", s + 0 }' "$ledger" 2>/dev/null)
   case "$spent" in ''|*[!0-9.]*) spent=0 ;; esac
   pct=$(awk -v s="$spent" -v c="$cap" 'BEGIN { r = (c > 0) ? (1 - s / c) * 100 : 0; if (r < 0) r = 0; printf "%.1f", r }')
-  # Midnight UTC is a known reset, not an unknown one; emitting it as an ISO
-  # timestamp lets the same human_until() render it as every other row.
-  printf 'images\tnano-banana\tDaily $%s/$%s\t%s\t%sT00:00:00\tn/a\t' \
-    "$spent" "$cap" "$pct" "$(date -u -v+1d +%Y-%m-%d 2>/dev/null || date -u -d tomorrow +%Y-%m-%d)"
+  # Midnight UTC is a known reset; Z marks UTC so human_until() does not treat
+  # the clock fields as local time.
+  reset="$(date -u -v+1d +%Y-%m-%d 2>/dev/null || date -u -d tomorrow +%Y-%m-%d)T00:00:00Z"
+  printf 'day\timages\tnano-banana\tDaily $%s/$%s\t%s\t%s' \
+    "$spent" "$cap" "$pct" "$reset"
 }
 
-gauge() {  # <n> <pct> <model> <window> <availability-note>
-  local n=$1 pct=$2 model=$3 win=$4 note=$5 label width=28 filled tone pipes spaces
-  label=$win
-  case "$note" in ''|-) ;; *) label="$label; $note" ;; esac
+gauge() {  # <n> <pct> <model> <window> <cols>
+  local n=$1 pct=$2 model=$3 win=$4 cols=$5 width overhead filled tone pipes spaces
+  # Everything on the line except the bar itself: "NN [" + " NNN.N%]" + " " +
+  # model + " (" + window + ")" - measured, not guessed, so the bar shrinks by
+  # exactly what the rest of the line needs instead of wrapping on narrow tty.
+  overhead=$(( 16 + ${#model} + ${#win} ))
+  width=$(( cols - overhead ))
+  [ "$width" -ge 10 ] || width=10
+  [ "$width" -le 40 ] || width=40
   filled=$(awk -v p="$pct" -v w="$width" 'BEGIN { f = int(p / 100 * w); if (f < 0) f = 0; if (f > w) f = w; print f }')
   tone=$(tone_for "$pct")
-  pipes=$(printf '|%.0s' $(seq 1 "$filled") 2>/dev/null)
-  spaces=$(printf ' %.0s' $(seq 1 $(( width - filled ))) 2>/dev/null)
+  pipes=$(repeat_char '|' "$filled")
+  spaces=$(repeat_char ' ' $(( width - filled )))
   printf '%s%2d%s [%s%s%s%s %s%s%5.1f%%%s%s]%s %s%s%s %s(%s)%s\n' \
     "$CYAN" "$n" "$R" "$tone" "$pipes" "$R" "$spaces" "$B" "$tone" "$pct" "$R" "$CYAN" "$R" \
-    "$B" "$model" "$R" "$D" "$label" "$R"
+    "$B" "$model" "$R" "$D" "$win" "$R"
+}
+
+availability_note() {
+  case "$1" in
+    grok) printf 'weekly cap unmeasured' ;;
+    *) printf '-' ;;
+  esac
+}
+
+section_title() {
+  local label=$1
+  printf '%s%s%s\n' "$SEC" " $label " "$R"
+}
+
+# Print gauges for one section. Updates global _ID and _ANY.
+render_gauges() {
+  local want=$1 cols=$2
+  local sec prov plan win pct resets note caveat
+  _ANY=0
+  while IFS=$'\t' read -r sec prov plan win pct resets; do
+    [ -n "$prov" ] || continue
+    [ "$sec" = "$want" ] || continue
+    _ANY=1
+    _ID=$(( _ID + 1 ))
+    note=$(availability_note "$prov")
+    if [ "$pct" = unknown ]; then
+      case "$note" in -) caveat= ;; *) caveat=" $D($note)$R" ;; esac
+      printf '%s%2d%s [%sUNKNOWN - dispatch limit not reported%s] %s%s%s%s\n' \
+        "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
+    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
+      printf '%s%2d%s [%sUNREADABLE - run: quota-axi --allow-keychain-prompt%s] %s%s%s\n' \
+        "$CYAN" "$_ID" "$R" "$AMBER" "$R" "$B" "$prov" "$R"
+    else
+      gauge "$_ID" "$pct" "$prov" "$win" "$cols"
+    fi
+  done <<EOF
+$ROWS
+EOF
+  if [ "$_ANY" -eq 0 ]; then
+    printf '%s  (none)%s\n' "$D" "$R"
+  fi
+}
+
+# Print the detail table for one section. Restarts IDs from _ID_BASE so gauge
+# and table IDs match within the section; continues the global sequence.
+render_table() {
+  local want=$1 table_mode=$2
+  local sec prov plan win pct resets n note caveat
+  n=$_ID_BASE
+  _ANY=0
+  case "$table_mode" in
+    full)    printf '%s%s%s\n' "$HDR" " ID MODEL    PLAN         WINDOW           REMAINING   RESETS     AVAILABILITY" "$R" ;;
+    compact) printf '%s%s%s\n' "$HDR" " ID MODEL    WINDOW           REMAINING " "$R" ;;
+  esac
+  while IFS=$'\t' read -r sec prov plan win pct resets; do
+    [ -n "$prov" ] || continue
+    [ "$sec" = "$want" ] || continue
+    _ANY=1
+    n=$(( n + 1 ))
+    note=$(availability_note "$prov")
+    if [ "$pct" = unknown ]; then
+      caveat='dispatch limit not reported'
+      case "$note" in -) ;; *) caveat="$caveat; $note" ;; esac
+      case "$table_mode" in
+        full)
+          printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s\n' \
+            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "unknown" "$R" "-" "$caveat" ;;
+        compact)
+          printf '%s%3d%s %s%-8s%s %-16s %s%9s%s\n' \
+            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "-" "$AMBER" "unknown" "$R" ;;
+      esac
+    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
+      case "$table_mode" in
+        full)
+          printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s\n' \
+            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "n/a" "$R" "-" "$note" ;;
+        compact)
+          printf '%s%3d%s %s%-8s%s %-16s %s%9s%s\n' \
+            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "-" "$AMBER" "n/a" "$R" ;;
+      esac
+    else
+      case "$table_mode" in
+        full)
+          printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%8.1f%%%s   %s%-10s%s %s\n' \
+            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "$win" \
+            "$(tone_for "$pct")" "$pct" "$R" "$D" "$(human_until "$resets")" "$R" "$note" ;;
+        compact)
+          printf '%s%3d%s %s%-8s%s %-16s %s%8.1f%%%s\n' \
+            "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$win" \
+            "$(tone_for "$pct")" "$pct" "$R" ;;
+      esac
+    fi
+  done <<EOF
+$ROWS
+EOF
+  if [ "$_ANY" -eq 0 ]; then
+    printf '%s  (none)%s\n' "$D" "$R"
+  fi
+  _ID=$n
 }
 
 # Renders the full dashboard to stdout. draw() then shows it through a
 # viewport, so nothing can be pushed off the top of a short terminal.
 render_all() {
-  local n=0 caveat
+  local cols table_mode total sec prov
+  cols=$( { tput cols; } 2>/dev/null || echo 80)
+  if [ "$cols" -ge 70 ]; then table_mode=full
+  else                        table_mode=compact
+  fi
 
-  while IFS=$'\t' read -r prov plan win pct resets pace note; do
+  total=0
+  while IFS=$'\t' read -r sec prov _; do
     [ -n "$prov" ] || continue
-    n=$(( n + 1 ))
-    if [ "$pct" = unknown ]; then
-      case "$note" in ''|-) caveat= ;; *) caveat=" $D($note)$R" ;; esac
-      printf '%s%2d%s [%sUNKNOWN - dispatch limit not reported%s] %s%s%s%s\n' \
-        "$CYAN" "$n" "$R" "$AMBER" "$R" "$B" "$prov" "$R" "$caveat"
-    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
-      printf '%s%2d%s [%sUNREADABLE - run: quota-axi --allow-keychain-prompt%s] %s%s%s\n' \
-        "$CYAN" "$n" "$R" "$AMBER" "$R" "$B" "$prov" "$R"
-    else
-      gauge "$n" "$pct" "$prov" "$win" "$note"
-    fi
+    total=$(( total + 1 ))
   done <<EOF
 $ROWS
 EOF
 
-  printf '\n%sResources:%s %s%d%s\n\n' "$CYAN" "$R" "$B" "$n" "$R"
+  _ID=0
+  section_title "WEEKLY LIMIT"
+  render_gauges week "$cols"
+  printf '\n'
+  _ID_BASE=0
+  render_table week "$table_mode"
+  printf '\n'
 
-  # printf pads by BYTES and Cyrillic is two bytes per character, so %-8s on a
-  # Russian header yields half the intended column. The header is padded by
-  # hand to match the ASCII data columns below it.
-  printf '%s%s%s\n' "$HDR" " ID MODEL    PLAN         WINDOW           REMAINING   RESETS     PACE             AVAILABILITY" "$R"
+  _ID_BASE=$_ID
+  section_title "DAILY LIMIT"
+  render_gauges day "$cols"
+  printf '\n'
+  render_table day "$table_mode"
+  printf '\n'
 
-  n=0
-  while IFS=$'\t' read -r prov plan win pct resets pace note; do
-    [ -n "$prov" ] || continue
-    n=$(( n + 1 ))
-    if [ "$pct" = unknown ]; then
-      caveat='dispatch limit not reported'
-      case "$note" in ''|-) ;; *) caveat="$caveat; $note" ;; esac
-      printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s %-20s\n' \
-        "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "unknown" "$R" "-" "$(pace_label "$pace")" "$caveat"
-    elif awk -v p="$pct" 'BEGIN { exit !(p < 0) }'; then
-      printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%9s%s   %-10s %s %-20s\n' \
-        "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "-" "$AMBER" "n/a" "$R" "-" "$(pace_label "$pace")" "${note:--}"
-    else
-      printf '%s%3d%s %s%-8s%s %s%-12s%s %-16s %s%8.1f%%%s   %s%-10s%s %s %-20s\n' \
-        "$CYAN" "$n" "$R" "$B" "$prov" "$R" "$BLUE" "$plan" "$R" "$win" \
-        "$(tone_for "$pct")" "$pct" "$R" "$D" "$(human_until "$resets")" "$R" "$(pace_label "$pace")" "${note:--}"
-    fi
-  done <<EOF
-$ROWS
-EOF
-
+  printf '%sResources:%s %s%d%s\n' "$CYAN" "$R" "$B" "$total" "$R"
 }
 
 OUT=(); SCROLL=0
