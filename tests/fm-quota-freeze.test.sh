@@ -895,6 +895,43 @@ test_the_poll_reads_quota_axi_once_per_sweep() {
   pass "a sweep reads quota-axi once for the whole registry, and not at all when nothing is due"
 }
 
+test_a_marker_that_cannot_be_read_never_silences_its_obligation() {
+  local dir out marker content
+  dir=$(make_case marker-unreadable)
+  setup_root "$dir"
+  run_freeze "$dir" exhausted.json add --subject task-a --provider claude --action nudge >/dev/null \
+    || fail "freeze failed"
+  marker="$dir/home/state/quota-frozen/.notified/task-a"
+
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' "the recovery did not wake firstmate"
+  [ -f "$marker" ] || fail "the surfaced obligation was not marked"
+
+  # The marker survives but its contents no longer say anything - a truncated
+  # write, a foreign file at the path, a mode this process cannot read. A marker
+  # that cannot be read is NO evidence that anything was surfaced. Reading it as
+  # "surfaced just now" suppresses the record before it is ever evaluated, so it
+  # is never re-marked either, and the obligation goes quiet on every sweep from
+  # then on - permanent silence, which is the failure this registry removes.
+  printf 'not-a-timestamp\n' > "$marker"
+  out=$(run_poll "$dir" recovered.json)
+  assert_contains "$out" 'task-a(claude/five_hour,recovered)' \
+    "an obligation whose marker cannot be parsed was silenced instead of surfaced"
+
+  # And the sweep that surfaced it put a usable timestamp back, so the recovery
+  # of the marker is not itself something a human has to perform.
+  content=$(cat "$marker")
+  case "$content" in
+    ''|*[!0-9]*) fail "the unparseable marker was not rewritten with a valid timestamp: [$content]" ;;
+  esac
+  out=$(run_poll "$dir" recovered.json)
+  [ -z "$out" ] || fail "the rewritten marker did not restore the quiet window: $out"
+
+  [ -f "$dir/home/state/quota-frozen/task-a" ] \
+    || fail "the poll removed the obligation, which only a confirmed resume may do"
+  pass "a notified marker that cannot be read surfaces its obligation and is rewritten, never silences it"
+}
+
 test_the_poll_id_cannot_be_taken_by_a_task() {
   # The poll and the task-id validator must agree about the reserved name, or a
   # task could silently evict the poll from the shared check slot.
@@ -903,6 +940,38 @@ test_the_poll_id_cannot_be_taken_by_a_task() {
   fm_task_id_creation_valid "${FM_QUOTA_RESET_POLL_ID}-2" \
     || fail "the reservation leaked onto an ordinary task id"
   pass "no task can be created under the reserved quota reset poll id"
+}
+
+test_the_role_names_cannot_be_taken_by_a_task() {
+  local dir role rc
+  # A task created under a role name would have its freeze recorded as that
+  # role's - "pm" in the registry always means the board PM - so the wake would
+  # respawn a board PM while the frozen task is never resumed, and the
+  # obligation would be discharged as though it had been. The registry and the
+  # task-id validator must therefore agree on the reserved names, and the
+  # refusal has to be a refusal rather than a rename onto some fallback id.
+  for role in $FM_QUOTA_FREEZE_ROLES; do
+    fm_task_id_creation_valid "$role" \
+      && fail "a task may be created under the reserved role name $role"
+    fm_task_id_creation_valid "${role}-1" \
+      || fail "the $role reservation leaked onto an ordinary task id"
+  done
+
+  # And the registry's own door stays shut from the other side: the same name
+  # offered as a task subject is refused rather than recorded as the role.
+  dir=$(make_case role-names)
+  setup_root "$dir"
+  for role in $FM_QUOTA_FREEZE_ROLES; do
+    set +e
+    run_freeze "$dir" exhausted.json add --subject "$role" --kind task --provider claude \
+      --action nudge >/dev/null 2>&1
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "the registry recorded a task freeze under the reserved role name $role"
+    [ ! -e "$dir/home/state/quota-frozen/$role" ] \
+      || fail "a refused task freeze still wrote a record under the role name $role"
+  done
+  pass "no task can be created or frozen under a reserved registry role name"
 }
 
 test_watcher_dispatch_delivers_the_reset_wake() {
@@ -964,6 +1033,8 @@ test_an_arming_failure_with_a_live_poll_says_the_wake_is_still_watched
 test_an_arming_failure_never_revokes_a_poll_it_did_not_publish
 test_a_discharge_completes_even_when_its_marker_cannot_be_cleared
 test_the_poll_reads_quota_axi_once_per_sweep
+test_a_marker_that_cannot_be_read_never_silences_its_obligation
 test_the_poll_id_cannot_be_taken_by_a_task
+test_the_role_names_cannot_be_taken_by_a_task
 test_watcher_dispatch_delivers_the_reset_wake
 test_help_documents_usage

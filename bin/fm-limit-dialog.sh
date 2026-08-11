@@ -9,10 +9,10 @@
 # option waits for the reset, another buys more capacity - and stays parked
 # until a human answers it. Answering it is mechanical; what makes it dangerous
 # to automate is that the wrong option spends the captain's money. So the
-# selection here is never positional and never guessed: the options are read
-# out of the pane, exactly one must identify itself as the waiting option, and
-# anything ambiguous is refused with no keystroke sent at all. The upgrade
-# option is never selected by this script under any circumstance - that is the
+# selection here is never positional and never guessed: the options are read out
+# of the pane, exactly one must match the enumerated wait-for-reset allowlist,
+# and anything else is refused with no keystroke sent at all. The upgrade option
+# is never selected by this script under any circumstance - that is the
 # captain's decision, not an automation's.
 #
 # Choosing "wait" only unblocks the pane; it does not make the work resume when
@@ -69,14 +69,19 @@ collapsing them sends the caller to record a freeze twice.
      recorded and a poll is watching it
   1  no dialog detected, or answering it failed
   2  usage error
-  3  a dialog was found but its options are ambiguous; nothing was sent
+  3  a dialog was found but its options do not resolve to exactly one
+     recognized wait-for-reset choice; nothing was sent, and every option is
+     printed verbatim on stderr so it can be escalated to a human as captured
   4  the dialog was answered but NO freeze was recorded, so nothing will resume
      this work until one is recorded
   5  the dialog was answered and the freeze IS recorded, but no poll is armed,
      so nothing is watching any open obligation until it is re-armed
 
-The upgrade option is never selected. If exactly one option does not identify
-itself as the waiting option, this refuses with exit 3 and sends no keystroke.
+The upgrade option is never selected. Selection is an ALLOWLIST: an option is
+selectable only when its whole text reads as one of the enumerated
+wait-for-reset phrasings, and a paid-wording veto can still reject a match. A
+dialog whose options are not recognized is never guessed at - it refuses with
+exit 3 and sends no keystroke.
 EOF
 }
 
@@ -147,8 +152,7 @@ normalize() {
 # context line keeps an ordinary numbered menu ("1. yes / 2. no") from ever
 # being treated as a limit dialog.
 has_limit_context() {
-  grep -qiE 'limit' "$1" \
-    && grep -qiE 'limit[^.]*(reset|reach|exceed)|(reach|hit|exceed)[^.]*limit' "$1"
+  grep -qiE 'limit[^.]*(reset|reach|exceed)|(reach|hit|exceed)[^.]*limit' "$1"
 }
 
 # Emit "<number>\t<text>" for each numbered option in the pane.
@@ -156,13 +160,47 @@ options_of() {
   sed -nE 's/^[^A-Za-z0-9]*([0-9]{1,2})[.)][[:space:]]+([^[:space:]].*)$/\1\t\2/p' "$1"
 }
 
-is_wait_option() {
-  printf '%s' "$1" | grep -qiE 'wait' \
-    && printf '%s' "$1" | grep -qiE 'reset|limit'
+# THE MONEY BOUNDARY IS AN ALLOWLIST, AND IT FAILS CLOSED.
+#
+# Recognizing the safe option by ruling out paid wording cannot work. The ways a
+# vendor can write "give us money" are unbounded and change whenever a dialog is
+# reworded, so a denylist is always already missing the next wording - and the
+# wording it fails to veto is precisely the one that gets typed into a live
+# pane. So the rule is inverted: an option is selectable ONLY when its WHOLE
+# text reads as one of the wait-for-reset phrasings enumerated below. Anything
+# else - however plausible, however much it also talks about waiting and the
+# limit resetting - is unrecognized, and an unrecognized dialog is never
+# answered. It stalls visibly (exit 3, no keystroke) with its options printed
+# verbatim for a human. Stalling is always correct; guessing is never. Spending
+# is the captain's decision alone, so no automation may select a paid option.
+#
+# The lead-in and trailing clause below are part of the allowlist rather than
+# exceptions to it: they widen the recognized phrasings by a fixed, enumerated
+# amount, never by anything the dialog itself supplies.
+WAIT_LEAD='((stop|pause|hold)( and|,)?[[:space:]]+|just[[:space:]]+|please[[:space:]]+)?'
+WAIT_TAIL='([[:space:]]*[,;]?[[:space:]]*(and[[:space:]]+)?(then[[:space:]]+)?(automatically[[:space:]]+)?(continue|resume|retry|try[[:space:]]+again)([[:space:]]+automatically)?)?[[:space:]]*[.!]?'
+WAIT_ALLOWLIST="\
+${WAIT_LEAD}wait([[:space:]]+(for|until))?([[:space:]]+(the|my|your|this))?([[:space:]]+(usage|rate|quota|model))?([[:space:]]+(limit|limits|window|cap))?([[:space:]]+(to|will))?[[:space:]]+reset(s|ting)?${WAIT_TAIL}"
+
+# Whether the option's whole text is one of the enumerated wait-for-reset
+# phrasings. Anchored at both ends on purpose: an allowlist entry that could
+# match a fragment would let any surrounding clause - including one that charges
+# for continuing - ride along inside a "recognized" option.
+is_recognized_wait_option() {
+  local pattern
+  while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    if printf '%s' "$1" | grep -qiE "^($pattern)\$"; then
+      return 0
+    fi
+  done <<< "$WAIT_ALLOWLIST"
+  return 1
 }
 
-# Anything that could cost money. An option matching this is never selected,
-# even if it also mentions waiting.
+# The independent SECOND barrier, never the only one. It can reject an option
+# the allowlist already accepted, but it is not what makes an option safe: an
+# option this does not match is still refused unless the allowlist recognized
+# it.
 is_paid_option() {
   printf '%s' "$1" | grep -qiE 'upgrade|buy|purchase|subscribe|billing|payment|checkout|credit card|add (funds|credits)'
 }
@@ -205,17 +243,21 @@ capture_pane() {  # <destination> [lines] [required|optional]
   printf '%s\n' "$raw" | normalize > "$dest"
 }
 
-# Fills WAIT_NUMBER/WAIT_TEXT/OTHER_OPTIONS. Returns 0 when exactly one option
-# unambiguously waits, 1 when there is no dialog, 2 when a dialog is present but
-# its options cannot be told apart safely.
+# Fills WAIT_NUMBER/WAIT_TEXT/OTHER_OPTIONS/ALL_OPTIONS. Returns 0 when exactly
+# one option is a recognized wait-for-reset choice, 1 when there is no dialog,
+# 2 when a dialog is present but no single option is recognized. ALL_OPTIONS
+# holds every option exactly as captured, because a refusal has to hand the
+# dialog to a human verbatim rather than describe it.
 WAIT_NUMBER=
 WAIT_TEXT=
 OTHER_OPTIONS=
+ALL_OPTIONS=
 scan() {  # <capture>
   local file=$1 number text matches=0 seen='' key
   WAIT_NUMBER=
   WAIT_TEXT=
   OTHER_OPTIONS=
+  ALL_OPTIONS=
   has_limit_context "$file" || return 1
   while IFS=$(printf '\t') read -r number text; do
     [ -n "$number" ] || continue
@@ -228,7 +270,9 @@ scan() {  # <capture>
       *"$key"*) continue ;;
     esac
     seen="$seen$key"
-    if is_wait_option "$text" && ! is_paid_option "$text"; then
+    ALL_OPTIONS="$ALL_OPTIONS$number. $text
+"
+    if is_recognized_wait_option "$text" && ! is_paid_option "$text"; then
       matches=$((matches + 1))
       WAIT_NUMBER=$number
       WAIT_TEXT=$text
@@ -236,7 +280,7 @@ scan() {  # <capture>
       OTHER_OPTIONS="$OTHER_OPTIONS $number=$text"
     fi
   done < <(options_of "$file")
-  [ -n "$OTHER_OPTIONS" ] || [ "$matches" -gt 0 ] || return 1
+  [ -n "$ALL_OPTIONS" ] || return 1
   [ "$matches" -eq 1 ] || return 2
   return 0
 }
@@ -252,19 +296,22 @@ case "$SCAN_RC" in
     printf 'limit-dialog: not detected\n'
     exit 1 ;;
   2)
-    printf 'limit-dialog: detected but ambiguous; no key was sent\n' >&2
-    printf 'options:%s\n' "$OTHER_OPTIONS" >&2
+    printf 'limit-dialog: detected but no single option is a recognized wait-for-reset choice; no key was sent\n' >&2
+    printf 'options (verbatim, escalate these to a human):\n' >&2
+    printf '%s' "$ALL_OPTIONS" >&2
     exit 3 ;;
 esac
 
 # Belt and braces before any keystroke leaves this script: the selection must
-# still read as the waiting option and must not read as a paid one. This is the
-# last gate before money can be spent, so it does not trust the scan above.
+# still be a recognized wait-for-reset option and must not read as a paid one.
+# This is the last gate before money can be spent, so it does not trust the scan
+# above, and it re-applies the allowlist first rather than only the veto.
 case "$WAIT_NUMBER" in
   ''|*[!0-9]*) die "the selected option is not a plain number" ;;
 esac
 [ "${#WAIT_NUMBER}" -le 2 ] || die "the selected option number is out of range"
-is_wait_option "$WAIT_TEXT" || die "the selected option no longer reads as the waiting option"
+is_recognized_wait_option "$WAIT_TEXT" \
+  || die "the selected option is not a recognized wait-for-reset choice"
 ! is_paid_option "$WAIT_TEXT" || die "refusing to select an option that could spend money"
 
 printf 'limit-dialog: detected\n'

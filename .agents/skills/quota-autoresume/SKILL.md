@@ -99,9 +99,11 @@ Two boundaries hold absolutely:
 - **The paid option is never selected**, by the tool or by hand.
   Upgrading spends the captain's money and is their decision alone.
   If the dialog offers only paid options, that is the unobservable-limit case: reroute the work and tell the captain.
-- **An ambiguous dialog is never answered by guessing a number.**
-  The tool refuses with exit 3 and sends nothing.
-  Read the pane yourself, and if the waiting option still cannot be identified with certainty, escalate rather than pressing a key.
+- **An unrecognized dialog is never answered by guessing a number.**
+  The tool selects an option only when its whole text matches an enumerated wait-for-reset phrasing; recognizing the safe option by ruling out paid wording cannot work, because the next reworded paywall is always missing from any such list.
+  So anything it does not recognize - including an option that talks about waiting and the limit resetting while also offering to keep going for a fee - refuses with exit 3, sends no keystroke, and prints every option verbatim on stderr.
+  When that happens, append a `blocked:` status carrying the dialog's exact option text as printed, and stop.
+  Do not press a key by hand, do not re-run the tool against the same pane, and do not paraphrase the options: the captain decides an unrecognized dialog, and they need it as captured.
 
 Choosing to wait only unparks the pane; it does not make the work continue when the limit lifts.
 That is why the freeze is armed as part of answering the dialog rather than left as a separate step to remember.

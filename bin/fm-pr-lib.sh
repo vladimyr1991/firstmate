@@ -111,11 +111,24 @@ fm_pr_task_id_valid() {
 # binds the two together through FM_QUOTA_RESET_POLL_ID in its own tests.
 FM_RESERVED_CHECK_SLOT_IDS="fm-quota-reset"
 
+# Subject names the quota freeze registry reserves for firstmate itself and the
+# board PM, kept apart from the check-slot reservation above because they
+# protect different things: that one protects a shared FILE, this one protects a
+# subject's IDENTITY. A task allowed to take one of these names would have its
+# freeze recorded as that role's, and the wake would then dispatch the role -
+# respawning a board PM while the frozen task is never resumed, with its
+# obligation discharged as though it had been. bin/fm-quota-freeze-lib.sh owns
+# the roles behind this entry as FM_QUOTA_FREEZE_ROLES and binds the two
+# together in its own tests. A reserved name is a hard refusal at creation, not
+# a rename onto a fallback id: a task quietly renamed is a task nobody asked
+# for under a name nobody expects.
+FM_RESERVED_ROLE_IDS="firstmate pm"
+
 fm_task_id_creation_valid() {
   local id=${1-} reserved
   fm_pr_task_id_valid "$id" || return 1
   [ "${#id}" -le 64 ] || return 1
-  for reserved in $FM_RESERVED_CHECK_SLOT_IDS; do
+  for reserved in $FM_RESERVED_CHECK_SLOT_IDS $FM_RESERVED_ROLE_IDS; do
     [ "$id" != "$reserved" ] || return 1
   done
 }

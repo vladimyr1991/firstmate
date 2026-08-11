@@ -399,6 +399,76 @@ test_answering_without_a_provider_still_answers_but_reports_no_resume() {
   pass "without an established provider the dialog is still answered and the missing resume is reported"
 }
 
+test_close_variants_of_the_waiting_option_are_still_recognized() {
+  local dir out variant screen n=0
+  dir=$(make_case wait-variants)
+  # The allowlist has to be narrow without being a transcript of one harness:
+  # seven harnesses word this differently, and an allowlist that only knows the
+  # single observed sentence would refuse real dialogs it is meant to answer.
+  while IFS= read -r variant; do
+    [ -n "$variant" ] || continue
+    n=$((n + 1))
+    screen="$dir/variant-$n.txt"
+    printf 'Usage limit reached.\n1. %s\n2. Upgrade to Max for higher limits\n' \
+      "$variant" > "$screen"
+    out=$(run_detect "$dir" "$screen") \
+      || fail "a close variant of the waiting option was not recognized: $variant"
+    assert_contains "$out" 'wait-option: 1' "the waiting option was not identified in: $variant"
+  done <<'VARIANTS'
+Stop and wait for the limit to reset
+Wait for the limit to reset
+Wait for reset
+Wait until the usage limit resets
+Pause and wait for the limit to reset, then continue
+VARIANTS
+  pass "close variants of the wait-for-reset option are recognized, not just the one observed sentence"
+}
+
+test_an_unrecognized_option_is_never_typed_into_the_pane() {
+  local dir rc name err
+  dir=$(make_case unrecognized)
+
+  # Neither of these carries a word any denylist of paid phrasings knows, and
+  # that is the point: the boundary must not depend on having anticipated the
+  # wording. Each keeps working NOW and settles up later, which is spending.
+  cat > "$dir/overage.txt" <<'T'
+Usage limit reached for this window.
+1. Skip the wait and keep going at standard overage rates until the limit resets
+2. Something else entirely
+T
+  cat > "$dir/metered.txt" <<'T'
+You have reached your usage limit.
+1. Continue immediately; further usage this cycle is charged to your workspace
+2. Do nothing for now
+T
+
+  for name in overage metered; do
+    cp "$dir/$name.txt" "$dir/screen.txt"
+    : > "$dir/typed.txt"
+    : > "$dir/tmux.log"
+    set +e
+    run_live "$dir" --provider claude > "$dir/$name.out" 2> "$dir/$name.err"
+    rc=$?
+    set -e
+    err=$(cat "$dir/$name.err")
+    [ "$rc" -eq 3 ] \
+      || fail "an unrecognized dialog '$name' did not refuse with exit 3 (got $rc): $err"
+    [ ! -s "$dir/typed.txt" ] \
+      || fail "an unrecognized dialog '$name' reached the endpoint: $(cat "$dir/typed.txt")"
+    case "$(cat "$dir/tmux.log")" in
+      *send-keys*) fail "an unrecognized dialog '$name' sent a key to the pane" ;;
+    esac
+    [ ! -e "$dir/home/state/quota-frozen/task-a" ] \
+      || fail "an unrecognized dialog '$name' still recorded a freeze"
+    # The refusal has to hand the dialog to a human as captured, not describe it.
+    assert_contains "$err" "$(sed -n '2s/^1\. //p' "$dir/$name.txt")" \
+      "the refusal for '$name' did not report the option text verbatim"
+    assert_contains "$err" 'no key was sent' \
+      "the refusal for '$name' did not state that nothing was sent"
+  done
+  pass "a plausibly worded option that is not a recognized wait choice is never typed into a live pane"
+}
+
 test_a_paywall_dialog_never_reaches_the_endpoint() {
   local dir rc
   dir=$(make_case paywall-live)
@@ -467,6 +537,8 @@ test_help_documents_the_safety_boundary() {
   assert_contains "$out" 'fm-limit-dialog.sh <task-id>' "help text missing the usage line"
   assert_contains "$out" 'The upgrade option is never selected' \
     "help text does not state the money boundary"
+  assert_contains "$out" 'ALLOWLIST' \
+    "help text does not state that selection is an allowlist rather than a paid-wording veto"
   assert_contains "$out" '--detect-only' "help text missing --detect-only documentation"
   pass "--help states the usage and the boundary that the paid option is never selected"
 }
@@ -482,6 +554,8 @@ test_a_freeze_that_cannot_be_recorded_reports_no_resume_not_the_child_code
 test_a_recorded_freeze_a_live_poll_watches_is_not_reported_as_no_resume
 test_a_recorded_freeze_with_no_poll_armed_is_reported_apart_from_a_missing_record
 test_answering_without_a_provider_still_answers_but_reports_no_resume
+test_close_variants_of_the_waiting_option_are_still_recognized
+test_an_unrecognized_option_is_never_typed_into_the_pane
 test_a_paywall_dialog_never_reaches_the_endpoint
 test_a_saved_capture_cannot_answer_a_live_dialog
 test_invalid_arguments_are_refused

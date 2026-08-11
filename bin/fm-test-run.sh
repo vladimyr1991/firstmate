@@ -900,10 +900,12 @@ families_for_changed_path() {
       ;;
     bin/fm-pr-lib.sh)
       printf '%s\n' pr-forge
-      # The reserved check-slot ids live here, and the test that binds them to
-      # the fleet-wide poll they protect is in watcher-wake-lock. Without this
-      # the reservation could be renamed or dropped with its own guard never
-      # selected, and a task could then evict the poll from the shared slot.
+      # Both task-id reservations live here - the check-slot ids and the freeze
+      # registry's role names - and the tests binding each to what it protects
+      # are in watcher-wake-lock. Without this either reservation could be
+      # renamed or dropped with its own guard never selected, and a task could
+      # then evict the fleet-wide poll from the shared slot or impersonate the
+      # board PM in the freeze registry.
       printf '%s\n' watcher-wake-lock
       ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\

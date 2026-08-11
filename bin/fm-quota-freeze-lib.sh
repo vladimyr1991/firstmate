@@ -614,13 +614,21 @@ window_remaining() {
 # Seconds since this subject's wake was surfaced, or nothing at all when it
 # never was. Deliberately cheap and local - it reads one small file and never
 # touches quota-axi - because it gates whether the record is looked at at all.
+#
+# A marker that exists but cannot be read or parsed is NO age evidence, exactly
+# like a marker that is not there. Substituting "now" would report an age of 0,
+# which suppresses the record before it is ever evaluated - so the subject never
+# reaches the re-marking pass, the broken marker is never rewritten, and the
+# obligation is silenced permanently on every later sweep. Surfacing it once
+# more costs a duplicate wake; the other way costs the wake entirely, and
+# silence is the failure this whole mechanism exists to remove.
 marker_age() {  # <subject>
   local subject=\$1 marker marked
   marker="\$NOTIFIED/\$subject"
   [ -f "\$marker" ] && [ ! -L "\$marker" ] || return 0
   marked=\$(cat "\$marker" 2>/dev/null) || marked=
   case "\$marked" in
-    ''|*[!0-9]*) marked=\$now ;;
+    ''|*[!0-9]*) return 0 ;;
   esac
   printf '%s\\n' "\$((now - marked))"
 }
