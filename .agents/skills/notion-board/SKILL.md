@@ -18,7 +18,7 @@ This skill is the single owner of the Notion board contract: which cards the PM 
 
 The PM is a durable ordinary fleet worker, not a harness-native subagent and not a role firstmate performs itself.
 Firstmate creates a PM scout brief with `bin/fm-brief.sh`, launches it through `bin/fm-spawn.sh`, and supervises it like any other direct report.
-The PM keeps the board honest and owns intake until every eligible card it selects has a linked implementation worker durably running.
+The PM keeps the board honest and owns intake until every eligible card it selects has the worker firstmate dispatched for it durably running and linked, whether the gate below made that a spec worker or an implementation worker.
 Notion-board implementation work is capped at four concurrent workers across the whole home, not four new workers per scan.
 The board is not an authority over delivery posture - `data/projects.md` and `AGENTS.md` section 7 own mode and yolo, and a card never overrides them.
 
@@ -183,7 +183,7 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
    Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so skip them or the same card is picked up again every hour.
 2. **Fill available capacity; do not build the cards yourself.**
    Select as many dispatchable cards as the four-worker cap permits, write each one into the scout report, and open the single keyed dispatch hold described above.
-   Stay live until firstmate confirms which implementation workers are durably running and linked, then move only those cards to `В работе`.
+   Stay live until firstmate confirms which dispatched workers are durably running and linked, then move only those cards to `В работе`.
 3. **Found nothing? End the turn silently.**
    Around eleven checks run each weekday, so reporting "nothing new" every time trains the captain to stop reading reports and hides the one that matters.
 
