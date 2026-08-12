@@ -10,6 +10,14 @@
 # line, registration through bin/fm-doc-audience-check.sh and
 # bin/fm-skill-trigger-check.sh, and link resolution through the paths the
 # installed SKILL.md itself names.
+#
+# Deliberately absent: byte-identity with the captain's source.
+# data/spec-gate-source/ is gitignored captain-private local data, absent from
+# every isolated task worktree and from git history by design, so identity with
+# it can only be checked from the main checkout that holds it.
+# This suite therefore verifies the installed layout's behavior - links
+# resolve, the validator accepts and rejects correctly, both registration
+# checkers pass - and does not assert byte-identity.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -154,6 +162,8 @@ expect_rejected() {  # <spec-path> <expected-substring> <label>
   assert_contains "$out" "$2" "$3 was not explained"
 }
 
+# Checks the installed layout only; identity with the captain's source at
+# data/spec-gate-source/ is untestable here (see the header comment).
 test_installed_links_resolve() {
   local skill="$SKILL_DIR/SKILL.md" target found=0
   assert_present "$skill" "the skill is not installed at .agents/skills/write-implementation-spec/SKILL.md"
