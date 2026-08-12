@@ -563,7 +563,7 @@ if spawn_task active-seeded "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/active-seede
   fail "active seeded-tab projection should refuse the prune"
 fi
 grep -F "target is the captain's active tab" "$TMP_ROOT/active-seeded.err" >/dev/null 2>&1 \
-  || fail "active seeded-tab projection did not report its exact refusal"
+  || fail "active seeded-tab projection did not report its exact refusal: $(cat "$TMP_ROOT/active-seeded.err")"
 ACTIVE_SEEDED_WSID=$(cat "$ACTIVE_SEEDED_CONTROL/workspace")
 ACTIVE_SEEDED_TAB=$(cat "$ACTIVE_SEEDED_CONTROL/seeded-tab")
 ACTIVE_SEEDED_PANE=$(cat "$ACTIVE_SEEDED_CONTROL/seeded-pane")

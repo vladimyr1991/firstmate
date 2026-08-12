@@ -652,8 +652,12 @@ fm_backend_herdr_projection_focus_fallback() {  # <session> <excluded-workspace>
 # anywhere else.
 # If the target belongs to the active tab, exact tab preservation is
 # impossible because the tab is about to disappear.
-# Cleanup first moves focus to one exactly verified surviving tab, then uses
-# that replacement as its restoration authority.
+# Retirement callers pass the fourth argument `active-fallback`: they are
+# removing a task the captain may be looking at, so cleanup first moves focus
+# to one exactly verified surviving tab and then uses that replacement as its
+# restoration authority.
+# Every spawn-time caller leaves it unset and keeps refusing instead, because
+# a launch must never move the captain's focus.
 # When the close would empty the target workspace, Herdr 0.7.5's explicit
 # close moves focus to the workspace's neighbor, so the close is planned by
 # fm_backend_herdr_emptying_close_plan: reposition the doomed workspace
@@ -662,8 +666,8 @@ fm_backend_herdr_projection_focus_fallback() {  # <session> <excluded-workspace>
 # pane-death path. The exact-tab restore below remains the backstop, and any
 # ambiguity falls back to the plain explicit close, which the backstop masks
 # exactly as before this hardening.
-fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-id> [required-agent-state]
-  local session=$1 pane_id=$2 required_agent_state=${3:-}
+fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-id> [required-agent-state] [active-fallback]
+  local session=$1 pane_id=$2 required_agent_state=${3:-} active_mode=${4:-}
   local before active_tab info target_pane target_tab target_ws close_status state plan plan_shell_pid plan_move_record workspace_presence fallback
   FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE=""
   [ -n "$pane_id" ] || return 0
@@ -684,6 +688,10 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
     return 1
   fi
   if [ "$target_tab" = "$active_tab" ]; then
+    if [ "$active_mode" != active-fallback ]; then
+      echo "warning: herdr presentation cleanup target is the captain's active tab; refusing a close that cannot preserve focus" >&2
+      return 1
+    fi
     fallback=$(fm_backend_herdr_projection_focus_fallback "$session" "$target_ws" "$target_tab") || {
       echo "warning: herdr presentation cleanup target is active and no exact surviving tab can receive focus" >&2
       return 1

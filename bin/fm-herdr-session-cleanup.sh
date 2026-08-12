@@ -267,7 +267,7 @@ fm_herdr_cleanup_one() { # <session> <workspace> <title> <home-real>
   fi
 
   fm_backend_herdr_projection_close_pane_focus_preserving \
-    "$session" "$pane" no-agent || close_status=$?
+    "$session" "$pane" no-agent active-fallback || close_status=$?
   state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
   if [ "$state" = dead ]; then
     if [ -f "$journal" ] && [ ! -L "$journal" ] \
