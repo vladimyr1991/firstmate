@@ -39,7 +39,7 @@ Database `✅ Tasks (Тактический уровень)`, id `4163a7f3-7122-
 
 | Property | Values that matter here |
 |---|---|
-| `Status` | `Новая`, `В работе`, `На ревью`, `Тест`, `Завершена`, `Отложена`, `♻️ Пул` |
+| `Status` | `Новая`, `В работе`, `На ревью`, `Тестирование`, `Завершена`, `Отложена`, `♻️ Пул` |
 | `Stream` | `Маркетинг`, `Продажи`, `Деливери`, `Финансы`, `Лигал` |
 | `Sprint` | `🏃 Текущий спринт`, `⏭️ Следующий спринт`, `📋 Бэклог` |
 | `Priority` | `Низкий`, `Средний`, `Высокий` |
@@ -111,12 +111,12 @@ This table is the only owner of the mapping.
 |---|---|
 | task dispatched | `В работе` |
 | `needs-decision:` or `blocked:` | `На ревью` |
-| `done [key=staging]: ...` | `Тест` |
+| `done [key=staging]: ...` | `Тестирование` |
 | `failed:` | `Отложена`, with the plain reason in the card |
 | captain verified it on the stand | `Завершена` - **the captain's alone; never set it** |
 
 Sync on the wake that carries the event, not on a schedule.
-`Тест` is driven by the keyed `done [key=staging]:` line only.
+`Тестирование` is driven by the keyed `done [key=staging]:` line only.
 A bare `done:` with staging prose in it is not that signal: firstmate does not recover a terminal outward effect from a sentence, so treat a missing key as an unfinished contract and fix the brief rather than guessing the card is ready to test.
 
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
@@ -147,7 +147,7 @@ Losing the archive line loses the only record of the work, so a failure at step 
 
 When any new card is needed, take one from `♻️ Пул` first and create a page only when the pool is empty.
 Recycle only what is genuinely finished: `Завершена` set by the captain, or a card the captain explicitly retired.
-Never recycle `Тест` - the captain has not confirmed it yet.
+Never recycle `Тестирование` - the captain has not confirmed it yet.
 
 ## Boundaries
 
