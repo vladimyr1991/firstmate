@@ -382,8 +382,10 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=no-mistakes
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
+**\`done:\` on a no-mistakes ship task means a real PR exists with checks green (or the CI-cannot-run exception below) - a local commit plus local lint/test checks is NOT done, even if every local check passes.**
+CI-cannot-run exception: when the forge reports that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as \`done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head\`. Never report absent checks as green checks.
+You report twice on this task, and only the second report is completion.
+The first is a HANDOFF, not a finish: when the work is implemented and committed on your branch, append \`done: implemented and committed; ready for /no-mistakes\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.

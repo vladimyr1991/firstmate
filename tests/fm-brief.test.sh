@@ -354,6 +354,93 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
+# The recurring failure this guards: a no-mistakes worker commits locally,
+# re-runs its own lint and tests, and reports `done:` naming only a commit,
+# having never invoked the pipeline, pushed, or opened a PR. The brief used to
+# invite exactly that, asserting completion at the commit in the same breath as
+# it introduced the word `done:`. So the definition of done must now open by
+# stating what `done:` requires, must define the CI-cannot-run exception in the
+# same section that cites it, and must name its two report points as two
+# distinct things. Everything here reads generated brief text, never the
+# script's source bytes.
+test_no_mistakes_dod_states_what_done_requires() {
+  local home id brief dod other statement exception
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks and braces must stay literal
+  statement='**`done:` on a no-mistakes ship task means a real PR exists with checks green (or the CI-cannot-run exception below) - a local commit plus local lint/test checks is NOT done, even if every local check passes.**'
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks and braces must stay literal
+  exception='CI-cannot-run exception: when the forge reports that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as `done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head`. Never report absent checks as green checks.'
+  home="$TMP_ROOT/done-clarity-home"
+  mkdir -p "$home/data"
+  id="brief-done-clarity-c1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "no-mistakes brief was not scaffolded"
+
+  # AC-1/AC-2: present verbatim, and exactly once.
+  assert_grep "$statement" "$brief" \
+    "no-mistakes DOD must state that done: requires a real PR, not a local commit"
+  [ "$(grep -F -c -- "$statement" "$brief")" = "1" ] \
+    || fail "the done: requirement statement must appear exactly once in the brief"
+
+  # AC-3/AC-6/AC-8: the definition of done opens with the spawn-side contract
+  # line, then the statement, then the exception that the statement cites, and
+  # the statement is the first done: mention inside the section. The earlier
+  # mention in the shared Rules block points at this section rather than making
+  # a competing completion claim, so the section is the meaningful boundary.
+  dod="$TMP_ROOT/done-clarity-dod.txt"
+  awk '/^# Definition of done$/,0' "$brief" > "$dod"
+  [ "$(sed -n '2p' "$dod")" = "Delivery contract: mode=no-mistakes" ] \
+    || fail "the delivery contract line must stay the first line after the definition of done header"
+  [ "$(sed -n '3p' "$dod")" = "$statement" ] \
+    || fail "the done: requirement statement must sit immediately after the delivery contract line"
+  [ "$(sed -n '4p' "$dod")" = "$exception" ] \
+    || fail "the CI-cannot-run exception must be defined on the line that follows the statement citing it"
+  [ "$(grep -n -- 'done:' "$dod" | head -1 | cut -d: -f1)" = "3" ] \
+    || fail "the done: requirement statement must be the first done: mention in the definition of done"
+
+  # AC-9: two report points, named as two, with the handoff verb unchanged.
+  assert_grep "You report twice on this task, and only the second report is completion." "$brief" \
+    "the definition of done must name its two report points as two distinct things"
+  assert_grep "The first is a HANDOFF, not a finish" "$brief" \
+    "the first report must be labelled a handoff rather than a finish"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`done: implemented and committed; ready for /no-mistakes`' "$brief" \
+    "the handoff must keep the done: verb that triggers validation"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`done: PR {url} checks green`' "$brief" \
+    "the terminal report format must remain the only stated terminal signal"
+
+  # AC-4: the contradicting completion sentence is gone from this mode, and
+  # still present in direct-PR, where it is correct - that mode genuinely does
+  # complete at the commit, before its own push-and-PR step. A global
+  # replacement would have stripped both copies.
+  assert_no_grep "The task is complete only when committed on your branch." "$brief" \
+    "no-mistakes DOD must not still claim the task completes at the commit"
+
+  # AC-5: the statement stays out of every other scaffold.
+  id="brief-done-clarity-c2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  other="$home/data/$id/brief.md"
+  assert_grep "The task is complete only when committed on your branch." "$other" \
+    "direct-PR lost its own correct completion sentence to a global replacement"
+  assert_no_grep "$statement" "$other" \
+    "the no-mistakes done: statement leaked into the direct-PR brief"
+  id="brief-done-clarity-c3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only >/dev/null 2>&1
+  assert_no_grep "$statement" "$home/data/$id/brief.md" \
+    "the no-mistakes done: statement leaked into the local-only brief"
+  id="brief-done-clarity-c4"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  assert_no_grep "$statement" "$home/data/$id/brief.md" \
+    "the no-mistakes done: statement leaked into the scout brief"
+  id="brief-done-clarity-c5"
+  FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" --secondmate alpha >/dev/null 2>&1
+  assert_no_grep "$statement" "$home/data/$id/brief.md" \
+    "the no-mistakes done: statement leaked into the secondmate charter"
+  pass "fm-brief.sh: no-mistakes DOD states what done: requires and owns its exception"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -745,6 +832,7 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_no_mistakes_dod_states_what_done_requires
 test_ship_project_memory_wording
 test_ship_baseline_and_no_placeholder_contract
 test_herdr_lab_contract_is_explicit_and_complete
