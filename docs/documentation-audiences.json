@@ -204,6 +204,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/spec-gate/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/stow/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -213,6 +217,18 @@
     },
     {
       "path": ".agents/skills/updatefirstmate/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/write-implementation-spec/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/write-implementation-spec/references/question-bank.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/write-implementation-spec/references/spec-contract.md",
       "audience": "agent-runtime"
     },
     {

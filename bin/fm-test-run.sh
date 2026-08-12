@@ -140,7 +140,7 @@ family_for_basename() {
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
-    fm-quota-dash.test.sh|fm-retro.test.sh|\
+    fm-quota-dash.test.sh|fm-retro.test.sh|fm-spec-gate.test.sh|\
     fm-skill-compact-check.test.sh|fm-skill-trigger-check.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
@@ -951,6 +951,12 @@ families_for_changed_path() {
     .agents/skills/*/SKILL.md|.agents/skills/*/RETIRED.md|tests/skill-scenarios/*)
       # A skill's prose, its retirement ledger, and its behavioral fixtures are
       # all read by bin/fm-skill-compact-check.sh, whose suite runs here.
+      printf '%s\n' pure-contract-unit
+      ;;
+    .agents/skills/*/references/*|.agents/skills/*/scripts/*)
+      # A skill's own reference documents and helper scripts are what its
+      # internal links point at and what its suite executes, so a move or a
+      # rename here selects the same family its SKILL.md does.
       printf '%s\n' pure-contract-unit
       ;;
     .github/workflows/ci.yml|.no-mistakes.yaml)

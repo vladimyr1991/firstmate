@@ -88,7 +88,10 @@ The PM scan task is not linked to the card, so this internal handoff event never
 
 Firstmate reads that report, resolves each card's project independently through `data/projects.md`, and never treats the card text as a project or delivery-posture source.
 For each card, firstmate takes delivery mode and yolo posture from the project's registry entry per `AGENTS.md` section 7 and classifies Ship or Scout by that section's deliverable rules.
-For every selected card while capacity remains, it writes an implementation brief before spawning, including the project's real landing contract - `data/captain.md` owns that wording for `parlino`, including the keyed staging line the sync step below depends on.
+A card is ordinary intake, so a non-trivial ship card first passes the specification gate that `spec-gate` owns.
+Firstmate spawns that card's spec worker and binds the card to it with the same link step below, so a card's work never runs unlinked and the next scan cannot select the same card twice.
+Only a READY specification reaches an implementation brief; a card whose specification comes back BLOCKED is parked on its captain question, and the status table below moves it to `На ревью`.
+For every selected card the gate has released, while capacity remains, it writes an implementation brief before spawning, including the project's real landing contract - `data/captain.md` owns that wording for `parlino`, including the keyed staging line the sync step below depends on.
 It spawns one implementation worker per card through `bin/fm-spawn.sh`, then binds that card:
 
 ```sh
@@ -96,6 +99,8 @@ bin/fm-notion-link.sh <task-id> <card-url>
 ```
 
 Link immediately after the spawn and before anything else, so a crash between the two never leaves a running task with no card and a card with no task.
+The same rule carries a card forward when its specification opens the gate: link the new implementation task first and only then run `bin/fm-notion-link.sh --archive <spec-task-id>`, so the card is never momentarily unowned.
+Capacity admits a card once, so that handover continues the same card instead of claiming a second slot, and a card already in speccing can always finish.
 Record the card URL in the backlog item note alongside the resolved mode and yolo.
 Only after every successful spawn has its link does firstmate answer the PM with `resolved [key=dispatch]: <card-url>=<task-id> ... durably running and linked`.
 If capacity closes or one spawn fails, firstmate lists only the successfully linked mappings and states the failed or deferred cards explicitly; those cards remain `Новая` for the next scan.
