@@ -783,10 +783,23 @@ rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herd
 pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration"
 
 SHAPE_CLEANUP_AUDIT_START=$(focus_audit_line_count)
+ACTIVE_CLOSE_FALLBACK=$(lab workspace list | jq -r --arg workspace "$PROJECTED_WSID" '
+  [.result.workspaces[]? | select(.workspace_id != $workspace) | .active_tab_id][0] // empty
+')
+[ -n "$ACTIVE_CLOSE_FALLBACK" ] \
+  || fail "projected teardown fixture has no surviving tab for active-task cleanup"
+ACTIVE_CLOSE_FALLBACK_WSID=$(lab tab get "$ACTIVE_CLOSE_FALLBACK" | jq -r '.result.tab.workspace_id')
+lab tab focus "$PROJECTED_TAB" >/dev/null \
+  || fail "could not reproduce teardown with the projected task tab active"
+ACTIVE_PROJECTED_SNAPSHOT=$(lab workspace list | jq -r --arg workspace "$PROJECTED_WSID" '
+  [.result.workspaces[]? | select(.workspace_id == $workspace and .focused == true)] | length
+')
+[ "$ACTIVE_PROJECTED_SNAPSHOT" = 1 ] \
+  || fail "projected teardown fixture did not focus its exact task workspace"
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" \
   || fail "projected teardown failed: $(cat "$TMP_ROOT/on-teardown.err")"
-assert_focus_is "$CAPTAIN_FOCUS" "projected teardown"
-assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_PANE" "$CAPTAIN_FOCUS"
+assert_focus_is "$ACTIVE_CLOSE_FALLBACK_WSID/$ACTIVE_CLOSE_FALLBACK" "active projected teardown"
+assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_PANE" "$ACTIVE_CLOSE_FALLBACK_WSID/$ACTIVE_CLOSE_FALLBACK"
 pass "real Herdr lab: Treehouse commands and metadata shape are byte-identical except for Herdr container IDs"
 if lab workspace get "$PROJECTED_WSID" >/dev/null 2>&1; then
   fail "closing the exact projected task pane did not remove its last-tab workspace"

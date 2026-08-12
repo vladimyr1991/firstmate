@@ -624,11 +624,36 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
   return 0
 }
 
+# fm_backend_herdr_projection_focus_fallback: print one exact active tab in a
+# surviving workspace other than the workspace about to be removed.
+# The caller verifies the post-focus snapshot before treating this as the new
+# restoration authority.
+fm_backend_herdr_projection_focus_fallback() {  # <session> <excluded-workspace> <excluded-tab>
+  local session=$1 excluded_workspace=$2 excluded_tab=$3 list fallback info
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
+  fallback=$(printf '%s' "$list" | jq -r \
+    --arg workspace "$excluded_workspace" --arg tab "$excluded_tab" '
+      [.result.workspaces[]?
+       | select(.workspace_id != $workspace)
+       | select((.active_tab_id | type) == "string" and (.active_tab_id | length) > 0)
+       | .active_tab_id]
+      | .[0] // empty
+    ' 2>/dev/null) || return 1
+  [ -n "$fallback" ] && [ "$fallback" != "$excluded_tab" ] || return 1
+  info=$(fm_backend_herdr_cli "$session" tab get "$fallback" 2>/dev/null) || return 1
+  printf '%s' "$info" | jq -e --arg tab "$fallback" --arg workspace "$excluded_workspace" '
+    .result.tab.tab_id == $tab and .result.tab.workspace_id != $workspace
+  ' >/dev/null 2>&1 || return 1
+  printf '%s' "$fallback"
+}
+
 # fm_backend_herdr_projection_close_pane_focus_preserving: close one exact
 # response-derived projection pane without leaving the captain focused
 # anywhere else.
 # If the target belongs to the active tab, exact tab preservation is
-# impossible, so cleanup refuses instead of changing focus.
+# impossible because the tab is about to disappear.
+# Cleanup first moves focus to one exactly verified surviving tab, then uses
+# that replacement as its restoration authority.
 # When the close would empty the target workspace, Herdr 0.7.5's explicit
 # close moves focus to the workspace's neighbor, so the close is planned by
 # fm_backend_herdr_emptying_close_plan: reposition the doomed workspace
@@ -639,7 +664,7 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
 # exactly as before this hardening.
 fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-id> [required-agent-state]
   local session=$1 pane_id=$2 required_agent_state=${3:-}
-  local before active_tab info target_pane target_tab target_ws close_status state plan plan_shell_pid plan_move_record workspace_presence
+  local before active_tab info target_pane target_tab target_ws close_status state plan plan_shell_pid plan_move_record workspace_presence fallback
   FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE=""
   [ -n "$pane_id" ] || return 0
   before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
@@ -659,8 +684,22 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
     return 1
   fi
   if [ "$target_tab" = "$active_tab" ]; then
-    echo "warning: herdr presentation cleanup target is the captain's active tab; refusing a close that cannot preserve focus" >&2
-    return 1
+    fallback=$(fm_backend_herdr_projection_focus_fallback "$session" "$target_ws" "$target_tab") || {
+      echo "warning: herdr presentation cleanup target is active and no exact surviving tab can receive focus" >&2
+      return 1
+    }
+    fm_backend_herdr_cli "$session" tab focus "$fallback" >/dev/null 2>&1 || {
+      echo "warning: herdr presentation cleanup could not move focus away from its active target tab" >&2
+      return 1
+    }
+    before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
+      echo "warning: herdr presentation cleanup could not verify focus after leaving its active target tab" >&2
+      return 1
+    }
+    [ "${before#*$'\t'}" = "$fallback" ] || {
+      echo "warning: herdr presentation cleanup received an ambiguous fallback focus response" >&2
+      return 1
+    }
   fi
   if [ -n "$required_agent_state" ]; then
     state=$(fm_backend_herdr_pane_agent_state "$session" "$pane_id")
