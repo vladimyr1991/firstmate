@@ -273,6 +273,7 @@ Record the resulting mode, yolo, and the one-line reason for any deviation in th
 
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
 Serialize only for a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition that makes independent progress or reconciliation unsafe; same-file editing alone is insufficient, and genuine blockers remain durable.
+A ship task that is not genuinely mechanical needs a READY specification before its implementation worker is dispatched, whatever intake path produced it; `spec-gate` owns that gate.
 Write the task-specific brief under section 11 before spawning.
 
 ### Dispatch and supervision handoff
@@ -504,6 +505,8 @@ These skills are not captain-invocable; load them only at their precise triggers
 
 - `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `NUDGE_SECONDMATES:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
+- `spec-gate` - load before dispatching any ship task, to judge whether the specification gate applies and to run it, when a spec worker's draft comes back, and when a blocked specification's question must reach the captain.
+- `write-implementation-spec` - load before drafting, reviewing, or validating an implementation specification, and before marking one READY or BLOCKED.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
 - `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current quota-axi output.
 - `quota-autoresume` - load before ending any turn that defers, parks, or abandons work because a quota or usage limit is exhausted, on a `quota reset ready: ...` check wake, and whenever a worker is found parked on a usage-limit dialog.
@@ -540,7 +543,7 @@ Create its brief with `bin/fm-brief.sh` and launch it with `bin/fm-spawn.sh`; ne
 Do not read the board yourself, and if the fleet spawn is denied or fails, report that blocker and stop instead of falling back to a primary-side scan.
 The board is project work, and hard rule 1 keeps firstmate out of it - the wake or request is a dispatch trigger, not an invitation to look.
 The role is "PM"; which harness and model serve that role comes from `config/crew-dispatch.json`, never from this file, so the rule survives a change of vendor.
-`notion-board` owns the PM-to-implementation handoff, the four-worker concurrency cap, and the rule that an eligible card is not handled until its implementation worker is durably running.
+`notion-board` owns the PM-to-implementation handoff, the four-worker concurrency cap, and the rule that an eligible card is not handled until the worker it dispatched is durably running and linked.
 Returning a card's raw text or an implementation prompt is not a completed PM scan and never substitutes for dispatching an eligible card.
 
 Spawn at most ONE scanning PM per wake or direct captain request, and none at all while a scanning PM is still live.
