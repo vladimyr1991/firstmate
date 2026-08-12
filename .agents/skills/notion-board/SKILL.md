@@ -129,7 +129,7 @@ Two pages, both found by exact title with `search` and created once if absent, b
 - `📊 PM — текущий спринт` - the rolling status page. Always `replace_content`, never append, so its block count stays flat. Holds: what is under way, what is waiting on the captain, what landed this sprint, and what the PM could not take and why.
 - `🗄️ Архив задач` - one line per finished task, appended. This is the durable history that lets a card be recycled.
 
-Per card, write the result into the card's own body - what changed, the staging commit, and the CI run - rather than creating a page per task.
+For every project's card, write the result into its body - what changed, the implementing branch name, landing commit hash, PR URL, and CI run - rather than creating a page per task.
 Keep the captain-facing summary in outcomes per `AGENTS.md` section 9; the board is a status surface, not a place to narrate fleet mechanics.
 
 ## Recycling a card
