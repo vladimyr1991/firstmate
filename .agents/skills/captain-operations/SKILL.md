@@ -60,7 +60,8 @@ It is repeated here because it is the flow most often skipped under time pressur
 3. **Commit in meaningful pieces**, not one dump.
    Each message says what broke and why the change is shaped that way, not what the diff shows.
 4. **Never merge without the captain's explicit word** (hard rule 2).
-5. **Read [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) before opening a PR**: it owns the fork, parent, and push-target setup, including which repository a PR is opened against.
+5. **Never assume `gh` targets the right repository**: a wrong `--repo` makes PR creation fail with a confusing "no commits between".
+   [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) owns the fork, parent, and push-target setup, including which repository a PR is opened against.
 6. After merge, **fast-forward the main clone** (`git merge --ff-only origin/main`).
    Skip it and the work is in GitHub but absent from the fleet.
 7. Tag releases: `VERSION`, `CHANGELOG.md`, `v<x.y.z>`.
