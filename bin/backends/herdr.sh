@@ -36,8 +36,10 @@
 # therefore serializes under the session lock, repositions a doomed workspace
 # behind the focused one when needed, and ends its verified lone idle shell
 # so Herdr removes the emptied workspace through the focus-preserving
-# pane-death path, with the exact pre-close tab restore as the backstop and a
-# refusal to close the active tab itself.
+# pane-death path, with the exact pre-close tab restore as the backstop.
+# Spawn-time cleanup refuses to close the active tab itself; only retirement
+# callers opt in (via `active-fallback`) to first moving focus onto one
+# exactly verified surviving tab before the close.
 #
 # Target string shape: "<herdr-session>:<pane-id>", e.g. "default:w1:p2" (the
 # pane id itself contains a colon; the session is always the FIRST field, the
