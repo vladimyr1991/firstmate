@@ -6,7 +6,7 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--sync-base <branch>] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--staging-autonomy] [--sync-base <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -36,6 +36,19 @@
 #                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
+# --staging-autonomy applies only to --mode local-only. It selects the standing
+# staging-inclusive landing autonomy a project's registered posture can grant
+# (data/captain.md, "Delivery autonomy"): instead of stopping at a ready branch,
+# the worker branches from origin/develop, lands fm/<id> -> develop -> staging
+# itself, pushes both, watches CI to a final result, fast-forwards its own local
+# develop, and closes with the keyed "done [key=staging]: staging=<sha> ci=<run-id>
+# result=green" line; a UI-touching task stops first at the browser-evaluation gate
+# with "blocked [key=evaluation]: ...", which only firstmate can clear. Firstmate
+# resolves this flag from the project's standing posture at intake, so the captain's
+# contract is generated rather than hand-patched over contradicting boilerplate.
+# It is not a yolo passthrough: the worker still owns no approval decision beyond
+# the landing the captain's standing posture already granted, and releasing main
+# still needs the captain's explicit word each time.
 # The generated ship brief records the chosen mode as a fixed machine-readable
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
@@ -112,6 +125,7 @@ fi
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+STAGING_AUTONOMY=0
 MODE=
 MODE_SET=0
 SYNC_BASE=
@@ -136,6 +150,7 @@ for a in "$@"; do
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
+    --staging-autonomy) STAGING_AUTONOMY=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --sync-base) want_value=sync-base ;;
@@ -177,6 +192,20 @@ if [ "$SYNC_BASE_SET" -eq 1 ]; then
     exit 1
   }
   [ -n "$SYNC_BASE" ] || { echo "error: --sync-base requires a branch name (e.g. --sync-base develop)" >&2; exit 1; }
+fi
+
+# Staging-inclusive landing autonomy is a shape of local-only delivery, never a
+# mode of its own: it still opens no PR and runs no pipeline. Refuse it anywhere
+# else rather than accepting and discarding it, which would read as recorded.
+if [ "$STAGING_AUTONOMY" -eq 1 ]; then
+  if [ "$KIND" != ship ]; then
+    echo "error: --staging-autonomy applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+    exit 1
+  fi
+  if [ "$MODE" != local-only ]; then
+    echo "error: --staging-autonomy applies only to --mode local-only; a PR-based mode already has its own landing authority (got mode '$MODE')" >&2
+    exit 1
+  fi
 fi
 ID=${POS[0]}
 
@@ -347,9 +376,10 @@ The report is the only thing that survives, so anything worth keeping must be in
    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
    FYI progress lines; firstmate reads your pane for that.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
-   known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
-   firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
-   treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
+   run to finish, an upstream release, a rate-limit reset): firstmate then leaves your idle pane
+   alone and rechecks it on a long cadence instead of treating it as a possible wedge.
+   Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
@@ -357,6 +387,12 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+8. Report status and findings to firstmate only. Never address "the captain" or "you" (the human)
+   anywhere in your output or your report; firstmate is the sole channel to the captain.
+9. A test or probe that writes into a real outward-facing surface must delete what it wrote: capture
+   the evidence first, then delete, then re-probe to confirm it is gone. A consumed id is fine;
+   visible text left behind is not. That cleanup belongs in the test's own teardown, including the
+   failure path, never in your memory. Prefer a non-writing probe when the surface offers one.
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -373,6 +409,7 @@ fi
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
+BRANCH_CMD="git checkout -b fm/$ID"
 case "$MODE" in
   direct-PR)
     SETUP_DOCTOR=""
@@ -388,6 +425,28 @@ EOF
     ;;
   local-only)
     SETUP_DOCTOR=""
+    if [ "$STAGING_AUTONOMY" -eq 1 ]; then
+    # Staging-inclusive landing autonomy: the captain's standing posture for this
+    # project already granted the landing, so the generated contract states it
+    # rather than contradicting the task section with a "stop and wait" default.
+    BRANCH_CMD="git fetch origin && git checkout -b fm/$ID origin/develop"
+    RULE1="1. Never push to \`main\`, never tag, and never release. You land your own work only along this project's git-flow: \`fm/$ID\` -> \`develop\` -> \`staging\`."
+    IFS= read -r -d '' DOD <<EOF || true
+# Definition of done
+Delivery contract: mode=local-only
+Delivery autonomy: staging-inclusive
+This task ships **local-only with standing staging autonomy**: no PR and no pipeline, but you land your own work along this project's git-flow without waiting for a go-ahead.
+Run the project's own test gate first and land only genuinely clean work; never land red or failing work.
+If this task touched the UI, stop before merging anything and append \`blocked [key=evaluation]: test gate green, UI touched, awaiting browser evaluation before merge\`, then wait.
+Only firstmate can spawn the independent browser evaluator, so that key stays open until firstmate answers \`resolved [key=evaluation]:\` and releases you to land.
+To land: merge \`fm/$ID\` -> \`develop\` -> \`staging\`, push both branches, and watch CI to a final result.
+Then fast-forward this worktree's own local \`develop\` to what you pushed, so the next task branching here does not start from a stale base.
+If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked: {the failing run}\` and stop.
+Close with the keyed line, never free prose:
+   \`done [key=staging]: staging=<sha> ci=<run-id> result=green\`
+Tagging or releasing \`main\` is never yours: it needs the captain's current explicit word every time, obtained through firstmate (rule 6).
+EOF
+    else
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
@@ -398,6 +457,7 @@ Keep your branch a clean fast-forward onto the current default branch - if \`mai
 When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
+    fi
     ;;
   *)  # no-mistakes
     SETUP_DOCTOR="Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
@@ -450,9 +510,9 @@ EOF
   SETUP_STEPS="${SETUP_SYNC%$'\n'}
 "
   SETUP_STEP_N=$((SETUP_STEP_N + 1))
-  BRANCH_STEP="Create your branch: \`git checkout -b fm/$ID\` - or \`git checkout -b fm/$ID origin/$SYNC_BASE\` when step 1 showed drift."
+  BRANCH_STEP="Create your branch: \`$BRANCH_CMD\` - or \`git checkout -b fm/$ID origin/$SYNC_BASE\` when step 1 showed drift."
 else
-  BRANCH_STEP="First action: create your branch: \`git checkout -b fm/$ID\`"
+  BRANCH_STEP="First action: create your branch: \`$BRANCH_CMD\`"
 fi
 SETUP_STEPS="$SETUP_STEPS$SETUP_STEP_N. $BRANCH_STEP"
 if [ -n "$SETUP_DOCTOR" ]; then
@@ -496,9 +556,10 @@ $RULE1
    A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the
    turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
-   known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
-   a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
-   cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+   known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
+   run to finish, an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves
+   your idle pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
+   Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
@@ -512,6 +573,12 @@ $RULE1
    renders is not evidence that it works - an element a user can click and get nothing from is not done.
    If the task turns out larger than it looked and you cannot finish it honestly, append
    \`needs-decision: {what is missing and what you propose}\` and stop; never quietly ship a reduced version.
+9. Report status and findings to firstmate only. Never address "the captain" or "you" (the human)
+   anywhere in your output; firstmate is the sole channel to the captain.
+10. A test that writes into a real outward-facing surface must delete what it wrote: capture the
+    evidence first, then delete, then re-probe to confirm it is gone. A consumed id is fine; visible
+    text left behind is not. That cleanup belongs in the test's own teardown, including the failure
+    path, never in your memory. Prefer a non-writing probe when the surface offers one.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

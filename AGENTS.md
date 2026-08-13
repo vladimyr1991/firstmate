@@ -301,6 +301,7 @@ The path's worker, automated gates, and captain approval remain authoritative:
 - **no-mistakes** runs the full pipeline through a PR, then waits for the configured merge authority.
 - **direct-PR** has the worker push and open a PR without the no-mistakes pipeline, then waits for the configured merge authority.
 - **local-only** has the worker stop with a clean ready branch, then waits for the configured merge authority before firstmate uses the guarded fast-forward merge path.
+  A project whose standing posture already grants staging-inclusive landing autonomy is the one exception: scaffold it with `bin/fm-brief.sh --mode local-only --staging-autonomy` so the generated contract states that landing instead of contradicting the task section, and never hand-patch the boilerplate for it.
 
 Delivery mode and `yolo` are orthogonal.
 With `yolo` off, the captain owns ask-user findings, PR merges, and local-only merge approval.
