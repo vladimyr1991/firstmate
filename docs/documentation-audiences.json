@@ -124,6 +124,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/captain-operations/RETIRED.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": ".agents/skills/captain-operations/SKILL.md",
       "audience": "agent-runtime"
     },
