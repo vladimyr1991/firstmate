@@ -290,6 +290,134 @@ ROWS
   pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
 }
 
+# --sync-base guards branch creation for projects served from a shared worktree
+# pool, whose local base branch does not refresh between tasks. The sync step must
+# come BEFORE the branch step in every ship mode, and the remaining steps must stay
+# correctly numbered; a sync step buried after `git checkout -b` would arrive too
+# late to change the base the task is cut from.
+test_sync_base_step_precedes_branch_creation() {
+  local home id mode brief sync_line branch_line
+  home="$TMP_ROOT/sync-base-home"
+  mkdir -p "$home/data"
+  for id_mode in "brief-sync-nm:no-mistakes" "brief-sync-pr:direct-PR" "brief-sync-lo:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" pooled-proj --mode "$mode" --sync-base develop >/dev/null 2>&1 \
+      || fail "$id: --sync-base brief should scaffold"
+    brief="$home/data/$id/brief.md"
+    assert_grep 'git fetch origin && git log --oneline HEAD..origin/develop' "$brief" \
+      "$id: Setup lost the base-drift check against origin/develop"
+    assert_grep "git checkout -b fm/$id origin/develop" "$brief" \
+      "$id: Setup never tells the worker to branch from the remote when the base is stale"
+    sync_line=$(grep -n 'sync the base branch' "$brief" | head -1 | cut -d: -f1)
+    branch_line=$(grep -n "git checkout -b fm/$id\`" "$brief" | head -1 | cut -d: -f1)
+    [ -n "$sync_line" ] && [ -n "$branch_line" ] \
+      || fail "$id: could not locate both the sync step and the branch step"
+    [ "$sync_line" -lt "$branch_line" ] \
+      || fail "$id: the base-sync step must precede branch creation (sync at $sync_line, branch at $branch_line)"
+    grep -qx "1\. \*\*First action: sync the base branch, before creating any branch.\*\* .*" "$brief" \
+      || fail "$id: the base-sync step is not the numbered first Setup action"
+    grep -q "^2\. Create your branch: " "$brief" \
+      || fail "$id: branch creation was not renumbered to step 2 behind the sync step"
+  done
+  # shellcheck disable=SC2016 # Literal generated-brief text, not a shell expansion.
+  grep -q '^3\. Run `no-mistakes doctor`' "$home/data/brief-sync-nm/brief.md" \
+    || fail "no-mistakes doctor step was not renumbered to step 3 behind the sync step"
+
+  # Without the flag the Setup keeps its original two steps: ordinary
+  # single-checkout projects must not inherit a pooled-worktree ritual.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-nosync-nm plain-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "plain brief should scaffold"
+  brief="$home/data/brief-nosync-nm/brief.md"
+  assert_no_grep "sync the base branch" "$brief" \
+    "a brief without --sync-base emitted the pooled-base sync step anyway"
+  # shellcheck disable=SC2016 # Literal generated-brief text, not a shell expansion.
+  grep -q '^1\. First action: create your branch: `git checkout -b fm/brief-nosync-nm`$' "$brief" \
+    || fail "default Setup lost its original first branch step"
+  # shellcheck disable=SC2016 # Literal generated-brief text, not a shell expansion.
+  grep -q '^2\. Run `no-mistakes doctor`' "$brief" \
+    || fail "default no-mistakes Setup lost its original doctor step numbering"
+  pass "fm-brief.sh: --sync-base puts a base-drift check ahead of branch creation"
+}
+
+# A --sync-base that is accepted and then dropped would produce a brief that looks
+# guarded and is not - the exact failure the flag exists to prevent - so both an
+# inapplicable scaffold kind and an empty branch name must refuse loudly.
+test_sync_base_is_refused_where_it_does_not_apply() {
+  local home out status label args expect
+  home="$TMP_ROOT/sync-base-refused-home"
+  mkdir -p "$home/data"
+  while IFS='|' read -r label args expect; do
+    [ -n "$label" ] || continue
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" $args 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "$expect" "$label: refusal did not explain why"
+    assert_absent "$home/data/${args%% *}/brief.md" "$label: refused scaffold still wrote a brief"
+  done <<'ROWS'
+sync-base on a scout brief|brief-syncref-c1 some-proj --scout --sync-base develop|--sync-base applies only to ship briefs
+sync-base on a secondmate charter|brief-syncref-c2 --secondmate --no-projects --sync-base develop|--sync-base applies only to ship briefs
+empty sync-base value|brief-syncref-c3 some-proj --mode local-only --sync-base=|--sync-base requires a branch name
+missing sync-base value|brief-syncref-c4 some-proj --mode local-only --sync-base|--sync-base requires a value
+ROWS
+  pass "fm-brief.sh: --sync-base is refused where it cannot apply, never silently dropped"
+}
+
+# End-to-end proof against the real defect: a pooled worktree sitting on a local
+# base that origin has moved past. The commands the generated brief prints are
+# extracted from the brief and executed against that fixture, so this asserts the
+# instruction actually catches the drift and lands the branch on current code -
+# not merely that some prose about syncing exists.
+test_sync_base_instruction_catches_a_stale_pooled_base() {
+  local home brief fixture upstream pool drift_cmd branch_cmd out
+  home="$TMP_ROOT/sync-base-fixture-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-fixture pooled-proj --mode local-only --sync-base develop >/dev/null 2>&1 \
+    || fail "fixture brief should scaffold"
+  brief="$home/data/brief-sync-fixture/brief.md"
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  drift_cmd=$(sed -n 's/^ *Run `\([^`]*\)`.*/\1/p' "$brief" | head -1)
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  branch_cmd=$(sed -n 's/.*instead, with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
+  [ -n "$drift_cmd" ] || fail "could not extract the drift-check command from the generated brief"
+  [ -n "$branch_cmd" ] || fail "could not extract the stale-base branch command from the generated brief"
+
+  fixture="$TMP_ROOT/sync-base-fixture"
+  upstream="$fixture/upstream"
+  pool="$fixture/pool"
+  mkdir -p "$upstream"
+  git -C "$upstream" init -q
+  git -C "$upstream" symbolic-ref HEAD refs/heads/develop
+  printf 'old caption\n' > "$upstream/feature.txt"
+  git -C "$upstream" add feature.txt
+  git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm v1
+  git clone --quiet "$upstream" "$pool"
+  git -C "$pool" checkout -q --detach develop
+
+  # A current pool must stay silent, so the check does not cry drift every task.
+  out=$( cd "$pool" && eval "$drift_cmd" 2>&1 ) \
+    || fail "drift check failed on a current pooled base: $out"
+  [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+    || fail "drift check reported drift on an already-current pooled base: $out"
+
+  # origin moves on; the pool's local develop does not, exactly as between tasks.
+  printf 'new three-line demo frame\n' > "$upstream/feature.txt"
+  git -C "$upstream" add feature.txt
+  git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm v2
+  out=$( cd "$pool" && eval "$drift_cmd" 2>&1 ) \
+    || fail "drift check failed against a moved origin: $out"
+  printf '%s' "$out" | grep -q v2 \
+    || fail "drift check did not surface the commit the pooled base is missing: $out"
+
+  # Following the brief's stale-base instruction must land on current code.
+  ( cd "$pool" && eval "$branch_cmd" >/dev/null 2>&1 ) \
+    || fail "the brief's stale-base branch command failed in the fixture"
+  grep -q 'new three-line demo frame' "$pool/feature.txt" \
+    || fail "branching per the brief still left the task on the stale base"
+  pass "fm-brief.sh: the generated sync step detects a stale pooled base and branches from current code"
+}
+
 test_faster_paths_use_configured_authority_without_stacked_review() {
   local home id brief
   home="$TMP_ROOT/configured-authority-home"
@@ -830,6 +958,9 @@ test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
+test_sync_base_step_precedes_branch_creation
+test_sync_base_is_refused_where_it_does_not_apply
+test_sync_base_instruction_catches_a_stale_pooled_base
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_dod_states_what_done_requires

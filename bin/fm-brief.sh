@@ -6,7 +6,7 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--sync-base <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -41,6 +41,14 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# --sync-base <branch> adds a mandatory base-sync step ahead of branch creation, for
+# projects whose task worktrees come from a shared pool. A pooled worktree does not
+# refresh its local branches between tasks, so its local <branch> can sit many commits
+# behind origin/<branch> and a branch cut from it silently targets code that is no
+# longer live. Pass it per task for any such project (parlino: --sync-base develop);
+# it is opt-in because the caller-supplied repo string cannot identify the project's
+# checkout pattern, and it is deliberately not the generic default so ordinary
+# single-checkout projects keep the shorter Setup.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -106,6 +114,8 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+SYNC_BASE=
+SYNC_BASE_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -115,6 +125,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      sync-base) SYNC_BASE=$a; SYNC_BASE_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -127,6 +138,8 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --sync-base) want_value=sync-base ;;
+    --sync-base=*) SYNC_BASE=${a#--sync-base=}; SYNC_BASE_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -153,6 +166,17 @@ if [ "$KIND" = ship ]; then
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
+fi
+
+# The base-sync step guards branch creation, so it belongs only to ship briefs. An
+# empty value is refused rather than silently dropped: a brief that looks synced but
+# carries no sync step is exactly the failure this flag exists to prevent.
+if [ "$SYNC_BASE_SET" -eq 1 ]; then
+  [ "$KIND" = ship ] || {
+    echo "error: --sync-base applies only to ship briefs; a scout creates no branch and a secondmate charter is not a delivery contract" >&2
+    exit 1
+  }
+  [ -n "$SYNC_BASE" ] || { echo "error: --sync-base requires a branch name (e.g. --sync-base develop)" >&2; exit 1; }
 fi
 ID=${POS[0]}
 
@@ -351,7 +375,7 @@ fi
 # explicit --mode before launching.
 case "$MODE" in
   direct-PR)
-    SETUP2=""
+    SETUP_DOCTOR=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
@@ -363,7 +387,7 @@ Do NOT run /no-mistakes. The configured merge authority decides whether to merge
 EOF
     ;;
   local-only)
-    SETUP2=""
+    SETUP_DOCTOR=""
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
@@ -376,8 +400,7 @@ The configured merge authority approves the ready branch, then firstmate merges 
 EOF
     ;;
   *)  # no-mistakes
-    SETUP2="
-2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
+    SETUP_DOCTOR="Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
@@ -409,6 +432,34 @@ esac
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
+# Numbered Setup steps. The base-sync step (--sync-base) comes first because a
+# branch cut from a stale local base is already wrong - the task then edits code
+# that no longer matches what is live, which no later check catches. Without the
+# flag the step list is the original branch (+ doctor) pair, byte for byte.
+SETUP_STEPS=""
+SETUP_STEP_N=1
+if [ -n "$SYNC_BASE" ]; then
+  IFS= read -r -d '' SETUP_SYNC <<EOF || true
+$SETUP_STEP_N. **First action: sync the base branch, before creating any branch.** This worktree comes from a shared pool that does not refresh its local branches between tasks, so its local \`$SYNC_BASE\` can sit many commits behind \`origin/$SYNC_BASE\`.
+   Run \`git fetch origin && git log --oneline HEAD..origin/$SYNC_BASE\`.
+   If it prints nothing, the base is current: branch normally below.
+   If it prints any commits, the base is stale: cut your branch from the remote instead, with \`git checkout -b fm/$ID origin/$SYNC_BASE\`, and re-read every file this task names on that fresh base before editing - the code the task describes can look different there, or live somewhere else entirely.
+   If \`git log --oneline origin/$SYNC_BASE..HEAD\` also prints commits, this base has diverged rather than merely fallen behind: append \`blocked: pooled base diverged from origin/$SYNC_BASE\` to the status file and stop.
+   This check is mandatory, not a judgement call: a task that skipped it has already shipped a fix to the wrong code.
+EOF
+  SETUP_STEPS="${SETUP_SYNC%$'\n'}
+"
+  SETUP_STEP_N=$((SETUP_STEP_N + 1))
+  BRANCH_STEP="Create your branch: \`git checkout -b fm/$ID\` - or \`git checkout -b fm/$ID origin/$SYNC_BASE\` when step 1 showed drift."
+else
+  BRANCH_STEP="First action: create your branch: \`git checkout -b fm/$ID\`"
+fi
+SETUP_STEPS="$SETUP_STEPS$SETUP_STEP_N. $BRANCH_STEP"
+if [ -n "$SETUP_DOCTOR" ]; then
+  SETUP_STEPS="$SETUP_STEPS
+$((SETUP_STEP_N + 1)). $SETUP_DOCTOR"
+fi
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -424,7 +475,7 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
-1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+$SETUP_STEPS
 
 **Establish a test baseline before your first edit.** Run the project's own test gate the way its \`AGENTS.md\` or \`README.md\` documents it, before you change anything.
 A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited.
