@@ -1033,7 +1033,52 @@ test_projection_close_refuses_active_tab() {
     "active-tab cleanup refusal did not explain the focus-safety boundary"
   assert_not_contains "$(cat "$log")" $'pane\x1fclose' \
     "active-tab cleanup refusal still closed the pane"
-  pass "herdr presentation focus: cleanup refuses rather than close the captain's active tab"
+  # Retirement opts in to moving focus, but only onto an exactly verified
+  # surviving tab: this session has none, so it must still refuse.
+  # Replay the same three responses; the fallback lookup then finds nothing.
+  rm -f "$resp/.count"
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w9:p2 "" active-fallback' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "retirement cleanup must refuse when no exact surviving tab can receive focus"
+  assert_contains "$out" "no exact surviving tab can receive focus" \
+    "retirement cleanup refusal did not explain its missing focus destination"
+  assert_not_contains "$(cat "$log")" $'pane\x1fclose' \
+    "retirement cleanup refusal still closed the pane"
+  pass "herdr presentation focus: cleanup refuses the captain's active tab unless retirement finds a surviving destination"
+}
+
+# The ordinary teardown shape: the task pane the captain is looking at is the
+# one being closed, and another workspace survives to receive focus first.
+test_projection_close_moves_focus_off_active_target() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/projection-focus-active-fallback"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false},{"workspace_id":"w9","active_tab_id":"w9:t2","focused":true}]}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t2","focused":true}]}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p2","tab_id":"w9:t2","workspace_id":"w9"}}}' > "$resp/3.out"
+  # Fallback lookup: workspace list, then the exact surviving tab identity.
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false},{"workspace_id":"w9","active_tab_id":"w9:t2","focused":true}]}}' > "$resp/4.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/5.out"
+  printf '%s\n' '{"result":{}}' > "$resp/6.out"
+  # Post-focus snapshot proving the fallback became the restoration authority.
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","focused":true},{"workspace_id":"w9","active_tab_id":"w9:t2","focused":false}]}}' > "$resp/7.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","focused":true}]}}' > "$resp/8.out"
+  # A second tab in w9 keeps the close plain, so only the task pane goes.
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","workspace_id":"w9"},{"tab_id":"w9:t2","workspace_id":"w9"}]}}' > "$resp/9.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/11.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","focused":true},{"workspace_id":"w9","active_tab_id":"w9:t1","focused":false}]}}' > "$resp/12.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","focused":true}]}}' > "$resp/13.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w9:p2 "" active-fallback' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -eq 0 ] || fail "an active projection target with a surviving tab should close: $out"
+  assert_contains "$(cat "$log")" $'tab\x1ffocus\x1fw2:t2' \
+    "cleanup did not move focus to the exact surviving tab before closing"
+  assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw9:p2' \
+    "cleanup did not close the exact active projection pane"
+  pass "herdr presentation focus: an active projection target closes after focus moves to an exact surviving tab"
 }
 
 test_projection_close_reports_focus_restore_failure() {
@@ -3905,6 +3950,7 @@ test_projection_create_never_closes_a_concurrent_same_label_tab
 test_projection_focus_snapshot_requires_exact_workspace_and_tab
 test_projection_close_restores_exact_prior_focus
 test_projection_close_refuses_active_tab
+test_projection_close_moves_focus_off_active_target
 test_projection_close_reports_focus_restore_failure
 test_projection_close_rechecks_required_agent_state_at_boundary
 test_projection_close_emptying_after_focus_uses_pane_death_without_move
