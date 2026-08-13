@@ -500,15 +500,18 @@ test_sync_base_instruction_catches_a_stale_pooled_base() {
   pass "fm-brief.sh: the generated sync step detects a stale pooled base and reaches current code on ship and scout paths"
 }
 
-# The divergence stop must fire on a base that carries work existing nowhere on the
-# remote, and stay silent on a base that is merely a different published lineage. A
-# raw `origin/<base>..HEAD` ahead-count cannot tell those apart, so a default branch
-# holding a hotfix that was never back-merged into the sync base - an ordinary
-# git-flow shape - was blocked before it could start, producing no work at all. The
-# commands are extracted from the generated brief and executed against fixtures, so
-# this asserts the instruction's real behavior rather than the presence of prose.
+# The divergence stop must fire on a base that carries work outside the sync base's
+# own published lineage, and stay silent on a base that is merely a different
+# published lineage. A raw `origin/<base>..HEAD` ahead-count cannot tell those apart,
+# so a default branch holding a hotfix that was never back-merged into the sync base
+# - an ordinary git-flow shape - was blocked before it could start, producing no work
+# at all. Excluding everything on the remote instead is too coarse the other way: a
+# pooled worktree left parked on a finished task's published tip would read as
+# compatible. The commands are extracted from the generated brief and executed
+# against fixtures, so this asserts the instruction's real behavior rather than the
+# presence of prose.
 test_sync_base_divergence_stop_uses_the_merge_base() {
-  local home brief fixture upstream diverge_cmd drift_cmd branch_cmd pool out
+  local home brief fixture upstream diverge_cmd drift_cmd branch_cmd mergebase_cmd pool out
   home="$TMP_ROOT/sync-base-diverge-home"
   mkdir -p "$home/data"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-diverge pooled-proj --mode local-only --sync-base develop >/dev/null 2>&1 \
@@ -517,16 +520,15 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
   # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
   drift_cmd=$(sed -n 's/^ *Run `\([^`]*\)`.*/\1/p' "$brief" | head -1)
   # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  mergebase_cmd=$(sed -n 's/.*resolve the merge base with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
   diverge_cmd=$(sed -n 's/.*rule out a genuinely divergent base with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
   # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
   branch_cmd=$(sed -n 's/.*instead, with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
   [ -n "$drift_cmd" ] || fail "could not extract the drift-check command from the generated brief"
+  [ -n "$mergebase_cmd" ] || fail "could not extract the merge-base command from the generated brief"
   [ -n "$diverge_cmd" ] || fail "could not extract the divergence-check command from the generated brief"
   [ -n "$branch_cmd" ] || fail "could not extract the stale-base branch command from the generated brief"
-  case $diverge_cmd in
-    *"merge-base HEAD origin/develop"*) : ;;
-    *) fail "the divergence check no longer measures from the merge base: $diverge_cmd" ;;
-  esac
 
   fixture="$TMP_ROOT/sync-base-diverge-fixture"
   upstream="$fixture/upstream"
@@ -541,11 +543,16 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
   printf 'develop moved on\n' > "$upstream/feature.txt"
   git -C "$upstream" add feature.txt
   git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm dev2
+  # A finished task's branch, published on the remote and never merged anywhere.
+  git -C "$upstream" checkout -q -b fm/prev-task
+  printf 'the previous task\n' > "$upstream/prev.txt"
+  git -C "$upstream" add prev.txt
+  git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm prev-task-work
   git -C "$upstream" checkout -q main
   printf 'hotfix\n' > "$upstream/hotfix.txt"
   git -C "$upstream" add hotfix.txt
   git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm hotfix-on-main
-  git -C "$upstream" checkout -q develop
+  # The pooled repo's default branch is `main`, so clones resolve origin/HEAD to it.
 
   # Genuinely behind: a pure ancestor of the remote base must not read as diverged.
   pool="$fixture/behind"
@@ -574,7 +581,7 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
     || fail "the lineage fixture does not reproduce the raw ahead-count false positive: $out"
   out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ) || fail "divergence check failed on the lineage pool: $out"
   [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
-    || fail "the divergence stop still blocks a default branch whose extra commit is published on origin: $out"
+    || fail "the divergence stop still blocks a default branch whose extra commit is on the remote's default branch: $out"
   out=$( cd "$pool" && eval "$drift_cmd" 2>&1 ) || fail "drift check failed on the lineage pool: $out"
   printf '%s' "$out" | grep -q dev2 \
     || fail "the lineage pool did not read as stale, so it would never take the remedy: $out"
@@ -583,7 +590,21 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
   grep -q 'develop moved on' "$pool/feature.txt" \
     || fail "the lineage pool followed the remedy and still did not reach current sync-base code"
 
-  # Genuinely diverged: work that exists nowhere on the remote must still stop.
+  # A pooled worktree left parked on a finished task's tip. Teardown detaches the
+  # pool there and drops only the local branch name, so the leftover commits survive
+  # on origin/fm/<id> while origin/develop has not moved: the drift check is silent,
+  # and only the divergence stop keeps the next task off the previous one's work.
+  pool="$fixture/prev-task-tip"
+  git clone --quiet "$upstream" "$pool"
+  git -C "$pool" checkout -q --detach refs/remotes/origin/fm/prev-task
+  out=$( cd "$pool" && eval "$drift_cmd" 2>&1 ) || fail "drift check failed on the previous-task pool: $out"
+  [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+    || fail "the previous-task fixture is stale as well, so the divergence stop is not what is under test: $out"
+  out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ) || fail "divergence check failed on the previous-task pool: $out"
+  printf '%s' "$out" | grep -q prev-task-work \
+    || fail "the divergence stop missed a base parked on a previous task's published tip: $out"
+
+  # Genuinely diverged: unpushed work on the pooled base must still stop.
   pool="$fixture/diverged"
   git clone --quiet "$upstream" "$pool"
   git -C "$pool" checkout -q --detach refs/remotes/origin/develop~1
@@ -594,10 +615,95 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
   printf '%s' "$out" | grep -q local-scratch \
     || fail "the divergence stop no longer catches unpublished work on the pooled base: $out"
 
-  # And the brief still carries the stop the check feeds.
+  # An unresolvable merge base must read as diverged, not as compatible: the worker
+  # resolves it as its own step precisely so a failure cannot degrade into a range
+  # that quietly prints nothing.
+  pool="$fixture/unrelated"
+  git clone --quiet "$upstream" "$pool"
+  git -C "$pool" checkout -q --orphan unrelated-history
+  git -C "$pool" rm -rq --cached .
+  rm -f "$pool/feature.txt" "$pool/hotfix.txt" "$pool/prev.txt"
+  printf 'a history of its own\n' > "$pool/reinit.txt"
+  git -C "$pool" add reinit.txt
+  git -C "$pool" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm unrelated-root
+  git -C "$pool" checkout -q --detach HEAD
+  if out=$( cd "$pool" && eval "$mergebase_cmd" 2>&1 ); then
+    [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+      || fail "a base sharing no history with the remote resolved a merge base: $out"
+  fi
+
+  # And the brief still carries the stop the checks feed.
   assert_grep 'blocked: pooled base diverged from origin/develop' "$brief" \
     "the generated Setup lost the diverged-base stop"
   pass "fm-brief.sh: the divergence stop measures from the merge base, sparing a published lineage variant"
+}
+
+# A pooled default branch can strictly contain the sync base - main right after a
+# release merge, say - which leaves the drift check silent and the divergence check
+# silent too, since the extra commits are on the remote's default branch. Read on the
+# drift check alone that base looks current, and a branch cut from it carries the
+# extra commits into a PR aimed at the sync base. The step must route it to the same
+# remedy a stale base takes instead.
+test_sync_base_step_routes_a_default_branch_that_contains_the_base() {
+  local home brief fixture upstream variant_cmd diverge_cmd drift_cmd branch_cmd pool out
+  home="$TMP_ROOT/sync-base-superset-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-superset pooled-proj --mode local-only --sync-base develop >/dev/null 2>&1 \
+    || fail "superset fixture brief should scaffold"
+  brief="$home/data/brief-sync-superset/brief.md"
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  drift_cmd=$(sed -n 's/^ *Run `\([^`]*\)`.*/\1/p' "$brief" | head -1)
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  variant_cmd=$(sed -n 's/.*not a lineage variant with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  diverge_cmd=$(sed -n 's/.*rule out a genuinely divergent base with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  branch_cmd=$(sed -n 's/.*instead, with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
+  [ -n "$drift_cmd" ] || fail "could not extract the drift-check command from the generated brief"
+  [ -n "$variant_cmd" ] || fail "could not extract the lineage-variant command from the generated brief"
+  [ -n "$diverge_cmd" ] || fail "could not extract the divergence-check command from the generated brief"
+  [ -n "$branch_cmd" ] || fail "could not extract the stale-base branch command from the generated brief"
+
+  fixture="$TMP_ROOT/sync-base-superset-fixture"
+  upstream="$fixture/upstream"
+  mkdir -p "$upstream"
+  git -C "$upstream" init -q
+  git -C "$upstream" symbolic-ref HEAD refs/heads/develop
+  printf 'shared\n' > "$upstream/feature.txt"
+  git -C "$upstream" add feature.txt
+  git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm shared-base
+  # `main` carries everything develop has plus a release commit of its own.
+  git -C "$upstream" checkout -q -b main
+  printf 'release only\n' > "$upstream/release.txt"
+  git -C "$upstream" add release.txt
+  git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm release-on-main
+
+  pool="$fixture/superset"
+  git clone --quiet "$upstream" "$pool"
+  git -C "$pool" checkout -q --detach refs/remotes/origin/main
+  out=$( cd "$pool" && eval "$drift_cmd" 2>&1 ) || fail "drift check failed on the superset pool: $out"
+  [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+    || fail "the superset fixture is stale, so the drift check alone would already route it: $out"
+  out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ) || fail "divergence check failed on the superset pool: $out"
+  [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+    || fail "the divergence stop blocked a default branch that merely contains the sync base: $out"
+  out=$( cd "$pool" && eval "$variant_cmd" 2>&1 ) || fail "lineage-variant check failed on the superset pool: $out"
+  printf '%s' "$out" | grep -q release-on-main \
+    || fail "the step reads a base that strictly contains the sync base as current, so the task branches off the variant: $out"
+  # Following the remedy the variant is routed to must land on the sync base itself.
+  ( cd "$pool" && eval "$branch_cmd" >/dev/null 2>&1 ) \
+    || fail "the brief's remedy command failed on the superset pool"
+  [ ! -e "$pool/release.txt" ] \
+    || fail "the remedy left the task on the variant, still carrying its extra commit"
+
+  # A base that really is current must stay current: the extra check is silent there.
+  pool="$fixture/current"
+  git clone --quiet "$upstream" "$pool"
+  git -C "$pool" checkout -q --detach refs/remotes/origin/develop
+  out=$( cd "$pool" && eval "$variant_cmd" 2>&1 ) || fail "lineage-variant check failed on the current pool: $out"
+  [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+    || fail "the lineage-variant check fired on a base that is exactly the sync base: $out"
+  pass "fm-brief.sh: a pooled base that already contains the sync base takes the remedy instead of reading as current"
 }
 
 test_faster_paths_use_configured_authority_without_stacked_review() {
@@ -1300,6 +1406,7 @@ test_sync_base_is_refused_where_it_does_not_apply
 test_sync_base_guards_a_scout_investigation_base
 test_sync_base_instruction_catches_a_stale_pooled_base
 test_sync_base_divergence_stop_uses_the_merge_base
+test_sync_base_step_routes_a_default_branch_that_contains_the_base
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_dod_states_what_done_requires
