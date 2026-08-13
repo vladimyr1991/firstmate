@@ -356,12 +356,67 @@ test_sync_base_is_refused_where_it_does_not_apply() {
     assert_contains "$out" "$expect" "$label: refusal did not explain why"
     assert_absent "$home/data/${args%% *}/brief.md" "$label: refused scaffold still wrote a brief"
   done <<'ROWS'
-sync-base on a scout brief|brief-syncref-c1 some-proj --scout --sync-base develop|--sync-base applies only to ship briefs
-sync-base on a secondmate charter|brief-syncref-c2 --secondmate --no-projects --sync-base develop|--sync-base applies only to ship briefs
+sync-base on a secondmate charter|brief-syncref-c2 --secondmate --no-projects --sync-base develop|--sync-base applies only to ship and scout briefs
 empty sync-base value|brief-syncref-c3 some-proj --mode local-only --sync-base=|--sync-base requires a branch name
 missing sync-base value|brief-syncref-c4 some-proj --mode local-only --sync-base|--sync-base requires a value
+empty sync-base value on a scout brief|brief-syncref-c5 some-proj --scout --sync-base=|--sync-base requires a branch name
+missing sync-base value on a scout brief|brief-syncref-c6 some-proj --scout --sync-base|--sync-base requires a value
 ROWS
   pass "fm-brief.sh: --sync-base is refused where it cannot apply, never silently dropped"
+}
+
+# A scout cuts no branch, but it reads the pooled base to reach a conclusion, so a
+# stale base makes it report a fix as missing when the fix is already live on the
+# remote (observed twice on 2026-08-13). The scout step must therefore land in Setup
+# ahead of the investigation, and a scout without the flag must keep the original
+# unguarded Setup so ordinary single-checkout projects gain no pooled-worktree ritual.
+test_sync_base_guards_a_scout_investigation_base() {
+  local home brief sync_line rules_line ship_brief
+  home="$TMP_ROOT/sync-base-scout-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-scout pooled-proj --scout --sync-base develop >/dev/null 2>&1 \
+    || fail "--scout --sync-base brief should scaffold"
+  brief="$home/data/brief-sync-scout/brief.md"
+  assert_grep 'git fetch origin && git log --oneline HEAD..origin/develop' "$brief" \
+    "scout Setup lost the base-drift check against origin/develop"
+  assert_grep 'git checkout --detach origin/develop' "$brief" \
+    "scout Setup never tells the worker to move onto the remote base when it is stale"
+  assert_grep 'blocked: pooled base diverged from origin/develop' "$brief" \
+    "scout Setup lost the diverged-base stop"
+  assert_no_grep 'git checkout -b fm/brief-sync-scout' "$brief" \
+    "scout Setup told a report-only task to cut a delivery branch"
+  grep -qx "1\. \*\*First action: sync the base branch, before investigating anything.\*\* .*" "$brief" \
+    || fail "the scout base-sync step is not the numbered first Setup action"
+  sync_line=$(grep -n 'sync the base branch' "$brief" | head -1 | cut -d: -f1)
+  rules_line=$(grep -n '^# Rules$' "$brief" | head -1 | cut -d: -f1)
+  [ -n "$sync_line" ] && [ -n "$rules_line" ] \
+    || fail "could not locate both the scout sync step and the Rules heading"
+  [ "$sync_line" -lt "$rules_line" ] \
+    || fail "the scout base-sync step must sit inside Setup, ahead of the investigation (sync at $sync_line, Rules at $rules_line)"
+
+  # No flag: the scout Setup keeps its original prose, with no sync step at all.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-nosync-scout plain-proj --scout >/dev/null 2>&1 \
+    || fail "plain scout brief should scaffold"
+  brief="$home/data/brief-nosync-scout/brief.md"
+  assert_no_grep "sync the base branch" "$brief" \
+    "a scout brief without --sync-base emitted the pooled-base sync step anyway"
+  assert_no_grep "git fetch origin" "$brief" \
+    "a scout brief without --sync-base emitted a base fetch anyway"
+  assert_grep "The report is the only thing that survives, so anything worth keeping must be in it." "$brief" \
+    "plain scout Setup lost its original closing line"
+
+  # The ship path keeps its own branch-cutting remedy: the two paths share the check,
+  # not the remedy, and a scout's detached checkout must never leak into a ship brief.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-ship pooled-proj --mode local-only --sync-base develop >/dev/null 2>&1 \
+    || fail "ship --sync-base brief should scaffold"
+  ship_brief="$home/data/brief-sync-ship/brief.md"
+  assert_grep "git checkout -b fm/brief-sync-ship origin/develop" "$ship_brief" \
+    "ship --sync-base lost its branch-from-remote remedy"
+  assert_no_grep "git checkout --detach origin/develop" "$ship_brief" \
+    "the scout remedy leaked into a ship brief"
+  grep -qx "1\. \*\*First action: sync the base branch, before creating any branch.\*\* .*" "$ship_brief" \
+    || fail "ship --sync-base lost its own branch-creation framing"
+  pass "fm-brief.sh: --scout --sync-base guards the investigated base without inventing a branch"
 }
 
 # End-to-end proof against the real defect: a pooled worktree sitting on a local
@@ -415,7 +470,34 @@ test_sync_base_instruction_catches_a_stale_pooled_base() {
     || fail "the brief's stale-base branch command failed in the fixture"
   grep -q 'new three-line demo frame' "$pool/feature.txt" \
     || fail "branching per the brief still left the task on the stale base"
-  pass "fm-brief.sh: the generated sync step detects a stale pooled base and branches from current code"
+
+  # The scout remedy must reach current code too, or the report is drawn on the
+  # stale base the flag exists to catch. Same fixture, a second pooled clone.
+  local scout_brief scout_drift scout_remedy scout_pool
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-scout-fixture pooled-proj --scout --sync-base develop >/dev/null 2>&1 \
+    || fail "fixture scout brief should scaffold"
+  scout_brief="$home/data/brief-sync-scout-fixture/brief.md"
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  scout_drift=$(sed -n 's/^ *Run `\([^`]*\)`.*/\1/p' "$scout_brief" | head -1)
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  scout_remedy=$(sed -n 's/.*instead, with `\([^`]*\)`.*/\1/p' "$scout_brief" | head -1)
+  [ -n "$scout_drift" ] || fail "could not extract the drift-check command from the scout brief"
+  [ -n "$scout_remedy" ] || fail "could not extract the stale-base remedy from the scout brief"
+  scout_pool="$fixture/scout-pool"
+  git clone --quiet "$upstream" "$scout_pool"
+  # Park it on v1, exactly like a pooled worktree left behind by the previous task.
+  git -C "$scout_pool" checkout -q --detach "$(git -C "$upstream" rev-parse HEAD~1)"
+  grep -q 'old caption' "$scout_pool/feature.txt" \
+    || fail "scout fixture pool did not start on the stale base"
+  out=$( cd "$scout_pool" && eval "$scout_drift" 2>&1 ) \
+    || fail "scout drift check failed against a moved origin: $out"
+  printf '%s' "$out" | grep -q v2 \
+    || fail "scout drift check did not surface the commit the pooled base is missing: $out"
+  ( cd "$scout_pool" && eval "$scout_remedy" >/dev/null 2>&1 ) \
+    || fail "the scout brief's stale-base remedy failed in the fixture"
+  grep -q 'new three-line demo frame' "$scout_pool/feature.txt" \
+    || fail "following the scout remedy still left the investigation on the stale base"
+  pass "fm-brief.sh: the generated sync step detects a stale pooled base and reaches current code on ship and scout paths"
 }
 
 test_faster_paths_use_configured_authority_without_stacked_review() {
@@ -1115,6 +1197,7 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_sync_base_step_precedes_branch_creation
 test_sync_base_is_refused_where_it_does_not_apply
+test_sync_base_guards_a_scout_investigation_base
 test_sync_base_instruction_catches_a_stale_pooled_base
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording

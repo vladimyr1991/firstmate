@@ -7,7 +7,7 @@
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--staging-autonomy] [--sync-base <branch>] [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--sync-base <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -54,7 +54,7 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
-# --sync-base <branch> adds a mandatory base-sync step ahead of branch creation, for
+# --sync-base <branch> adds a mandatory base-sync step ahead of any other work, for
 # projects whose task worktrees come from a shared pool. A pooled worktree does not
 # refresh its local branches between tasks, so its local <branch> can sit many commits
 # behind origin/<branch> and a branch cut from it silently targets code that is no
@@ -62,6 +62,11 @@
 # it is opt-in because the caller-supplied repo string cannot identify the project's
 # checkout pattern, and it is deliberately not the generic default so ordinary
 # single-checkout projects keep the shorter Setup.
+# It applies to scout briefs too, where the same stale base produces a wrong
+# diagnosis rather than a wrong branch: a scout on a stale base reports a fix as
+# missing when it is already live on origin/<branch>. The scout step differs only in
+# the remedy (move the worktree onto the remote base rather than cut a branch from
+# it); a secondmate charter still refuses the flag.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -183,14 +188,16 @@ elif [ "$MODE_SET" -eq 1 ]; then
   exit 1
 fi
 
-# The base-sync step guards branch creation, so it belongs only to ship briefs. An
-# empty value is refused rather than silently dropped: a brief that looks synced but
+# The base-sync step guards the base a crewmate works from, so it applies to ship
+# and scout briefs alike; a secondmate charter names no base to sync. An empty
+# value is refused rather than silently dropped: a brief that looks synced but
 # carries no sync step is exactly the failure this flag exists to prevent.
 if [ "$SYNC_BASE_SET" -eq 1 ]; then
-  [ "$KIND" = ship ] || {
-    echo "error: --sync-base applies only to ship briefs; a scout creates no branch and a secondmate charter is not a delivery contract" >&2
-    exit 1
-  }
+  case "$KIND" in
+    ship|scout) ;;
+    *) echo "error: --sync-base applies only to ship and scout briefs; a secondmate charter is not tied to one task's base" >&2
+       exit 1 ;;
+  esac
   [ -n "$SYNC_BASE" ] || { echo "error: --sync-base requires a branch name (e.g. --sync-base develop)" >&2; exit 1; }
 fi
 
@@ -230,6 +237,25 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+
+# The pooled-base sync step has exactly one owner, used by both the ship and the
+# scout path. They differ only in what a stale base calls for - a branch cut from
+# the remote versus a worktree moved onto it - and in what skipping the check
+# costs. The parts that would silently drift if copied (the fetch, the drift
+# check, the divergence stop, and the mandatory framing) stay stated once here.
+# Args: <step-number> <action-clause> <current-remedy> <stale-remedy> <consequence>
+sync_base_step() {
+  local step=$1 action=$2 current=$3 stale=$4 consequence=$5 text
+  IFS= read -r -d '' text <<EOF || true
+$step. **First action: sync the base branch, $action.** This worktree comes from a shared pool that does not refresh its local branches between tasks, so its local \`$SYNC_BASE\` can sit many commits behind \`origin/$SYNC_BASE\`.
+   Run \`git fetch origin && git log --oneline HEAD..origin/$SYNC_BASE\`.
+   If it prints nothing, the base is current: $current
+   If it prints any commits, the base is stale: $stale
+   If \`git log --oneline origin/$SYNC_BASE..HEAD\` also prints commits, this base has diverged rather than merely fallen behind: append \`blocked: pooled base diverged from origin/$SYNC_BASE\` to the status file and stop.
+   This check is mandatory, not a judgement call: $consequence
+EOF
+  printf '%s' "${text%$'\n'}"
+}
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -351,6 +377,19 @@ HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
 if [ "$KIND" = scout ]; then
+# A scout cuts no branch, so its sync step guards the base it investigates on
+# instead: a diagnosis drawn on a stale pooled base reports a fix as missing when
+# it is already live. Without the flag the Setup keeps its original prose exactly.
+SCOUT_SYNC=""
+if [ -n "$SYNC_BASE" ]; then
+  SCOUT_SYNC="
+$(sync_base_step 1 \
+    "before investigating anything" \
+    "investigate on it as-is." \
+    "move this worktree onto the remote base instead, with \`git checkout --detach origin/$SYNC_BASE\`, and re-read every file this task names on that fresh base before drawing any conclusion - the code the task describes can look different there, or live somewhere else entirely." \
+    "a scout that skipped it has already diagnosed code that is no longer live.")
+"
+fi
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -364,7 +403,7 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
-
+$SCOUT_SYNC
 # Rules
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
@@ -499,15 +538,12 @@ DOD=${DOD%$'\n'}
 SETUP_STEPS=""
 SETUP_STEP_N=1
 if [ -n "$SYNC_BASE" ]; then
-  IFS= read -r -d '' SETUP_SYNC <<EOF || true
-$SETUP_STEP_N. **First action: sync the base branch, before creating any branch.** This worktree comes from a shared pool that does not refresh its local branches between tasks, so its local \`$SYNC_BASE\` can sit many commits behind \`origin/$SYNC_BASE\`.
-   Run \`git fetch origin && git log --oneline HEAD..origin/$SYNC_BASE\`.
-   If it prints nothing, the base is current: branch normally below.
-   If it prints any commits, the base is stale: cut your branch from the remote instead, with \`git checkout -b fm/$ID origin/$SYNC_BASE\`, and re-read every file this task names on that fresh base before editing - the code the task describes can look different there, or live somewhere else entirely.
-   If \`git log --oneline origin/$SYNC_BASE..HEAD\` also prints commits, this base has diverged rather than merely fallen behind: append \`blocked: pooled base diverged from origin/$SYNC_BASE\` to the status file and stop.
-   This check is mandatory, not a judgement call: a task that skipped it has already shipped a fix to the wrong code.
-EOF
-  SETUP_STEPS="${SETUP_SYNC%$'\n'}
+  SETUP_SYNC=$(sync_base_step "$SETUP_STEP_N" \
+    "before creating any branch" \
+    "branch normally below." \
+    "cut your branch from the remote instead, with \`git checkout -b fm/$ID origin/$SYNC_BASE\`, and re-read every file this task names on that fresh base before editing - the code the task describes can look different there, or live somewhere else entirely." \
+    "a task that skipped it has already shipped a fix to the wrong code.")
+  SETUP_STEPS="$SETUP_SYNC
 "
   SETUP_STEP_N=$((SETUP_STEP_N + 1))
   BRANCH_STEP="Create your branch: \`$BRANCH_CMD\` - or \`git checkout -b fm/$ID origin/$SYNC_BASE\` when step 1 showed drift."
