@@ -66,7 +66,12 @@
 # diagnosis rather than a wrong branch: a scout on a stale base reports a fix as
 # missing when it is already live on origin/<branch>. The scout step differs only in
 # the remedy (move the worktree onto the remote base rather than cut a branch from
-# it); a secondmate charter still refuses the flag.
+# it); a secondmate charter still refuses the flag. The step's divergence stop is
+# measured from `git merge-base HEAD origin/<branch>` and excludes commits already
+# published on origin, so a default branch that carries a commit the sync base never
+# took - a hotfix landed without a back-merge, an ordinary git-flow shape - reads as
+# a lineage variant and takes the stale remedy, while only unpublished work on the
+# pooled base stops the task.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -251,7 +256,9 @@ $step. **First action: sync the base branch, $action.** This worktree comes from
    Run \`git fetch origin && git log --oneline HEAD..origin/$SYNC_BASE\`.
    If it prints nothing, the base is current: $current
    If it prints any commits, the base is stale: $stale
-   If \`git log --oneline origin/$SYNC_BASE..HEAD\` also prints commits, this base has diverged rather than merely fallen behind: append \`blocked: pooled base diverged from origin/$SYNC_BASE\` to the status file and stop.
+   Before acting on either, rule out a genuinely divergent base with \`git log --oneline "\$(git merge-base HEAD origin/$SYNC_BASE)..HEAD" --not --remotes=origin\`, which measures divergence from the merge base rather than counting every commit HEAD holds that \`origin/$SYNC_BASE\` does not.
+   If it prints nothing, this base is compatible: a default branch carrying a commit the sync base never took, such as a hotfix landed without a back-merge, is an ordinary lineage variant, and the remedy above is safe even though HEAD is not a direct ancestor of \`origin/$SYNC_BASE\`.
+   If it prints any commits, this base carries work that exists nowhere on the remote and has diverged rather than merely fallen behind: append \`blocked: pooled base diverged from origin/$SYNC_BASE\` to the status file and stop.
    This check is mandatory, not a judgement call: $consequence
 EOF
   printf '%s' "${text%$'\n'}"
