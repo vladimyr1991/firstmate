@@ -1,0 +1,100 @@
+Mon Aug 10 21:10:35 2026  ->  stale: default:w8:p3Z
+Mon Aug 10 21:26:27 2026  ->  stale: default:w8:p45
+Mon Aug 10 21:36:50 2026  ->  signal: $FM_HOME/state/parlino-telegram-verify.turn-ended
+Mon Aug 10 21:41:04 2026  ->  stale: default:w8:p3Z
+Mon Aug 10 21:47:49 2026  ->  stale: default:w8:p3Z
+Mon Aug 10 21:55:23 2026  ->  stale: default:w8:p3Z
+Mon Aug 10 22:14:58 2026  ->  signal: $FM_HOME/state/parlino-telegram-verify.status $FM_HOME/state/parlino-telegram-verify.turn-ended
+Mon Aug 10 22:18:41 2026  ->  stale: default:w8:p3Z
+Mon Aug 10 22:28:39 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status
+Mon Aug 10 22:29:27 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Mon Aug 10 22:34:07 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Mon Aug 10 23:00:02 2026  ->  signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended
+Mon Aug 10 23:22:29 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Mon Aug 10 23:24:58 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.turn-ended
+Mon Aug 10 23:27:42 2026  ->  signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended
+Mon Aug 10 23:36:04 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.turn-ended
+Mon Aug 10 23:43:54 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 02:01:36 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status
+Tue Aug 11 02:02:25 2026  ->  stale: default:w8:p47 (herdr: agent blocked - waiting on human, escalated immediately, not via wedge timer)
+Tue Aug 11 02:04:58 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-dash-grok.status $FM_HOME/state/fm-quota-dash-grok.turn-ended
+Tue Aug 11 02:06:35 2026  ->  stale: default:w8:p47 (idle 241s, possible wedge, escalation 1)
+Tue Aug 11 02:12:34 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status $FM_HOME/state/fm-quota-dash-grok.turn-ended
+Tue Aug 11 02:14:22 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status $FM_HOME/state/fm-lessons-learned.turn-ended
+Tue Aug 11 02:15:56 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.turn-ended $FM_HOME/state/fm-lessons-learned.turn-ended
+Tue Aug 11 02:17:03 2026  ->  stale: default:w8:p3Z (idle 265s, possible wedge, escalation 1)
+Tue Aug 11 02:22:41 2026  ->  stale: default:w8:p3Z (idle 255s, possible wedge, escalation 2)
+Tue Aug 11 02:27:55 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status $FM_HOME/state/fm-quota-dash-grok.turn-ended
+Tue Aug 11 02:32:57 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status
+Tue Aug 11 02:33:40 2026  ->  stale: default:w8:p47 (idle 242s, possible wedge, escalation 1)
+Tue Aug 11 02:35:15 2026  ->  stale: default:w8:p47 (idle 260s, possible wedge, escalation 2)
+Tue Aug 11 02:40:55 2026  ->  signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended
+Tue Aug 11 02:41:48 2026  ->  signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended
+Tue Aug 11 02:49:08 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status $FM_HOME/state/fm-quota-dash-grok.turn-ended
+Tue Aug 11 02:50:26 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status
+Tue Aug 11 02:51:14 2026  ->  stale: default:w8:p3Z
+Tue Aug 11 02:57:39 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 03:00:36 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 03:01:55 2026  ->  stale: default:w8:p3Z
+Tue Aug 11 03:03:03 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status $FM_HOME/state/fm-quota-dash-grok.turn-ended
+Tue Aug 11 03:12:52 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status
+Tue Aug 11 03:13:46 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status $FM_HOME/state/fm-quota-dash-grok.turn-ended
+Tue Aug 11 11:04:49 2026  ->  check: $FM_HOME/state/sprint-watch.check.sh: sprint-check
+Tue Aug 11 11:06:30 2026  ->  signal: $FM_HOME/state/notion-sprint-scan-0811a.status $FM_HOME/state/notion-sprint-scan-0811a.turn-ended
+Tue Aug 11 11:08:11 2026  ->  signal: $FM_HOME/state/notion-sprint-scan-0811a.status $FM_HOME/state/notion-sprint-scan-0811a.turn-ended
+Tue Aug 11 11:10:05 2026  ->  stale: default:w8:p48
+Tue Aug 11 11:12:13 2026  ->  stale: default:w8:p47 (idle 373s, possible wedge, escalation 1)
+Tue Aug 11 11:15:38 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status
+Tue Aug 11 11:16:25 2026  ->  stale: default:w8:p47 (idle 250s, possible wedge, escalation 2)
+Tue Aug 11 11:22:13 2026  ->  stale: default:w8:p3Z (idle 349s, possible wedge, escalation 1)
+Tue Aug 11 11:22:43 2026  ->  stale: default:w8:p47 (idle 258s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+Tue Aug 11 11:27:15 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 11:34:52 2026  ->  signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended
+Tue Aug 11 11:40:47 2026  ->  stale: default:w8:p47 (idle 257s, possible wedge, escalation 1)
+Tue Aug 11 11:51:29 2026  ->  stale: default:w8:p47 (idle 252s, possible wedge, escalation 2)
+Tue Aug 11 11:56:38 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 11:58:01 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 11:59:12 2026  ->  stale: default:w8:p3Z
+Tue Aug 11 12:00:58 2026  ->  stale: default:w8:p47 (idle 265s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+Tue Aug 11 12:02:58 2026  ->  stale: default:w8:p3Z (idle 266s, possible wedge, escalation 1)
+Tue Aug 11 12:05:58 2026  ->  check: $FM_HOME/state/sprint-watch.check.sh: sprint-check
+Tue Aug 11 12:09:52 2026  ->  signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-lessons-learned.turn-ended $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 12:11:41 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 12:12:47 2026  ->  stale: default:w8:p3Z
+Tue Aug 11 12:15:29 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status $FM_HOME/state/fm-quota-dash-grok.turn-ended
+Tue Aug 11 14:32:03 2026  ->  check: $FM_HOME/state/fm-quota-autoresume.check.sh: claude session window has reset - sweep every claude-backed task for a stall past its limit, do not assume they resumed
+Tue Aug 11 14:33:21 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-dash-grok.status
+Tue Aug 11 14:34:08 2026  ->  check: $FM_HOME/state/sprint-watch.check.sh: sprint-check
+Tue Aug 11 14:38:33 2026  ->  stale: default:w8:p47 (idle 264s, possible wedge, escalation 1)
+Tue Aug 11 14:39:27 2026  ->  stale: default:w8:p3Z (idle 356s, possible wedge, escalation 1)
+Tue Aug 11 14:40:30 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 14:59:31 2026  ->  signal: $FM_HOME/state/fm-quota-dash-grok.status $FM_HOME/state/fm-quota-dash-grok.turn-ended $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 15:19:51 2026  ->  stale: default:w8:p48
+Tue Aug 11 15:20:56 2026  ->  stale: default:w8:p3Z
+Tue Aug 11 15:35:56 2026  ->  stale: default:w8:p3Z (idle 252s, possible wedge, escalation 1)
+Tue Aug 11 15:40:48 2026  ->  check: $FM_HOME/state/sprint-watch.check.sh: sprint-check
+Tue Aug 11 15:41:55 2026  ->  stale: default:w8:p3Z (idle 240s, possible wedge, escalation 2)
+Tue Aug 11 15:45:32 2026  ->  stale: default:w8:p3Z (idle 244s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+Tue Aug 11 15:50:52 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 15:51:35 2026  ->  signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+Tue Aug 11 16:12:25 2026  ->  check: $FM_HOME/state/fm-quota-autoresume.check.sh: merged
+Tue Aug 11 16:20:29 2026  ->  check: $FM_HOME/state/sprint-watch.check.sh: sprint-check
+Tue Aug 11 16:45:04 2026  ->  check: $FM_HOME/state/fm-quota-dash-grok.check.sh: merged
+Tue Aug 11 17:07:30 2026  ->  check: $FM_HOME/state/sprint-watch.check.sh: sprint-check
+Tue Aug 11 17:47:11 2026  ->  signal: $FM_HOME/state/notion-sprint-scan-0811b.status $FM_HOME/state/notion-sprint-scan-0811b.turn-ended
+Tue Aug 11 17:53:21 2026  ->  signal: $FM_HOME/state/notion-sprint-scan-0811b.status
+Tue Aug 11 17:55:27 2026  ->  check: $FM_HOME/state/sprint-watch.check.sh: sprint-check
+Tue Aug 11 18:52:02 2026  ->  signal: $FM_HOME/state/notion-sprint-scan-0811c.status $FM_HOME/state/notion-sprint-scan-0811c.turn-ended
+Tue Aug 11 18:53:56 2026  ->  signal: $FM_HOME/state/notion-sprint-scan-0811c.status $FM_HOME/state/notion-sprint-scan-0811c.turn-ended
+Tue Aug 11 18:55:26 2026  ->  signal: $FM_HOME/state/notion-sprint-scan-0811c.status $FM_HOME/state/notion-sprint-scan-0811c.turn-ended
+Tue Aug 11 18:56:55 2026  ->  stale: default:wC:p2 (idle 292s, possible wedge, escalation 1)
+Tue Aug 11 18:57:14 2026  ->  stale: default:wC:p2 (idle 252s, possible wedge, escalation 2)
+Tue Aug 11 19:01:48 2026  ->  stale: default:wC:p2 (idle 251s, possible wedge, escalation 3, demand-deep-inspection: same pane has wedge-escalated 3 times in a row - do not re-absorb on the run-step/pane state alone)
+Tue Aug 11 19:06:49 2026  ->  signal: $FM_HOME/state/fm-skill-compaction.status $FM_HOME/state/fm-skill-compaction.turn-ended
+Tue Aug 11 19:08:09 2026  ->  signal: $FM_HOME/state/fm-skill-compaction.status $FM_HOME/state/fm-skill-compaction.turn-ended
+Tue Aug 11 19:19:29 2026  ->  signal: $FM_HOME/state/fm-skill-compaction.status $FM_HOME/state/fm-skill-compaction.turn-ended
+Tue Aug 11 19:29:43 2026  ->  stale: default:wC:p2 (idle 249s, possible wedge, escalation 1)
+Tue Aug 11 19:53:16 2026  ->  check: $FM_HOME/state/sprint-watch.check.sh: sprint-check
+Tue Aug 11 19:54:08 2026  ->  signal: $FM_HOME/state/notion-sprint-scan-0811d.status $FM_HOME/state/notion-sprint-scan-0811d.turn-ended
+Tue Aug 11 19:56:30 2026  ->  check: $FM_HOME/state/sprint-watch.check.sh: sprint-check
+Tue Aug 11 20:54:44 2026  ->  signal: $FM_HOME/state/notion-sprint-scan-0811e.status $FM_HOME/state/notion-sprint-scan-0811e.turn-ended

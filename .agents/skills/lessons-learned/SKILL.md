@@ -38,6 +38,11 @@ Answer each of these explicitly, and say "nothing" where nothing applies.
 4. Which name, flag, secret, or setting meant two different things in two places?
 5. What did the brief fail to say that the worker had to discover?
 6. Where did a gate go green without proving what it was written to prove?
+7. Which instruction, steer, or hygiene fix from firstmate itself made this outcome more likely, and what would have caught it?
+8. Which failure hit more than one worker at once, and what would have turned the first one into a signal to check the rest?
+
+Prompts 7 and 8 come from the blind backtest of the 2026-08-11 fleet stall, recorded in [`docs/verification/retro-backtest.md`](../../../docs/verification/retro-backtest.md).
+Prompts 1 to 6 all ask what the worker did, so a retro answering only those blames only the worker and never reaches firstmate's own contribution, which is what that backtest missed.
 
 ## Routing
 
