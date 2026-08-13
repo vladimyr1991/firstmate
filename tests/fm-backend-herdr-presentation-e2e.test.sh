@@ -808,6 +808,11 @@ lab pane get "$SECOND_TWO_PANE" >/dev/null 2>&1 \
   || fail "projected teardown affected the focused secondmate workspace"
 [ ! -e "$JOURNAL" ] || fail "confirmed projected teardown did not retire its presentation journal"
 pass "real Herdr lab: exact task-pane close removes the projected workspace with no unrestored wrong-focus interval"
+# The active teardown above deliberately left focus on its fallback tab, so
+# restore the captured captain tab before the remaining focus assertions.
+lab tab focus "$SECOND_TWO_TAB" >/dev/null \
+  || fail "could not restore the captured captain tab after the active projected teardown"
+assert_focus_is "$CAPTAIN_FOCUS" "active projected teardown restoration"
 
 teardown_task order-a "$HOME_DIR" > "$TMP_ROOT/order-a-teardown.out" 2> "$TMP_ROOT/order-a-teardown.err" &
 ORDER_A_TEARDOWN_PID=$!
