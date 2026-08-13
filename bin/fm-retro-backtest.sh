@@ -12,9 +12,13 @@
 #   3. The run is rejected if its transcript contains a single tool use, so a harness that
 #      ignored the deny list produces a failed test rather than a contaminated pass.
 #   4. The composed prompt is scanned for the sealed key's and learnings file's paths, and the
-#      fixture is scanned for a stray copy of either, before any model is called.
+#      evidence is scanned for a stray copy of the key, before any model is called. That scan
+#      catches a copied or pasted key; it does not prove the evidence is free of every possible
+#      restatement, and it deliberately never prints key text, only the key's line number.
 #   5. The procedure half of the prompt is refused if it names the incident under test, because
-#      the procedure is a repository file an editor can annotate with what the test found.
+#      the procedure is a repository file an editor can annotate with what the test found. The
+#      marker list catches careless wording, not a determined paraphrase; the real protection is
+#      that the procedure is meant to stay inert, and the markers only make a slip loud.
 #
 # Usage:
 #   fm-retro-backtest.sh prompt              print the composed prompt and exit
@@ -44,14 +48,15 @@ LEARNINGS="$FM_HOME/data/learnings.md"
 
 # Names for the incident under test. The procedure must never contain one: the evidence
 # names the incident because it is the incident, but the procedure is generic by design.
-INCIDENT_MARKERS='retro-backtest-0811|2026-08-11|0811|backtest'
+INCIDENT_MARKERS='retro-backtest-0811|2026-08-11|0811|backtest|fleet stall|session limit'
+INCIDENT_MARKERS="$INCIDENT_MARKERS|fm-quota-autoresume|fm-quota-dash-grok"
 
 KEY_SCAN=''
 
 DENIED_TOOLS=(Bash Read Write Edit NotebookEdit Glob Grep WebFetch WebSearch Task Agent \
   TodoWrite Skill SlashCommand KillShell BashOutput ListMcpResourcesTool ReadMcpResourceTool)
 
-usage() { sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -76,17 +81,24 @@ guard_fixture() {
     die "an evidence file names the sealed key"
   fi
 
-  # Every substantial line of the key, not only the first: a copy that drops or rewords one
-  # line would otherwise walk straight past a single-marker scan.
+  # Every line the key asserts, not only the first: a copy that drops or rewords one line would
+  # otherwise walk straight past a single-marker scan. Only evidence/ is scanned, because only
+  # evidence/ reaches the agent, and only long unquoted lines are used as markers: a key for an
+  # evidence-based test quotes the evidence to justify its verdicts, and a guard that refuses a
+  # clean fixture on the key's own quotations is a guard the next operator turns off.
   if [ -r "$SEALED_KEY" ]; then
-    local line marker
-    while IFS= read -r line; do
-      marker=$(printf '%s' "$line" | cut -c1-48)
-      [ -n "$marker" ] || continue
-      if grep -rqF -- "$marker" "$FIXTURE"; then
-        die "fixture repeats a line of the sealed key: ${marker}"
+    local numbered number text marker
+    while IFS= read -r numbered; do
+      number=${numbered%%:*}
+      text=${numbered#*:}
+      case $text in
+        *'"'*|*'`'*|*'>'*) continue ;;
+      esac
+      marker=$(printf '%s' "$text" | cut -c1-64)
+      if grep -rqF -- "$marker" "$FIXTURE/evidence"; then
+        die "fixture evidence repeats sealed key line $number, which the key alone may state"
       fi
-    done < <(grep -E '^[A-Za-z].{24,}' "$SEALED_KEY")
+    done < <(grep -nE '^[A-Za-z].{63,}' "$SEALED_KEY")
     KEY_SCAN="ran against $SEALED_KEY"
   else
     # The key lives outside the repository on purpose, so this is the ordinary case on any
@@ -205,26 +217,39 @@ run_agent() {
   isolation_report "$out" > "$out/isolation-report.txt"
   cat "$out/isolation-report.txt"
 
-  local tool_uses
+  # Grading is manual and reads answer.md, so a rejected run must not leave an artifact that
+  # looks like a clean one.
+  local tool_uses quarantine="$out/answer.CONTAMINATED.md"
   tool_uses=$(count_tool_uses "$out/stream.jsonl")
   case $tool_uses in
     0) ;;
     unreadable)
-      die "CONTAMINATED: the transcript could not be parsed, so the no-tool-use property is unproven; discard this run" ;;
+      mv "$out/answer.md" "$quarantine" || true
+      die "CONTAMINATED: the transcript could not be parsed, so the no-tool-use property is unproven; discard this run and its answer at $quarantine" ;;
     *)
-      die "CONTAMINATED: the agent used $tool_uses tool(s); discard this run" ;;
+      mv "$out/answer.md" "$quarantine" || true
+      die "CONTAMINATED: the agent used $tool_uses tool(s); discard this run and its answer at $quarantine" ;;
   esac
 
   echo "answer: $out/answer.md"
 }
 
-# Echoes the number of tool_use content blocks in the transcript, or "unreadable" when the
-# transcript cannot be parsed at all. Whitespace and key order in a third-party CLI's output
-# are not a contract, so this parses the stream rather than matching bytes in it, and an
-# unreadable stream counts as contamination: a guard that cannot see must not clear the run.
+# Echoes the number of tool uses in the transcript, or "unreadable" when the transcript cannot
+# be parsed at all. Whitespace, key order, and envelope shape in a third-party CLI's output are
+# not a contract, so this parses the stream and walks every nested object rather than matching
+# bytes or two known content paths, and an unreadable stream counts as contamination: a guard
+# that cannot see must not clear the run.
 count_tool_uses() {
   python3 - "$1" <<'PY'
 import json, sys
+
+def tool_uses(node):
+    if isinstance(node, dict):
+        found = 1 if node.get("type") == "tool_use" else 0
+        return found + sum(tool_uses(value) for value in node.values())
+    if isinstance(node, list):
+        return sum(tool_uses(item) for item in node)
+    return 0
 
 uses = 0
 events = 0
@@ -247,13 +272,7 @@ for line in stream:
         broken = True
         continue
     events += 1
-    message = event.get("message")
-    content = message.get("content") if isinstance(message, dict) else event.get("content")
-    if not isinstance(content, list):
-        continue
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool_use":
-            uses += 1
+    uses += tool_uses(event)
 print("unreadable" if broken or events == 0 else uses)
 PY
 }
@@ -297,7 +316,8 @@ isolation_report() {
 
 case ${1:---help} in
   --help|-h|help) usage ;;
-  prompt) guard_fixture; guard_procedure; compose_prompt ;;
+  prompt) guard_fixture; guard_procedure
+          tmp=$(mktemp); compose_prompt > "$tmp"; guard_prompt "$tmp"; cat "$tmp"; rm -f "$tmp" ;;
   check) guard_fixture; guard_procedure
          tmp=$(mktemp); compose_prompt > "$tmp"; guard_prompt "$tmp"; rm -f "$tmp"
          echo "isolation guards pass"

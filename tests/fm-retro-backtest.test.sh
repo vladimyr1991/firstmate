@@ -16,9 +16,11 @@
 #   (f) a grader-facing README inside evidence/ refuses the run
 #   (g) a fixture with no evidence directory refuses the run
 #   (h) refusals happen before any model call, so they cost nothing
-#   (i) a procedure that names the incident under test refuses the run
-#   (j) the key content scan reports whether it ran, and catches any key line
-#   (k) a transcript containing a tool use is refused however it is spelled
+#   (i) a procedure that names or paraphrases the incident under test refuses the run
+#   (j) the key content scan reports whether it ran, catches any key line by number, and
+#       does not fire on the key's own quotations of the evidence
+#   (k) a transcript containing a tool use is refused however it is spelled or nested,
+#       and its answer is quarantined rather than left looking clean
 #   (l) a transcript that cannot be parsed is refused rather than cleared
 set -u
 
@@ -161,6 +163,18 @@ test_procedure_naming_the_incident_refuses() {
   pass "a procedure that names the incident refuses the run"
 }
 
+test_procedure_paraphrasing_the_incident_refuses() {
+  # A note that never states the date leaks just as much, so the marker set covers the
+  # incident's own vocabulary too.
+  local procedure out rc
+  procedure=$(copy_procedure)
+  printf '\nPrompt 8 came from the morning one session limit stopped three workers.\n' >> "$procedure"
+  out=$(FM_RETRO_BACKTEST_PROCEDURE="$procedure" "$BACKTEST" check 2>&1); rc=$?
+  expect_code 1 "$rc" "check with a procedure that paraphrases the incident"
+  assert_contains "$out" "names the incident under test" "refusal should name the cause"
+  pass "a procedure that paraphrases the incident refuses the run"
+}
+
 test_prompt_refuses_before_composing_when_the_procedure_leaks() {
   local procedure out rc
   procedure=$(copy_procedure)
@@ -182,23 +196,60 @@ test_key_content_scan_reports_that_it_was_skipped() {
   pass "the key content scan reports that it was skipped"
 }
 
-test_any_key_line_repeated_in_the_fixture_refuses() {
-  # Not only the key's first substantial line: a copy that reworded that one line would
-  # otherwise walk past the scan.
-  local home dest out rc
+# A scratch home carrying a two-line sealed key, so the content scan has something to scan
+# on a machine that is not the operator's.
+seed_key() {
+  local home
   home=$(fm_test_tmproot fm-retro-backtest-key)
   mkdir -p "$home/data/retro-backtest-0811"
   cat > "$home/data/retro-backtest-0811/SEALED-expected-answers.md" <<'KEY'
-First expected answer line, long enough to be a usable marker for the scan.
-Second expected answer line, also long enough to be a usable marker here.
+First expected answer of the key, stated at length so that the scan has a usable marker.
+Second expected answer of the key, also stated at length so that it too gives the scan one.
+The key quotes the evidence to justify a verdict, like this: "absorbed stale run pane" line.
 KEY
+  printf '%s\n' "$home"
+}
+
+test_any_key_line_repeated_in_the_evidence_refuses() {
+  # Not only the key's first substantial line: a copy that reworded that one line would
+  # otherwise walk past the scan.
+  local home dest out rc
+  home=$(seed_key)
   dest=$(copy_fixture)
-  printf 'Second expected answer line, also long enough to be a usable marker here.\n' \
+  printf 'Second expected answer of the key, also stated at length so that it too gives the scan one.\n' \
     >> "$dest/evidence/INCIDENT.md"
   out=$(FM_HOME="$home" FM_RETRO_BACKTEST_FIXTURE="$dest" "$BACKTEST" check 2>&1); rc=$?
-  expect_code 1 "$rc" "check with the key's second line inside the fixture"
-  assert_contains "$out" "repeats a line of the sealed key" "refusal should name the cause"
-  pass "any repeated key line inside the fixture refuses the run"
+  expect_code 1 "$rc" "check with the key's second line inside the evidence"
+  assert_contains "$out" "repeats sealed key line 2" "refusal should point at the key by line"
+  assert_not_contains "$out" "Second expected answer of the key" \
+    "a refusal must never print the key's own text"
+  pass "any repeated key line inside the evidence refuses the run"
+}
+
+test_key_quoting_the_evidence_does_not_refuse() {
+  # The key justifies its verdicts by quoting the evidence, so a scan that treated its
+  # quotations as markers would refuse the one machine that can run the graded test.
+  local home dest out rc
+  home=$(seed_key)
+  dest=$(copy_fixture)
+  out=$(FM_HOME="$home" FM_RETRO_BACKTEST_FIXTURE="$dest" "$BACKTEST" check 2>&1); rc=$?
+  expect_code 0 "$rc" "check with a key that quotes the evidence"
+  assert_contains "$out" "key content scan: ran against" "the scan should report that it ran"
+  pass "a key that quotes the evidence does not refuse a clean fixture"
+}
+
+test_key_copy_beside_the_evidence_is_scanned_by_name() {
+  # The content scan covers evidence/ only, so the filename guard is what covers the rest of
+  # the fixture; between them no copy of the key survives.
+  local home dest out rc
+  home=$(seed_key)
+  dest=$(copy_fixture)
+  cp "$home/data/retro-backtest-0811/SEALED-expected-answers.md" "$dest/key-copy.md"
+  mv "$dest/key-copy.md" "$dest/SEALED-copy.md"
+  out=$(FM_HOME="$home" FM_RETRO_BACKTEST_FIXTURE="$dest" "$BACKTEST" check 2>&1); rc=$?
+  expect_code 1 "$rc" "check with a key copy outside evidence/"
+  assert_contains "$out" "answer-bearing file inside the fixture" "refusal should name the cause"
+  pass "a key copy elsewhere in the fixture still refuses the run"
 }
 
 test_spaced_tool_use_in_the_transcript_refuses() {
@@ -213,7 +264,26 @@ test_spaced_tool_use_in_the_transcript_refuses() {
   expect_code 1 "$rc" "run whose transcript contains a spaced tool use"
   assert_contains "$out" "CONTAMINATED" "a tool use must fail the run"
   assert_contains "$out" "used 1 tool" "the refusal should count the tool uses"
+  assert_absent "$dest/run/answer.md" "a contaminated run must not leave a clean-looking answer"
+  assert_contains "$out" "answer.CONTAMINATED.md" "the refusal should name the quarantined answer"
+  assert_contains "$(cat "$dest/run/answer.CONTAMINATED.md")" "a candidate lesson" \
+    "the quarantined answer should still hold what the agent said"
   pass "a tool use spelled with spaces still refuses the run"
+}
+
+test_tool_use_in_an_unfamiliar_envelope_refuses() {
+  # The envelope shape is not a contract either: a tool use reported outside the two known
+  # content paths must still be counted, because this guard has to fail toward contaminated.
+  local dest bin out rc
+  dest=$(copy_fixture)
+  bin=$(fake_claude '{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Bash"}}
+{"type":"result","result":"a candidate lesson"}')
+  out=$(PATH="$bin:$PATH" FM_RETRO_BACKTEST_FIXTURE="$dest" \
+    "$BACKTEST" run --out "$dest/run" 2>&1); rc=$?
+  expect_code 1 "$rc" "run whose transcript reports a tool use in a partial-message envelope"
+  assert_contains "$out" "CONTAMINATED" "a tool use anywhere in the event must fail the run"
+  assert_contains "$out" "used 1 tool" "the refusal should count the tool uses"
+  pass "a tool use in an unfamiliar envelope refuses the run"
 }
 
 test_unparseable_transcript_refuses() {
@@ -226,6 +296,7 @@ not json at all')
   expect_code 1 "$rc" "run whose transcript cannot be parsed"
   assert_contains "$out" "CONTAMINATED" "an unreadable transcript must fail the run"
   assert_contains "$out" "could not be parsed" "the refusal should name the cause"
+  assert_absent "$dest/run/answer.md" "a contaminated run must not leave a clean-looking answer"
   pass "an unparseable transcript refuses the run"
 }
 
@@ -253,9 +324,13 @@ test_grader_readme_inside_evidence_refuses
 test_missing_evidence_directory_refuses
 test_refusal_precedes_any_model_call
 test_procedure_naming_the_incident_refuses
+test_procedure_paraphrasing_the_incident_refuses
 test_prompt_refuses_before_composing_when_the_procedure_leaks
 test_key_content_scan_reports_that_it_was_skipped
-test_any_key_line_repeated_in_the_fixture_refuses
+test_any_key_line_repeated_in_the_evidence_refuses
+test_key_quoting_the_evidence_does_not_refuse
+test_key_copy_beside_the_evidence_is_scanned_by_name
 test_spaced_tool_use_in_the_transcript_refuses
+test_tool_use_in_an_unfamiliar_envelope_refuses
 test_unparseable_transcript_refuses
 test_clean_transcript_passes_and_reports_isolation

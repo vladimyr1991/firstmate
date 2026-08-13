@@ -16,7 +16,7 @@ the brief given to the agent under test.
 ## How isolation is enforced
 
 `bin/fm-retro-backtest.sh` is the runner, and its header owns the mechanics.
-The four enforced properties, rather than asserted ones:
+The five enforced properties, rather than asserted ones:
 
 1. The entire input is one composed prompt, saved to the run directory before the model is
    called, so what the agent saw is inspectable afterwards.
@@ -25,6 +25,9 @@ The four enforced properties, rather than asserted ones:
 3. The run is rejected if its own transcript contains a single tool use.
 4. The fixture is scanned for the grading key and for the learnings file, and the composed
    prompt is scanned for their paths, before any model call.
+   The content half of that scan covers `evidence/`, which is the only part of the fixture the
+   prompt is built from, and it reports a repeated key line by number so a refusal never prints
+   the key it exists to keep unseen.
 5. The procedure half of the composed prompt is refused if it names the incident under test,
    because the procedure is a repository file an editor can annotate, while the evidence half
    legitimately names the incident it preserves.
