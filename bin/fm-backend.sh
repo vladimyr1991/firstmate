@@ -6,8 +6,8 @@
 # data/fm-backend-design-d7/herdr-addendum.md ("Events as the core
 # abstraction"). P1 extracted the tmux command sequences that fm-send.sh,
 # fm-peek.sh, fm-watch.sh, fm-spawn.sh, and fm-teardown.sh already ran inline
-# into bin/backends/tmux.sh, with those SAME command sequences, so the default
-# (tmux) path stays byte-identical. P2 adds bin/backends/herdr.sh, an
+# into bin/backends/tmux.sh, with those SAME command sequences, so the tmux
+# path stays byte-identical. P2 adds bin/backends/herdr.sh, an
 # EXPERIMENTAL spawn-capable backend behind `--backend herdr`/`FM_BACKEND=herdr`/
 # `config/backend`, and behind runtime auto-detection when firstmate itself is
 # running inside herdr with no explicit backend setting; see herdr-addendum.md and
@@ -57,7 +57,7 @@ FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # section 4's harness-verification discipline. herdr is EXPERIMENTAL (P2;
 # data/fm-backend-design-d7/herdr-addendum.md) - verified against the real
 # v0.7.1/protocol-14 binary (data/fm-backend-design-d7/herdr-verification-p2.md)
-# but newer than tmux's long-proven default path. zellij is EXPERIMENTAL (P3;
+# but newer than tmux's long-proven reference path. zellij is EXPERIMENTAL (P3;
 # data/fm-backend-design-d7/report.md "Zellij Backend") - verified against the
 # real 0.44.0 binary (docs/zellij-backend.md). orca is EXPERIMENTAL and
 # spawn-capable; unlike tmux/herdr/zellij it is also the worktree provider.
@@ -243,7 +243,7 @@ fm_backend_detect_cmux_app_is_ancestor() {
 # ancestry, after the claude wrapper stripped CMUX_WORKSPACE_ID) is visibly
 # distinct from the primary-marker case.
 # fm_backend_configured: the captain's config/backend value ALONE - no
-# FM_BACKEND, no auto-detection, no tmux default. Empty when unset. Kept
+# FM_BACKEND, no auto-detection, no base-backend fallback. Empty when unset. Kept
 # separate from fm_backend_name because the caller needs to know whether the
 # backend was chosen by the captain or merely landed on by resolution: only the
 # former may veto a per-task --backend.
