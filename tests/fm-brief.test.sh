@@ -931,6 +931,161 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# A verification that writes into a real outward-facing surface leaves noise in a
+# surface the captain reads unless the test itself removes it, so both worker
+# scaffolds must carry the full delete-after-test discipline: evidence first,
+# delete, re-probe, cleanup in the test's own teardown including the failure path,
+# and a non-writing probe preferred. Asserted through generated briefs.
+test_outward_write_cleanup_rule_reaches_both_scaffolds() {
+  local home brief label
+  home="$TMP_ROOT/outward-cleanup-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-cleanup-s1 some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold for the outward-write cleanup rule exited non-zero"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-cleanup-s2 some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold for the outward-write cleanup rule exited non-zero"
+  for label in brief-cleanup-s1 brief-cleanup-s2; do
+    brief="$home/data/$label/brief.md"
+    assert_grep "writes into a real outward-facing surface must delete what it wrote" "$brief" \
+      "$label: brief lost the delete-after-test rule"
+    assert_grep "then delete, then re-probe to confirm it is gone" "$brief" \
+      "$label: brief lost the capture-delete-reprobe order"
+    assert_grep "A consumed id is fine" "$brief" \
+      "$label: brief lost the consumed-id-is-fine point"
+    assert_grep "own teardown, including the" "$brief" \
+      "$label: brief lost the teardown-including-failure-path point"
+    assert_grep "Prefer a non-writing probe when the surface offers one." "$brief" \
+      "$label: brief lost the non-writing-probe preference"
+    assert_no_grep "only Telegram" "$brief" \
+      "$label: brief scoped the cleanup rule to one specific channel"
+  done
+  pass "fm-brief.sh: ship and scout scaffolds carry the outward-write cleanup rule"
+}
+
+# A no-mistakes worker's most common legitimate idle is its own pipeline gate or a
+# CI run, and leaving `working:` as the last event during that wait produced false
+# wedge escalations. Both scaffolds must name those two waits as pause examples.
+test_pause_examples_name_pipeline_and_ci_waits() {
+  local home brief label
+  home="$TMP_ROOT/pause-examples-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-pause-s1 some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold for the pause examples exited non-zero"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-pause-s2 some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold for the pause examples exited non-zero"
+  for label in brief-pause-s1 brief-pause-s2; do
+    brief="$home/data/$label/brief.md"
+    assert_grep "waiting for a pipeline gate to return" "$brief" \
+      "$label: pause examples omitted the pipeline-gate return"
+    assert_grep "run to finish" "$brief" \
+      "$label: pause examples omitted a CI run"
+    assert_grep "an upstream release, a rate-limit reset" "$brief" \
+      "$label: pause examples lost their original external waits"
+  done
+  pass "fm-brief.sh: pause examples name the pipeline-gate and CI waits in both scaffolds"
+}
+
+# Hard rule 4 lives only in firstmate's own AGENTS.md, which no worker reads, so
+# workers addressed the captain directly. Both worker scaffolds must state the
+# single-channel rule themselves.
+test_workers_report_to_firstmate_only() {
+  local home brief label
+  home="$TMP_ROOT/single-channel-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-channel-s1 some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "ship scaffold for the single-channel rule exited non-zero"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-channel-s2 some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold for the single-channel rule exited non-zero"
+  for label in brief-channel-s1 brief-channel-s2; do
+    brief="$home/data/$label/brief.md"
+    assert_grep "Report status and findings to firstmate only." "$brief" \
+      "$label: brief lost the report-to-firstmate-only rule"
+    assert_grep "firstmate is the sole channel to the captain" "$brief" \
+      "$label: brief did not state that firstmate is the only channel to the captain"
+  done
+  pass "fm-brief.sh: both worker scaffolds route all reporting through firstmate only"
+}
+
+# A project whose registered posture grants standing staging-inclusive landing
+# autonomy needs that contract GENERATED: the plain local-only "stop and wait"
+# boilerplate otherwise contradicts the task section granting the autonomy.
+test_staging_autonomy_generates_the_landing_contract() {
+  local home brief plain
+  home="$TMP_ROOT/staging-autonomy-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-staging-s1 some-proj --mode local-only --staging-autonomy >/dev/null 2>&1 \
+    || fail "local-only --staging-autonomy scaffold exited non-zero"
+  brief="$home/data/brief-staging-s1/brief.md"
+
+  # bin/fm-spawn.sh matches the delivery contract line exactly, so autonomy must
+  # ride alongside local-only rather than inventing a fourth mode value.
+  grep -qx "Delivery contract: mode=local-only" "$brief" \
+    || fail "staging-autonomy brief lost the machine-readable local-only contract line"
+  grep -qx "Delivery autonomy: staging-inclusive" "$brief" \
+    || fail "staging-autonomy brief did not record its autonomy line"
+
+  assert_grep "git fetch origin && git checkout -b fm/brief-staging-s1 origin/develop" "$brief" \
+    "staging-autonomy brief did not branch explicitly from origin/develop"
+  assert_grep "merge \`fm/brief-staging-s1\` -> \`develop\` -> \`staging\`, push both branches" "$brief" \
+    "staging-autonomy brief did not state the git-flow landing sequence"
+  assert_grep "watch CI to a final result" "$brief" \
+    "staging-autonomy brief did not require watching CI to a final result"
+  assert_grep "fast-forward this worktree's own local \`develop\`" "$brief" \
+    "staging-autonomy brief did not close the stale-base loop after landing"
+  assert_grep "done [key=staging]: staging=<sha> ci=<run-id> result=green" "$brief" \
+    "staging-autonomy brief did not require the keyed staging close line"
+  assert_grep "blocked [key=evaluation]: test gate green, UI touched, awaiting browser evaluation before merge" "$brief" \
+    "staging-autonomy brief did not stop UI work at the browser evaluation gate"
+  assert_grep "never land red or failing work" "$brief" \
+    "staging-autonomy brief dropped the never-land-red limit"
+  assert_grep "Tagging or releasing \`main\` is never yours" "$brief" \
+    "staging-autonomy brief did not keep release out of the standing authority"
+
+  # The contradicted boilerplate must be gone, not merely followed by a correction.
+  assert_no_grep "Do NOT push, do NOT open a PR, do NOT merge." "$brief" \
+    "staging-autonomy brief still carries the stop-and-wait local-only boilerplate"
+  assert_no_grep "Never push to any remote and never open a PR." "$brief" \
+    "staging-autonomy brief still forbids the pushes its own landing sequence requires"
+  assert_no_grep "done: ready in branch" "$brief" \
+    "staging-autonomy brief still closes on a ready branch instead of the staging line"
+
+  # Plain local-only is unchanged and stays the conservative default.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-staging-s2 some-proj --mode local-only >/dev/null 2>&1 \
+    || fail "plain local-only scaffold exited non-zero"
+  plain="$home/data/brief-staging-s2/brief.md"
+  assert_grep "Do NOT push, do NOT open a PR, do NOT merge." "$plain" \
+    "plain local-only brief lost its stop-and-wait contract"
+  assert_no_grep "Delivery autonomy: staging-inclusive" "$plain" \
+    "plain local-only brief claimed staging autonomy nobody asked for"
+  assert_no_grep "origin/develop" "$plain" \
+    "plain local-only brief adopted the git-flow branch base"
+  pass "fm-brief.sh: --staging-autonomy generates the captain's staging landing contract"
+}
+
+# Autonomy that does not apply must be refused, never accepted and discarded:
+# a silently dropped flag reads as recorded and reproduces the exact
+# contradiction this mechanism exists to remove.
+test_staging_autonomy_is_refused_where_it_does_not_apply() {
+  local home out status label args expect
+  home="$TMP_ROOT/staging-refused-home"
+  mkdir -p "$home/data"
+  while IFS='|' read -r label args expect; do
+    [ -n "$label" ] || continue
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" $args 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "$expect" "$label: refusal did not explain why"
+  done <<'ROWS'
+staging autonomy on a no-mistakes ship|brief-staging-r1 some-proj --mode no-mistakes --staging-autonomy|--staging-autonomy applies only to --mode local-only
+staging autonomy on a direct-PR ship|brief-staging-r2 some-proj --mode direct-PR --staging-autonomy|--staging-autonomy applies only to --mode local-only
+staging autonomy on a scout|brief-staging-r3 some-proj --scout --staging-autonomy|--staging-autonomy applies only to ship briefs
+staging autonomy on a secondmate charter|brief-staging-r4 --secondmate --no-projects --staging-autonomy|--staging-autonomy applies only to ship briefs
+ROWS
+  assert_absent "$home/data/brief-staging-r1/brief.md" "refused staging-autonomy scaffold still wrote a brief"
+  pass "fm-brief.sh: --staging-autonomy is refused outside local-only ship briefs"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -975,4 +1130,9 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_outward_write_cleanup_rule_reaches_both_scaffolds
+test_pause_examples_name_pipeline_and_ci_waits
+test_workers_report_to_firstmate_only
+test_staging_autonomy_generates_the_landing_contract
+test_staging_autonomy_is_refused_where_it_does_not_apply
 test_scout_and_secondmate_scaffold
