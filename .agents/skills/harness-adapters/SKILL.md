@@ -108,8 +108,9 @@ Do not make the shell scripts parse or match natural-language dispatch rules.
 Effort precedence is an explicit per-task captain instruction first, then any applicable standing dispatch profile or secondmate pin, then the generic fallback below.
 Never replace an effort value supplied by either higher-precedence source.
 Use the fallback only when neither the captain nor applicable standing configuration specifies effort.
-Use `low` for well-understood work with an explicit bounded path and `xhigh` for ambiguous investigation or design.
-Choose intermediate levels proportionally as complexity, uncertainty, blast radius, or open-ended reasoning increases.
+Default to `low` for well-understood work with an explicit bounded path and `medium` for ordinary implementation or investigation.
+Escalate to `high` or `xhigh` only for genuinely ambiguous investigation or design, for a task that has already failed once at a lower level, or where complexity, uncertainty, blast radius, or open-ended reasoning genuinely demands it - never because the work merely feels important.
+A model's quota window is a shared, finite weekly resource spent across every task dispatched that week, so a heavier level is an escalation and not a routine choice.
 When a verified adapter lacks `xhigh`, cap the choice at its highest supported non-`max` level rather than omitting the intended effort silently.
 Never select `max` from this fallback; use it only when the captain has explicitly expressed that per-task or standing preference.
 
