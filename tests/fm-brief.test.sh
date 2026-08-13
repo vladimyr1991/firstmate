@@ -511,7 +511,7 @@ test_sync_base_instruction_catches_a_stale_pooled_base() {
 # against fixtures, so this asserts the instruction's real behavior rather than the
 # presence of prose.
 test_sync_base_divergence_stop_uses_the_merge_base() {
-  local home brief fixture upstream diverge_cmd drift_cmd branch_cmd mergebase_cmd pool out
+  local home brief fixture upstream diverge_cmd drift_cmd branch_cmd mergebase_cmd mergebase_clause pool out
   home="$TMP_ROOT/sync-base-diverge-home"
   mkdir -p "$home/data"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-diverge pooled-proj --mode local-only --sync-base develop >/dev/null 2>&1 \
@@ -615,9 +615,10 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
   printf '%s' "$out" | grep -q local-scratch \
     || fail "the divergence stop no longer catches unpublished work on the pooled base: $out"
 
-  # An unresolvable merge base must read as diverged, not as compatible: the worker
-  # resolves it as its own step precisely so a failure cannot degrade into a range
-  # that quietly prints nothing.
+  # An unresolvable merge base must read as diverged, not as compatible. The worker
+  # resolves it as its own step precisely because the divergence check cannot carry
+  # that decision: with an empty substitution its range degrades to HEAD..HEAD, which
+  # exits 0 and prints nothing, so a base sharing no history would read as fine.
   pool="$fixture/unrelated"
   git clone --quiet "$upstream" "$pool"
   git -C "$pool" checkout -q --orphan unrelated-history
@@ -627,15 +628,102 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
   git -C "$pool" add reinit.txt
   git -C "$pool" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm unrelated-root
   git -C "$pool" checkout -q --detach HEAD
-  if out=$( cd "$pool" && eval "$mergebase_cmd" 2>&1 ); then
+  out=$( cd "$pool" && eval "$mergebase_cmd" 2>&1 ) && [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+    && fail "a base sharing no history with the remote resolved a merge base: $out"
+  # The degradation the separate step exists to prevent, shown on this same pool.
+  if out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ); then
     [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
-      || fail "a base sharing no history with the remote resolved a merge base: $out"
+      || fail "the divergence check no longer degrades to a silent range here, so the merge-base step is being tested against the wrong hazard: $out"
+  else
+    fail "the divergence check no longer exits 0 on an unresolvable merge base, so the merge-base step is being tested against the wrong hazard: $out"
   fi
+  # So the generated Setup - the brief is this script's output contract - must route
+  # that failed merge base to the stop itself rather than leaning on the check.
+  mergebase_clause=$(grep -F "$mergebase_cmd" "$brief" | head -1)
+  case $mergebase_clause in
+    *"fails or prints nothing"*"blocked: pooled base diverged from origin/develop"*) : ;;
+    *) fail "the merge-base step does not route an unresolvable merge base to the diverged stop: $mergebase_clause" ;;
+  esac
 
   # And the brief still carries the stop the checks feed.
   assert_grep 'blocked: pooled base diverged from origin/develop' "$brief" \
     "the generated Setup lost the diverged-base stop"
   pass "fm-brief.sh: the divergence stop measures from the merge base, sparing a published lineage variant"
+}
+
+# The divergence check names the remote's default branch, and a pool built with
+# `git init` + `git remote add` + fetch can have no refs/remotes/origin/HEAD at all.
+# Naming that ref outright made the check exit non-zero there, so every task on such
+# a pool blocked before starting - the same produced-no-work outcome --sync-base's
+# merge-base fix set out to remove. The emitted command resolves the default branch
+# with the fallback the rest of the repo uses instead.
+test_sync_base_divergence_check_survives_a_missing_origin_head() {
+  local home brief fixture upstream diverge_cmd pool out
+  home="$TMP_ROOT/sync-base-no-origin-head-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-no-head pooled-proj --mode local-only --sync-base develop >/dev/null 2>&1 \
+    || fail "missing-origin-HEAD fixture brief should scaffold"
+  brief="$home/data/brief-sync-no-head/brief.md"
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  diverge_cmd=$(sed -n 's/.*rule out a genuinely divergent base with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
+  [ -n "$diverge_cmd" ] || fail "could not extract the divergence-check command from the generated brief"
+
+  fixture="$TMP_ROOT/sync-base-no-origin-head-fixture"
+  upstream="$fixture/upstream"
+  mkdir -p "$upstream"
+  git -C "$upstream" init -q
+  git -C "$upstream" symbolic-ref HEAD refs/heads/develop
+  printf 'shared\n' > "$upstream/feature.txt"
+  git -C "$upstream" add feature.txt
+  git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm shared-base
+  git -C "$upstream" branch main
+  printf 'develop moved on\n' > "$upstream/feature.txt"
+  git -C "$upstream" add feature.txt
+  git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm dev2
+  git -C "$upstream" checkout -q main
+  printf 'hotfix\n' > "$upstream/hotfix.txt"
+  git -C "$upstream" add hotfix.txt
+  git -C "$upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm hotfix-on-main
+
+  # A pool with no origin/HEAD, parked on the lineage variant that must not block.
+  pool="$fixture/no-origin-head"
+  git clone --quiet "$upstream" "$pool"
+  git -C "$pool" remote set-head origin --delete
+  [ -z "$(git -C "$pool" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" ] \
+    || fail "the fixture still has an origin/HEAD, so it does not exercise the missing-ref path"
+  out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ) \
+    || fail "the divergence check errored on a pool with no origin/HEAD, blocking a task that should proceed: $out"
+  [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+    || fail "the divergence stop fired on a published lineage variant once origin/HEAD was missing: $out"
+
+  # The fallback must not swallow a real divergence: unpushed work still blocks.
+  printf 'never pushed\n' > "$pool/scratch.txt"
+  git -C "$pool" add scratch.txt
+  git -C "$pool" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm local-scratch
+  out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ) \
+    || fail "the divergence check errored on the diverged no-origin/HEAD pool: $out"
+  printf '%s' "$out" | grep -q local-scratch \
+    || fail "the default-branch fallback swallowed genuine divergence: $out"
+
+  # A remote with no main or master either: the exclusion set collapses to the sync
+  # base alone, and the command must still run rather than error on an empty ref.
+  local bare_upstream
+  bare_upstream="$fixture/develop-only"
+  mkdir -p "$bare_upstream"
+  git -C "$bare_upstream" init -q
+  git -C "$bare_upstream" symbolic-ref HEAD refs/heads/develop
+  printf 'only develop here\n' > "$bare_upstream/feature.txt"
+  git -C "$bare_upstream" add feature.txt
+  git -C "$bare_upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm develop-only
+  pool="$fixture/develop-only-pool"
+  git clone --quiet "$bare_upstream" "$pool"
+  git -C "$pool" remote set-head origin --delete
+  git -C "$pool" checkout -q --detach refs/remotes/origin/develop
+  out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ) \
+    || fail "the divergence check errored when no default branch could be resolved at all: $out"
+  [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+    || fail "the divergence stop fired on a base that is exactly the sync base: $out"
+  pass "fm-brief.sh: the divergence check resolves the default branch with a fallback instead of blocking without origin/HEAD"
 }
 
 # A pooled default branch can strictly contain the sync base - main right after a
@@ -646,6 +734,7 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
 # remedy a stale base takes instead.
 test_sync_base_step_routes_a_default_branch_that_contains_the_base() {
   local home brief fixture upstream variant_cmd diverge_cmd drift_cmd branch_cmd pool out
+  local branch_step branch_condition plain_branch_cmd
   home="$TMP_ROOT/sync-base-superset-home"
   mkdir -p "$home/data"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-superset pooled-proj --mode local-only --sync-base develop >/dev/null 2>&1 \
@@ -690,6 +779,32 @@ test_sync_base_step_routes_a_default_branch_that_contains_the_base() {
   out=$( cd "$pool" && eval "$variant_cmd" 2>&1 ) || fail "lineage-variant check failed on the superset pool: $out"
   printf '%s' "$out" | grep -q release-on-main \
     || fail "the step reads a base that strictly contains the sync base as current, so the task branches off the variant: $out"
+  # The branch step decides which command the worker actually runs, and on this path
+  # step 1 routes to the remote base with no drift to show for it. Conditioning that
+  # alternative on the drift check sends the worker to the plain branch cut instead,
+  # so read the condition the generated Setup - this script's output contract - puts
+  # on the remote-base command and reject one the drift check alone can satisfy.
+  branch_step=$(grep -F "or \`git checkout -b fm/brief-sync-superset origin/develop\`" "$brief" | head -1)
+  [ -n "$branch_step" ] || fail "could not find the branch step's remote-base alternative in the generated brief"
+  branch_condition=${branch_step#*origin/develop\`}
+  case $branch_condition in
+    *"sent you to the remote base"*) : ;;
+    *) fail "the branch step's remote-base alternative is not conditioned on step 1's routing, so a lineage variant with no drift takes the plain branch cut: $branch_condition" ;;
+  esac
+
+  # That condition has to be load-bearing: the plain branch command really does keep
+  # the variant's extra commit, which is what makes taking the wrong fork a defect.
+  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
+  plain_branch_cmd=$(sed -n 's/.*Create your branch: `\([^`]*\)`.*/\1/p' "$brief" | head -1)
+  [ -n "$plain_branch_cmd" ] || fail "could not extract the plain branch command from the generated brief"
+  ( cd "$pool" && eval "$plain_branch_cmd" >/dev/null 2>&1 ) \
+    || fail "the brief's plain branch command failed on the superset pool"
+  [ -e "$pool/release.txt" ] \
+    || fail "the plain branch command does not carry the variant's extra commit, so this fixture cannot show the wrong fork is wrong"
+  git -C "$pool" checkout -q --detach refs/remotes/origin/main
+  git -C "$pool" branch -D fm/brief-sync-superset >/dev/null 2>&1 \
+    || fail "could not reset the superset pool between the two branch commands"
+
   # Following the remedy the variant is routed to must land on the sync base itself.
   ( cd "$pool" && eval "$branch_cmd" >/dev/null 2>&1 ) \
     || fail "the brief's remedy command failed on the superset pool"
@@ -1407,6 +1522,7 @@ test_sync_base_guards_a_scout_investigation_base
 test_sync_base_instruction_catches_a_stale_pooled_base
 test_sync_base_divergence_stop_uses_the_merge_base
 test_sync_base_step_routes_a_default_branch_that_contains_the_base
+test_sync_base_divergence_check_survives_a_missing_origin_head
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_dod_states_what_done_requires

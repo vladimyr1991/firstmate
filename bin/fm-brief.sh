@@ -68,13 +68,17 @@
 # the remedy (move the worktree onto the remote base rather than cut a branch from
 # it); a secondmate charter still refuses the flag. The step's divergence stop is
 # measured from `git merge-base HEAD origin/<branch>` and excludes only commits
-# already reachable from `origin/<branch>` or `origin/HEAD`, so a default branch that
-# carries a commit the sync base never took - a hotfix landed without a back-merge,
-# an ordinary git-flow shape - reads as a lineage variant rather than a divergence.
-# Work on the pooled base that is on neither of those refs, an unresolvable merge
-# base, and a failing check all stop the task. A lineage variant is never branched
-# from: whether it is behind `origin/<branch>` or already contains it, the step
-# routes it to the same remedy.
+# already reachable from `origin/<branch>` or the remote's default branch, which the
+# emitted check resolves with this repo's usual `refs/remotes/origin/HEAD` then main
+# then master fallback (fm_default_branch in bin/fm-tangle-lib.sh owns that shape) so
+# a pool fetched without an `origin/HEAD` still runs the check instead of blocking.
+# A default branch that carries a commit the sync base never took - a hotfix landed
+# without a back-merge, an ordinary git-flow shape - therefore reads as a lineage
+# variant rather than a divergence. Work on the pooled base that is on neither ref,
+# an unresolvable merge base, and a check that errors all stop the task. A lineage
+# variant is never branched from: whether it is behind `origin/<branch>` or already
+# contains it, the step routes it to the same remedy, and the branch step's
+# alternative is conditioned on that routing rather than on the drift check.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -261,10 +265,11 @@ $step. **First action: sync the base branch, $action.** This worktree comes from
    If that second command prints commits, this base already contains \`origin/$SYNC_BASE\` and carries extra commits of its own, so taking it as-is would work from code the sync base does not have: take the stale remedy below instead of treating the base as current.
    If the first command prints any commits, the base is stale: $stale
    Before acting on any of those, resolve the merge base with \`git merge-base HEAD origin/$SYNC_BASE\`. If that command fails or prints nothing, HEAD shares no history with the remote base, which is a diverged base: append \`blocked: pooled base diverged from origin/$SYNC_BASE\` to the status file and stop.
-   Otherwise rule out a genuinely divergent base with \`git log --oneline "\$(git merge-base HEAD origin/$SYNC_BASE)..HEAD" --not origin/$SYNC_BASE origin/HEAD\`, which measures divergence from the merge base rather than counting every commit HEAD holds that \`origin/$SYNC_BASE\` does not, and spares only the base's own published lineage rather than every branch on the remote.
+   Otherwise rule out a genuinely divergent base with \`git log --oneline "\$(git merge-base HEAD origin/$SYNC_BASE)..HEAD" --not origin/$SYNC_BASE \$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD || git rev-parse --verify --quiet origin/main || git rev-parse --verify --quiet origin/master)\`, which measures divergence from the merge base rather than counting every commit HEAD holds that \`origin/$SYNC_BASE\` does not, and spares only the sync base and the remote's default branch rather than every branch on the remote.
+   That trailing substitution is the default-branch fallback: a pool fetched without an \`origin/HEAD\` resolves main, then master, and excludes nothing extra if none of them exist, so a missing \`origin/HEAD\` narrows the check rather than stopping the task.
    If it prints nothing, this base is compatible: a default branch carrying a commit the sync base never took, such as a hotfix landed without a back-merge, is an ordinary lineage variant, and the remedy above is safe even though HEAD is not a direct ancestor of \`origin/$SYNC_BASE\`.
    If it prints any commits, this base carries work that is on neither \`origin/$SYNC_BASE\` nor the remote's default branch - a previous task's leftover tip, or local work that was never pushed - and has diverged rather than merely fallen behind: append \`blocked: pooled base diverged from origin/$SYNC_BASE\` to the status file and stop.
-   If that command itself errors, including an \`origin/HEAD\` this clone cannot resolve, take the same stop rather than reading the empty output as compatible.
+   If that command itself errors, take the same stop rather than reading its empty output as compatible.
    This check is mandatory, not a judgement call: $consequence
 EOF
   printf '%s' "${text%$'\n'}"
@@ -559,7 +564,7 @@ if [ -n "$SYNC_BASE" ]; then
   SETUP_STEPS="$SETUP_SYNC
 "
   SETUP_STEP_N=$((SETUP_STEP_N + 1))
-  BRANCH_STEP="Create your branch: \`$BRANCH_CMD\` - or \`git checkout -b fm/$ID origin/$SYNC_BASE\` when step 1 showed drift."
+  BRANCH_STEP="Create your branch: \`$BRANCH_CMD\` - or \`git checkout -b fm/$ID origin/$SYNC_BASE\` when step 1 sent you to the remote base, whether the base was stale or a lineage variant."
 else
   BRANCH_STEP="First action: create your branch: \`$BRANCH_CMD\`"
 fi
