@@ -14,6 +14,8 @@
 #   (c) genuine parked run + needs-decision log = NOT superseded  -> run-step
 #   (d) terminal run-step (passed/failed) is authoritative        -> run-step
 #   (e) cross-branch attribution: this branch's own run found via list lookup
+#   (e2) run ranking for one branch: a live run outranks a terminal one, equal
+#        standing resolves to the most recent, and no run at all stays no-source
 #   (f) no run + semantic busy                                    -> pane
 #   (g) no run + semantic idle falls to the status-log verb       -> status-log
 #   (h) dead pane: no run -> unknown/none; with a run -> run-step (not the shell)
@@ -738,6 +740,125 @@ EOF
   pass "cross-branch attribution picks the branch's most recent row"
 }
 
+# --- run ranking for one branch (live outranks terminal) --------------------
+# Regression pair for the 2026-08-11 misread: a branch carrying BOTH an older
+# failed run and a live one was reported "failed - source: run-step" while its
+# pipeline was mid-review, so firstmate ordered custody recovery and a fresh run
+# against a healthy pipeline.
+test_live_run_outranks_older_failed_run() {
+  reset_fakes
+  local d short; d=$(new_case rank-live-over-failed)
+  make_repo_on_branch "$d/wt" fm/feat-rank
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/rank.meta" "window=fm:fm-rank" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-rank ${short}  2026-08-11 12:24
+  failed     fm/feat-rank ${short}  2026-08-11 11:24
+EOF
+)"
+  local out; out=$(run_crew_state "$d" rank)
+  assert_contains "$out" "state: working" "live run outranks the branch's older failed run"
+  assert_not_contains "$out" "state: failed" "an older failed run must not be reported for a validating branch"
+  pass "a branch with one failed and one live run resolves to the live one"
+}
+
+# The live run's own head does not always bind to the worktree tip (the run
+# records the head it started from while pipeline commits move the branch on).
+# That is the exact shape that produced the false "failed": ranking must still
+# refuse the older terminal row rather than walking down to it.
+test_live_run_with_unbound_head_does_not_fall_back_to_failed_run() {
+  reset_fakes
+  local d start_short tip_short out; d=$(new_case rank-live-unbound)
+  make_repo_on_branch "$d/wt" fm/feat-rankub
+  start_short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  git -C "$d/wt" commit -q --allow-empty -m 'pipeline commit after the run started'
+  tip_short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/rankub.meta" "window=fm:fm-rankub" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementation under way\n' > "$d/state/rankub.status"
+  # `axi status` answers with THIS branch's live run, but its head is the
+  # pre-advance commit, so the head bind fails and the coarse list is consulted.
+  FM_FAKE_RUN_HEAD="$start_short"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-rankub)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-rankub ${start_short}  2026-08-11 12:24
+  failed     fm/feat-rankub ${tip_short}  2026-08-11 11:24
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" rankub
+  out=$(run_crew_state "$d" rankub)
+  assert_not_contains "$out" "state: failed" "a live run must never be reported as the branch's older failure"
+  assert_not_contains "$out" "source: run-step" "an unbound live run is not attributed to current code"
+  assert_contains "$out" "source: status-log" "falls back to current-state sources instead"
+  pass "a live-but-unbound run never falls back to an older failed run"
+}
+
+# The ranking rule must not swallow a genuine failure: with no live run for the
+# branch, its terminal run is still authoritative.
+test_only_failed_run_still_reports_failed() {
+  reset_fakes
+  local d short; d=$(new_case rank-only-failed)
+  make_repo_on_branch "$d/wt" fm/feat-onlyfail
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/onlyfail.meta" "window=fm:fm-onlyfail" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-11 12:30
+  failed     fm/feat-onlyfail ${short}  2026-08-11 11:24
+EOF
+)"
+  local out; out=$(run_crew_state "$d" onlyfail)
+  assert_contains "$out" "state: failed" "a branch whose only run failed still reports failed"
+  assert_contains "$out" "source: run-step" "sole failed run remains run-step sourced"
+  pass "a branch whose only run is failed still reports failed"
+}
+
+# Equal standing: among two terminal runs the most recent wins, so a newer
+# failure is never masked by an older completed run.
+test_two_terminal_runs_resolve_to_most_recent() {
+  reset_fakes
+  local d short; d=$(new_case rank-two-terminal)
+  make_repo_on_branch "$d/wt" fm/feat-twoterm
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/twoterm.meta" "window=fm:fm-twoterm" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed     fm/feat-twoterm ${short}  2026-08-11 12:24
+  completed  fm/feat-twoterm ${short}  2026-08-11 11:24  https://github.com/o/r/pull/9
+EOF
+)"
+  local out; out=$(run_crew_state "$d" twoterm)
+  assert_contains "$out" "state: failed" "the most recent terminal run wins"
+  assert_not_contains "$out" "state: done" "an older completed run must not mask a newer failure"
+  pass "two terminal runs resolve to the most recent"
+}
+
+# No run for this branch anywhere: report the existing no-source result rather
+# than inventing a state from another branch's run or a stale log.
+test_no_run_for_branch_reports_no_source() {
+  reset_fakes
+  local d; d=$(new_case rank-no-run)
+  make_repo_on_branch "$d/wt" fm/feat-norun
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/norun.meta" "window=fm:fm-norun" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<'EOF'
+  failed     fm/other-crew aaaaaaa  2026-08-11 12:24
+EOF
+)"
+  FM_FAKE_TMUX_MISSING=1
+  local out; out=$(run_crew_state "$d" norun)
+  assert_contains "$out" "state: unknown" "no run for this branch -> unknown"
+  assert_contains "$out" "source: none" "no run for this branch -> no source"
+  assert_not_contains "$out" "source: run-step" "another branch's run is never attributed"
+  pass "no run at all reports the existing no-source result"
+}
+
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status() {
   reset_fakes
   local d short; d=$(new_case coarse-ready-other-log)
@@ -1331,6 +1452,11 @@ test_terminal_passed
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
+test_live_run_outranks_older_failed_run
+test_live_run_with_unbound_head_does_not_fall_back_to_failed_run
+test_only_failed_run_still_reports_failed
+test_two_terminal_runs_resolve_to_most_recent
+test_no_run_for_branch_reports_no_source
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_no_run_busy_pane

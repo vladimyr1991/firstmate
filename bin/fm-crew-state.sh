@@ -28,6 +28,12 @@
 #      is an ancestor of the run head (pipeline fix commits advanced the run on
 #      the same line of history). Local work that advanced past the run head, or
 #      diverged from it, invalidates attribution.
+#      When a branch has SEVERAL runs, ranking decides which one is even a
+#      candidate, and it is decided before the identity check: a LIVE run always
+#      outranks a TERMINAL one, and among runs of equal standing the most recent
+#      wins (see nm_runs_status_for_branch, the single owner of that rule).
+#      A selected run that fails the identity check yields NO run at all, never a
+#      lower-ranked older one.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -350,11 +356,43 @@ nm_ci_checks_state() {
 # "<status> <branch> <short-sha> <date> [<pr-url>]" separated by runs of
 # spaces (verified: no quoting, so splitting on the first two whitespace runs
 # is exact) - but branch + coarse status is exactly what this predicate needs:
-# is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word (running/completed/cancelled/failed), or empty
-# when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
+# is a run for THIS branch active right now. Echoes the winning row's status
+# word (running/completed/cancelled/failed), or empty when the branch has no
+# attributable run within FM_CREW_STATE_RUNS_LIMIT rows; the ranking that picks
+# the winner is stated at nm_runs_status_for_branch below.
+
+# Terminal statuses, matching the coarse mapping the caller applies below.
+# Anything else - running, fixing, ci, and any status word this CLI grows later
+# - counts as a run still in flight, so an unrecognized word can never be
+# reported as a terminal failure.
+nm_run_status_is_terminal() {  # <status-word>
+  case "$1" in
+    completed|failed|cancelled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Set when `axi status` itself reported a live run for THIS crew's branch, even
+# though that run failed the head-identity bind. It vetoes terminal rows below:
+# the branch is validating right now, so no stopped run describes it, whether or
+# not the live run appears within the scanned rows.
+BRANCH_HAS_LIVE_RUN=0
+
+# Single owner of run RANKING for one branch:
+#   1. A LIVE run always outranks a TERMINAL one. A branch validating right now
+#      cannot be described by a run that already stopped.
+#   2. Among runs of equal standing, the most recent wins (the list is
+#      newest-first, so the first row of the winning standing).
+#   3. Identity is checked on the WINNER only. A winner that does not bind to
+#      this worktree's code yields no run at all, and the caller falls through
+#      to the pane/status-log sources.
+# Ranking deliberately precedes the identity check. Scanning row by row and
+# skipping every identity-mismatched row - the pre-2026-08 shape - walked past a
+# live run onto an older failed one and reported a healthy mid-review pipeline
+# as `failed`, the exact route AGENTS.md tells firstmate to trust.
 nm_runs_status_for_branch() {  # <branch>
   local branch=$1 out row st rest br sha
+  local live_st="" live_sha="" term_st="" term_sha=""
   out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
@@ -367,16 +405,26 @@ nm_runs_status_for_branch() {  # <branch>
     rest=${rest#* }
     rest=$(trim "$rest")
     sha=${rest%% *}
-    if [ "$br" = "$branch" ]; then
-      # Same code-identity rule as axi status: skip a same-branch row whose
-      # short-sha does not match this worktree (rewritten or advanced tip).
-      if ! nm_coarse_head_matches_worktree "$sha"; then
-        continue
-      fi
-      printf '%s' "$st"
-      return 0
+    [ "$br" = "$branch" ] || continue
+    if nm_run_status_is_terminal "$st"; then
+      [ -n "$term_st" ] || { term_st=$st; term_sha=$sha; }
+    else
+      [ -n "$live_st" ] || { live_st=$st; live_sha=$sha; }
     fi
   done <<< "$out"
+  if [ -n "$live_st" ]; then
+    st=$live_st; sha=$live_sha
+  elif [ "$BRANCH_HAS_LIVE_RUN" = 1 ]; then
+    return 0
+  elif [ -n "$term_st" ]; then
+    st=$term_st; sha=$term_sha
+  else
+    return 0
+  fi
+  # Same code-identity rule as axi status: a winner whose short sha does not
+  # match this worktree (rewritten or advanced tip) is not attributable.
+  nm_coarse_head_matches_worktree "$sha" || return 0
+  printf '%s' "$st"
   return 0
 }
 
@@ -434,6 +482,13 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   RUN_OUT=$(nm_run axi status)
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
+    # Record the branch's own live run BEFORE attribution is decided: even when
+    # its head does not bind, it proves the branch is validating right now, and
+    # ranking must never hand the crew an older stopped run instead.
+    if [ "$run_branch" = "$CREW_BRANCH" ] \
+      && ! nm_run_status_is_terminal "$(strip_quotes "$(nm_field status)")"; then
+      BRANCH_HAS_LIVE_RUN=1
+    fi
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
       HAVE_RUN=1
     else
