@@ -1,0 +1,262 @@
+[2026-08-10T00:05:41+0200] absorbed benign signal: $FM_HOME/state/parlino-demo-fallback.status
+[2026-08-10T00:07:54+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T00:18:16+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T00:38:24+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T01:18:34+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T02:38:36+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T04:38:54+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T06:39:13+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T09:58:46+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T09:59:32+0200] absorbed benign signal: $FM_HOME/state/notion-sprint-scan-0810a.status
+[2026-08-10T10:08:52+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T10:16:52+0200] absorbed benign signal: $FM_HOME/state/parlino-demo-niche-switcher.status
+[2026-08-10T10:19:32+0200] absorbed busy (no completed turn) timer reset: default:w8:p1Z
+[2026-08-10T10:19:32+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T10:29:43+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T10:37:05+0200] absorbed benign signal: $FM_HOME/state/fm-ci-run-watcher.status
+[2026-08-10T10:39:53+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T10:50:13+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T11:17:49+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T11:34:27+0200] absorbed busy (no completed turn) timer reset: default:w8:p1Z
+[2026-08-10T11:37:53+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T11:38:58+0200] absorbed busy (no completed turn) timer reset: default:w8:p1Z
+[2026-08-10T11:47:59+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T12:04:48+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T12:16:05+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T12:26:18+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T12:36:25+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T12:49:00+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T12:59:08+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T13:09:16+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T13:29:29+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T14:33:44+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T14:46:30+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T14:56:56+0200] absorbed benign signal: $FM_HOME/state/fm-quota-dash-trim.status
+[2026-08-10T14:56:59+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T15:09:52+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T15:32:01+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T15:47:43+0200] absorbed busy (no completed turn) timer reset: default:w8:p3Z
+[2026-08-10T15:47:43+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T15:57:52+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T16:09:11+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T16:09:57+0200] absorbed benign signal: $FM_HOME/state/parlino-antiai-qa.status
+[2026-08-10T16:29:19+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T16:39:16+0200] absorbed benign signal: $FM_HOME/state/parlino-antiai-qa.turn-ended
+[2026-08-10T16:39:22+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T16:59:32+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T17:09:42+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T17:20:03+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T17:30:19+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T17:40:23+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T17:50:31+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T18:00:46+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T18:07:41+0200] absorbed benign signal: $FM_HOME/state/parlino-antiai-qa.status
+[2026-08-10T18:10:48+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T18:21:02+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T18:29:26+0200] absorbed benign signal: $FM_HOME/state/parlino-telegram-verify.status
+[2026-08-10T18:37:26+0200] absorbed benign signal: $FM_HOME/state/parlino-telegram-verify.status
+[2026-08-10T18:41:17+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T18:44:17+0200] absorbed benign signal: $FM_HOME/state/parlino-telegram-verify.status
+[2026-08-10T18:51:19+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T19:01:32+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T19:16:38+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T19:26:57+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T19:37:23+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T19:53:07+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T20:14:33+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T20:24:52+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T20:27:52+0200] absorbed benign signal: $FM_HOME/state/parlino-telegram-verify.turn-ended
+[2026-08-10T20:36:03+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T20:55:15+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T21:05:27+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T21:15:34+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T21:26:42+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T21:36:58+0200] absorbed busy (no completed turn) timer reset: default:w8:p45
+[2026-08-10T21:36:58+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T21:48:03+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T21:58:07+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T22:18:44+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T22:21:01+0200] absorbed benign signal: $FM_HOME/state/fm-lessons-learned.status
+[2026-08-10T22:29:31+0200] absorbed busy (no completed turn) timer reset: default:w8:p3Z
+[2026-08-10T22:29:31+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T22:39:36+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T22:43:55+0200] absorbed benign signal: $FM_HOME/state/fm-lessons-learned.status
+[2026-08-10T22:47:53+0200] absorbed benign signal: $FM_HOME/state/fm-quota-autoresume.turn-ended
+[2026-08-10T23:00:05+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T23:00:51+0200] absorbed benign signal: $FM_HOME/state/fm-quota-autoresume.status
+[2026-08-10T23:01:38+0200] absorbed benign signal: $FM_HOME/state/fm-quota-autoresume.turn-ended
+[2026-08-10T23:14:17+0200] absorbed busy (no completed turn) timer reset: default:w8:p47
+[2026-08-10T23:25:31+0200] absorbed benign signal: $FM_HOME/state/fm-lessons-learned.turn-ended $FM_HOME/state/fm-quota-autoresume.status
+[2026-08-10T23:25:39+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T23:30:23+0200] absorbed stale (provably working, overriding a stale captain-relevant status): default:w8:p47
+[2026-08-10T23:36:13+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-10T23:38:10+0200] absorbed benign signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended
+[2026-08-10T23:46:42+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T02:02:28+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T02:06:36+0200] absorbed busy (no completed turn) timer reset: default:w8:p47
+[2026-08-11T02:06:37+0200] absorbed busy (no completed turn) timer reset: default:w8:p3Z
+[2026-08-11T02:10:37+0200] absorbed benign signal: $FM_HOME/state/fm-quota-autoresume.turn-ended
+[2026-08-11T02:15:57+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T02:17:55+0200] absorbed non-terminal stale (provably working): default:w8:p3Z
+[2026-08-11T02:20:13+0200] absorbed benign signal: $FM_HOME/state/fm-lessons-learned.turn-ended
+[2026-08-11T02:22:54+0200] absorbed non-terminal stale timer reset: default:w8:p3Z
+[2026-08-11T02:26:14+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T02:28:43+0200] absorbed benign signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+[2026-08-11T02:29:38+0200] absorbed benign signal: $FM_HOME/state/fm-lessons-learned.turn-ended
+[2026-08-11T02:30:19+0200] absorbed non-terminal stale (provably working): default:w8:p3Z
+[2026-08-11T02:30:42+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T02:35:22+0200] absorbed non-terminal stale timer reset: default:w8:p47
+[2026-08-11T02:36:27+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T02:46:40+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T02:51:24+0200] absorbed push blocked (declared pause, awaiting external): default:w8:p47
+[2026-08-11T02:57:41+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T03:03:10+0200] absorbed stale (paused, awaiting external, age 136s): default:w8:p3Z
+[2026-08-11T03:03:33+0200] absorbed stale (paused, awaiting external, age 159s): default:w8:p3Z
+[2026-08-11T03:03:56+0200] absorbed stale (paused, awaiting external, age 182s): default:w8:p3Z
+[2026-08-11T03:04:19+0200] absorbed stale (paused, awaiting external, age 204s): default:w8:p3Z
+[2026-08-11T03:04:41+0200] absorbed stale (paused, awaiting external, age 227s): default:w8:p3Z
+[2026-08-11T03:05:04+0200] absorbed stale (paused, awaiting external, age 250s): default:w8:p3Z
+[2026-08-11T03:05:27+0200] absorbed stale (paused, awaiting external, age 273s): default:w8:p3Z
+[2026-08-11T03:05:50+0200] absorbed stale (paused, awaiting external, age 296s): default:w8:p3Z
+[2026-08-11T03:06:14+0200] absorbed stale (paused, awaiting external, age 320s): default:w8:p3Z
+[2026-08-11T03:06:37+0200] absorbed stale (paused, awaiting external, age 343s): default:w8:p3Z
+[2026-08-11T03:07:01+0200] absorbed stale (paused, awaiting external, age 367s): default:w8:p3Z
+[2026-08-11T03:07:24+0200] absorbed stale (paused, awaiting external, age 390s): default:w8:p3Z
+[2026-08-11T03:07:47+0200] absorbed stale (paused, awaiting external, age 413s): default:w8:p3Z
+[2026-08-11T03:07:48+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T03:08:11+0200] absorbed stale (paused, awaiting external, age 437s): default:w8:p3Z
+[2026-08-11T03:08:34+0200] absorbed stale (paused, awaiting external, age 460s): default:w8:p3Z
+[2026-08-11T03:08:58+0200] absorbed stale (paused, awaiting external, age 484s): default:w8:p3Z
+[2026-08-11T03:09:21+0200] absorbed stale (paused, awaiting external, age 507s): default:w8:p3Z
+[2026-08-11T03:09:43+0200] absorbed stale (paused, awaiting external, age 529s): default:w8:p3Z
+[2026-08-11T03:10:06+0200] absorbed stale (paused, awaiting external, age 552s): default:w8:p3Z
+[2026-08-11T03:10:30+0200] absorbed stale (paused, awaiting external, age 576s): default:w8:p3Z
+[2026-08-11T03:10:53+0200] absorbed stale (paused, awaiting external, age 599s): default:w8:p3Z
+[2026-08-11T03:13:54+0200] absorbed stale (paused, awaiting external, age 780s): default:w8:p3Z
+[2026-08-11T03:14:17+0200] absorbed stale (paused, awaiting external, age 803s): default:w8:p3Z
+[2026-08-11T03:14:40+0200] absorbed stale (paused, awaiting external, age 826s): default:w8:p3Z
+[2026-08-11T03:15:03+0200] absorbed stale (paused, awaiting external, age 849s): default:w8:p3Z
+[2026-08-11T03:15:26+0200] absorbed stale (paused, awaiting external, age 872s): default:w8:p3Z
+[2026-08-11T11:06:32+0200] absorbed busy (no completed turn) timer reset: default:w8:p47
+[2026-08-11T11:06:41+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T11:12:45+0200] absorbed benign signal: $FM_HOME/state/fm-quota-dash-grok.status
+[2026-08-11T11:16:26+0200] absorbed busy (no completed turn) timer reset: default:w8:p47
+[2026-08-11T11:16:26+0200] absorbed busy (no completed turn) timer reset: default:w8:p3Z
+[2026-08-11T11:16:43+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T11:22:14+0200] absorbed busy (no completed turn) timer reset: default:w8:p47
+[2026-08-11T11:22:44+0200] absorbed busy (no completed turn) timer reset: default:w8:p3Z
+[2026-08-11T11:25:47+0200] absorbed benign signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+[2026-08-11T11:27:16+0200] absorbed busy (no completed turn) timer reset: default:w8:p47
+[2026-08-11T11:27:23+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T11:29:40+0200] absorbed benign signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended
+[2026-08-11T11:35:48+0200] absorbed benign signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+[2026-08-11T11:37:28+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T11:42:03+0200] absorbed benign signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended
+[2026-08-11T11:46:50+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:47:19+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:47:48+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:47:54+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T11:48:16+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:48:45+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:49:13+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:49:42+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:50:10+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:50:39+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:51:37+0200] absorbed non-terminal stale (provably working after a declared pause) timer reset: default:w8:p47
+[2026-08-11T11:51:37+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:52:05+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:52:34+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:53:02+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:53:31+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:53:59+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:54:27+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:54:56+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:55:25+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:58:09+0200] absorbed non-terminal stale (provably working after a declared pause) timer reset: default:w8:p47
+[2026-08-11T11:58:09+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:58:09+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T11:59:21+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T11:59:50+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T12:00:18+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T12:01:06+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T12:01:12+0200] absorbed non-terminal stale timer reset: default:w8:p3Z
+[2026-08-11T12:01:35+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T12:02:05+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T12:03:06+0200] absorbed non-terminal stale (provably working after a declared pause) timer reset: default:w8:p47
+[2026-08-11T12:03:06+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T12:03:43+0200] absorbed stale (paused, awaiting external, age 1343s): default:w8:p47
+[2026-08-11T12:04:19+0200] absorbed stale (paused, awaiting external, age 1379s): default:w8:p47
+[2026-08-11T12:04:55+0200] absorbed stale (paused, awaiting external, age 1415s): default:w8:p47
+[2026-08-11T12:05:32+0200] absorbed stale (paused, awaiting external, age 1452s): default:w8:p47
+[2026-08-11T12:06:13+0200] absorbed stale (paused, awaiting external, age 1493s): default:w8:p47
+[2026-08-11T12:06:19+0200] absorbed non-terminal stale timer reset: default:w8:p3Z
+[2026-08-11T12:06:50+0200] absorbed stale (paused, awaiting external, age 1530s): default:w8:p47
+[2026-08-11T12:07:26+0200] absorbed stale (paused, awaiting external, age 1566s): default:w8:p47
+[2026-08-11T12:08:03+0200] absorbed stale (paused, awaiting external, age 1603s): default:w8:p47
+[2026-08-11T12:08:10+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T12:08:41+0200] absorbed stale (paused, awaiting external, age 1641s): default:w8:p47
+[2026-08-11T12:15:49+0200] absorbed non-terminal stale timer reset: default:w8:p3Z
+[2026-08-11T12:18:41+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T14:34:10+0200] absorbed busy (no completed turn) timer reset: default:w8:p47
+[2026-08-11T14:34:10+0200] absorbed busy (no completed turn) timer reset: default:w8:p3Z
+[2026-08-11T14:34:11+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T14:39:59+0200] absorbed benign signal: $FM_HOME/state/fm-lessons-learned.status $FM_HOME/state/fm-lessons-learned.turn-ended
+[2026-08-11T14:40:38+0200] absorbed busy (no completed turn) timer reset: default:w8:p3Z
+[2026-08-11T14:44:12+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T14:44:59+0200] absorbed benign signal: $FM_HOME/state/fm-quota-autoresume.turn-ended
+[2026-08-11T14:49:59+0200] absorbed non-terminal stale (provably working): default:w8:p3Z
+[2026-08-11T14:59:47+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T15:01:04+0200] absorbed benign signal: $FM_HOME/state/fm-quota-autoresume.status $FM_HOME/state/fm-quota-autoresume.turn-ended
+[2026-08-11T15:20:05+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T15:36:18+0200] absorbed non-terminal stale timer reset: default:w8:p3Z
+[2026-08-11T15:36:19+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T15:41:09+0200] absorbed non-terminal stale timer reset: default:w8:p3Z
+[2026-08-11T15:45:53+0200] absorbed non-terminal stale timer reset: default:w8:p3Z
+[2026-08-11T15:46:31+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T15:56:50+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T16:12:48+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T16:22:59+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T16:43:15+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T16:53:27+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T16:57:39+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T17:01:29+0200] absorbed non-terminal stale (provably working): default:w8:p47
+[2026-08-11T17:07:38+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T17:27:52+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T17:47:12+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T17:56:30+0200] absorbed benign signal: $FM_HOME/state/fm-skill-compaction.status
+[2026-08-11T17:57:16+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T18:17:23+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T18:52:04+0200] absorbed busy (no completed turn) timer reset: default:wC:p2
+[2026-08-11T18:52:05+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T18:57:15+0200] absorbed busy (no completed turn) timer reset: default:wC:p2
+[2026-08-11T19:01:50+0200] absorbed busy (no completed turn) timer reset: default:wC:p2
+[2026-08-11T19:02:06+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T19:06:51+0200] absorbed busy (no completed turn) timer reset: default:wC:p2
+[2026-08-11T19:12:00+0200] absorbed benign signal: $FM_HOME/state/fm-skill-compaction.status
+[2026-08-11T19:12:16+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T19:20:17+0200] absorbed benign signal: $FM_HOME/state/fm-skill-compaction.status
+[2026-08-11T19:22:23+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T19:28:10+0200] absorbed benign signal: $FM_HOME/state/fm-skill-compaction.status
+[2026-08-11T19:30:15+0200] absorbed benign signal: $FM_HOME/state/fm-skill-compaction.status
+[2026-08-11T19:32:38+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T19:40:47+0200] absorbed benign signal: $FM_HOME/state/fm-skill-compaction.status
+[2026-08-11T19:44:12+0200] absorbed benign signal: $FM_HOME/state/fm-skill-compaction.status $FM_HOME/state/fm-skill-compaction.turn-ended
+[2026-08-11T19:45:04+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:45:26+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:45:49+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:46:11+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:46:34+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:46:57+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:47:19+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:47:42+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:48:05+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:48:27+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:48:50+0200] absorbed non-terminal stale (provably working): default:wC:p2
+[2026-08-11T19:54:09+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T20:04:21+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T20:24:32+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T20:54:45+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T21:04:47+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T21:24:58+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T22:05:06+0200] absorbed heartbeat (no captain-relevant change)
+[2026-08-11T23:25:20+0200] absorbed heartbeat (no captain-relevant change)

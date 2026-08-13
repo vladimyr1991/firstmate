@@ -38,6 +38,8 @@ Answer each of these explicitly, and say "nothing" where nothing applies.
 4. Which name, flag, secret, or setting meant two different things in two places?
 5. What did the brief fail to say that the worker had to discover?
 6. Where did a gate go green without proving what it was written to prove?
+7. Which instruction, steer, or hygiene fix from firstmate itself made this outcome more likely, and what would have caught it?
+8. Which failure hit more than one worker at once, and what would have turned the first one into a signal to check the rest?
 
 ## Routing
 

@@ -376,6 +376,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/retro-backtest.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/runtime-backends.md",
       "audience": "maintainer-verification"
     },
@@ -406,6 +410,18 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "tests/fixtures/retro-backtest-0811/README.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "tests/fixtures/retro-backtest-0811/evidence/INCIDENT.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "tests/fixtures/retro-backtest-0811/evidence/landing-timestamps.md",
+      "audience": "maintainer-verification"
     },
     {
       "path": "tests/skill-scenarios/README.md",
