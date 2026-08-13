@@ -376,6 +376,11 @@ nm_run_status_is_terminal() {  # <status-word>
 # though that run failed the head-identity bind. It vetoes terminal rows below:
 # the branch is validating right now, so no stopped run describes it, whether or
 # not the live run appears within the scanned rows.
+# Live here means BOTH: no `outcome:` field at all, and a non-terminal status
+# word. A present outcome is authoritative terminal evidence - the run-step path
+# below reads it before status for exactly that reason - because the top-level
+# status word can linger non-terminal through the CI-monitor phase after the run
+# has finished, and such a run must not veto genuine terminal rows.
 BRANCH_HAS_LIVE_RUN=0
 
 # Single owner of run RANKING for one branch:
@@ -486,6 +491,7 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
     # its head does not bind, it proves the branch is validating right now, and
     # ranking must never hand the crew an older stopped run instead.
     if [ "$run_branch" = "$CREW_BRANCH" ] \
+      && [ -z "$(strip_quotes "$(nm_field outcome)")" ] \
       && ! nm_run_status_is_terminal "$(strip_quotes "$(nm_field status)")"; then
       BRANCH_HAS_LIVE_RUN=1
     fi

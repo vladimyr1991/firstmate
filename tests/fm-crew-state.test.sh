@@ -796,6 +796,45 @@ EOF
   pass "a live-but-unbound run never falls back to an older failed run"
 }
 
+# A finished run whose top-level status word still lingers non-terminal (the
+# CI-monitor phase does this) carries an authoritative `outcome:`. It is NOT a
+# live run, so it must not veto the branch's genuine terminal row in the coarse
+# list.
+test_finished_run_with_lingering_status_does_not_veto_terminal_row() {
+  reset_fakes
+  local d start_short tip_short out; d=$(new_case rank-outcome-veto)
+  make_repo_on_branch "$d/wt" fm/feat-rankoutcome
+  start_short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  git -C "$d/wt" commit -q --allow-empty -m 'pipeline commit after the run started'
+  tip_short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/rankoutcome.meta" "window=fm:fm-rankoutcome" "worktree=$d/wt" "kind=ship"
+  printf 'working: implementation under way\n' > "$d/state/rankoutcome.status"
+  # Head is the pre-advance commit, so this run fails the bind and the coarse
+  # list decides - but the run is finished (outcome present), not live.
+  FM_FAKE_AXI_STATUS="$(cat <<EOF
+run:
+  id: "01RUN"
+  branch: fm/feat-rankoutcome
+  status: ci
+  head: "${start_short}"
+  pr: ""
+  findings: none
+outcome: failed
+EOF
+)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed     fm/feat-rankoutcome ${tip_short}  2026-08-11 12:24
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" rankoutcome
+  out=$(run_crew_state "$d" rankoutcome)
+  assert_contains "$out" "state: failed" "a finished run must not mask the branch's real failure"
+  assert_contains "$out" "source: run-step" "the terminal coarse row stays attributable"
+  pass "a finished run with a lingering status word does not veto terminal rows"
+}
+
 # The ranking rule must not swallow a genuine failure: with no live run for the
 # branch, its terminal run is still authoritative.
 test_only_failed_run_still_reports_failed() {
@@ -1454,6 +1493,7 @@ test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_live_run_outranks_older_failed_run
 test_live_run_with_unbound_head_does_not_fall_back_to_failed_run
+test_finished_run_with_lingering_status_does_not_veto_terminal_row
 test_only_failed_run_still_reports_failed
 test_two_terminal_runs_resolve_to_most_recent
 test_no_run_for_branch_reports_no_source
