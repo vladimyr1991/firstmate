@@ -91,7 +91,8 @@ For each card, firstmate takes delivery mode and yolo posture from the project's
 A card is ordinary intake, so a non-trivial ship card first passes the specification gate that `spec-gate` owns.
 Firstmate spawns that card's spec worker and binds the card to it with the same link step below, so a card's work never runs unlinked and the next scan cannot select the same card twice.
 Only a READY specification reaches an implementation brief; a card whose specification comes back BLOCKED is parked on its captain question, and the status table below moves it to `На ревью`.
-For every selected card the gate has released, while capacity remains, it writes an implementation brief before spawning, including the project's real landing contract - `data/captain.md` owns that wording for `parlino`, including the keyed staging line the sync step below depends on.
+For every selected card the gate has released, while capacity remains, it writes an implementation brief before spawning, carrying the project's real landing contract.
+For a project whose standing posture in `data/captain.md` grants staging-inclusive landing autonomy, scaffold that brief with `bin/fm-brief.sh <id> <repo> --mode local-only --staging-autonomy` so the contract, including the keyed staging line the sync step below depends on, is generated rather than hand-written over contradicting boilerplate.
 It spawns one implementation worker per card through `bin/fm-spawn.sh`, then binds that card:
 
 ```sh
