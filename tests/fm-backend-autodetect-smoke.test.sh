@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/fm-backend-autodetect-smoke.test.sh - real herdr smoke test for runtime
 # backend AUTO-DETECTION (bin/fm-backend.sh's fm_backend_detect, wired into
-# fm_backend_name between config/backend and the tmux default).
+# fm_backend_name between config/backend and the base default; docs/configuration.md
+# "Runtime backend" owns that selection order).
 #
 # Unlike tests/fm-backend-herdr.test.sh (fake herdr CLI) and
 # tests/fm-backend-herdr-smoke.test.sh (real herdr, adapter primitives called
@@ -95,6 +96,13 @@ git -C "$PROJ" init -q
 printf '# scratch\n' > "$PROJ/README.md"
 git -C "$PROJ" add README.md
 git -C "$PROJ" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
+# The scratch project needs an origin holding that commit: treehouse's return
+# guard refuses to give back a worktree whose work is "not on any remote and not
+# landed", even with --force, so a remote-less scratch repo would make the real
+# fm-teardown.sh below fail and leak the pool. Same shape as tests/lib.sh's
+# fm_git_add_origin; this suite cannot source lib.sh (it uses its own harness).
+git clone --quiet --bare "$PROJ" "$TMP_ROOT/scratch-project.git"
+git -C "$PROJ" remote add origin "file://$TMP_ROOT/scratch-project.git"
 
 # --- spawn with NO explicit backend config; HERDR_ENV=1 is the only marker --
 
@@ -110,8 +118,10 @@ status=$?
 
 assert_contains_local "$(cat "$ERR_FILE")" "NOTICE" \
   "fm-spawn.sh did not print the auto-detect notice to stderr when selecting herdr"
-assert_contains_local "$(cat "$ERR_FILE")" "EXPERIMENTAL herdr backend" \
-  "fm-spawn.sh's auto-detect notice did not flag herdr as experimental"
+assert_contains_local "$(cat "$ERR_FILE")" "herdr backend, the fleet base" \
+  "fm-spawn.sh's auto-detect notice did not name the selected herdr backend"
+assert_contains_local "$(cat "$ERR_FILE")" "config/backend" \
+  "fm-spawn.sh's auto-detect notice did not name the config/backend opt-out"
 pass "real herdr: fm-spawn.sh auto-detects herdr from HERDR_ENV=1 (no explicit config) and prints the loud notice"
 
 META="$STATE/$ID.meta"
