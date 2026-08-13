@@ -687,11 +687,16 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
     echo "warning: herdr presentation cleanup received an ambiguous exact-pane response; refusing focus-unsafe pane close" >&2
     return 1
   fi
+  if [ "$target_tab" = "$active_tab" ] && [ "$active_mode" != active-fallback ]; then
+    echo "warning: herdr presentation cleanup target is the captain's active tab; refusing a close that cannot preserve focus" >&2
+    return 1
+  fi
+  if [ -n "$required_agent_state" ]; then
+    state=$(fm_backend_herdr_pane_agent_state "$session" "$pane_id")
+    FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE=$state
+    [ "$state" = "$required_agent_state" ] || return 1
+  fi
   if [ "$target_tab" = "$active_tab" ]; then
-    if [ "$active_mode" != active-fallback ]; then
-      echo "warning: herdr presentation cleanup target is the captain's active tab; refusing a close that cannot preserve focus" >&2
-      return 1
-    fi
     fallback=$(fm_backend_herdr_projection_focus_fallback "$session" "$target_ws" "$target_tab") || {
       echo "warning: herdr presentation cleanup target is active and no exact surviving tab can receive focus" >&2
       return 1
@@ -708,11 +713,6 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
       echo "warning: herdr presentation cleanup received an ambiguous fallback focus response" >&2
       return 1
     }
-  fi
-  if [ -n "$required_agent_state" ]; then
-    state=$(fm_backend_herdr_pane_agent_state "$session" "$pane_id")
-    FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE=$state
-    [ "$state" = "$required_agent_state" ] || return 1
   fi
   plan=plain
   plan_shell_pid=
