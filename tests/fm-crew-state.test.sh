@@ -740,7 +740,7 @@ EOF
   pass "cross-branch attribution picks the branch's most recent row"
 }
 
-# --- run ranking for one branch (live outranks terminal) --------------------
+# --- run ranking for one branch (most recent row wins) ----------------------
 # Regression pair for the 2026-08-11 misread: a branch carrying BOTH an older
 # failed run and a live one was reported "failed - source: run-step" while its
 # pipeline was mid-review, so firstmate ordered custody recovery and a fresh run
@@ -833,6 +833,58 @@ EOF
   assert_contains "$out" "state: failed" "a finished run must not mask the branch's real failure"
   assert_contains "$out" "source: run-step" "the terminal coarse row stays attributable"
   pass "a finished run with a lingering status word does not veto terminal rows"
+}
+
+# The mirror of the reported misread: a run whose process was killed (machine
+# sleep, CLI abort) never writes a terminal word, so its row lingers live. A
+# newer terminal row for the same branch must win over it, or the branch reports
+# working forever while it has actually failed.
+test_newer_terminal_row_outranks_older_abandoned_live_row() {
+  reset_fakes
+  local d short; d=$(new_case rank-abandoned-live)
+  make_repo_on_branch "$d/wt" fm/feat-rankaband
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/rankaband.meta" "window=fm:fm-rankaband" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed     fm/feat-rankaband ${short}  2026-08-11 12:24
+  running    fm/feat-rankaband ${short}  2026-08-11 11:24
+EOF
+)"
+  local out; out=$(run_crew_state "$d" rankaband)
+  assert_contains "$out" "state: failed" "the newer terminal run decides the branch's state"
+  assert_not_contains "$out" "state: working" "an abandoned older live row must not mask a later failure"
+  pass "a newer terminal row outranks an older abandoned live row"
+}
+
+# The veto's own branch: `axi status` proves this branch is validating right now
+# while its head does not bind, and the coarse list holds NO live row for the
+# branch at all (the live run fell outside the scanned rows). The terminal row
+# binds, so only the veto can refuse it.
+test_live_run_outside_scanned_rows_vetoes_terminal_row() {
+  reset_fakes
+  local d start_short tip_short out; d=$(new_case rank-veto-outside)
+  make_repo_on_branch "$d/wt" fm/feat-rankveto
+  start_short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  git -C "$d/wt" commit -q --allow-empty -m 'pipeline commit after the run started'
+  tip_short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/rankveto.meta" "window=fm:fm-rankveto" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementation under way\n' > "$d/state/rankveto.status"
+  FM_FAKE_RUN_HEAD="$start_short"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-rankveto)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed     fm/feat-rankveto ${tip_short}  2026-08-11 11:24
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" rankveto
+  out=$(run_crew_state "$d" rankveto)
+  assert_not_contains "$out" "state: failed" "a branch validating right now is not described by a stopped run"
+  assert_not_contains "$out" "source: run-step" "no run is attributable, so no run-step state is emitted"
+  assert_contains "$out" "source: status-log" "falls back to current-state sources instead"
+  pass "a live run outside the scanned rows vetoes the branch's terminal row"
 }
 
 # The ranking rule must not swallow a genuine failure: with no live run for the
@@ -1494,6 +1546,8 @@ test_cross_branch_attribution_picks_most_recent_row
 test_live_run_outranks_older_failed_run
 test_live_run_with_unbound_head_does_not_fall_back_to_failed_run
 test_finished_run_with_lingering_status_does_not_veto_terminal_row
+test_newer_terminal_row_outranks_older_abandoned_live_row
+test_live_run_outside_scanned_rows_vetoes_terminal_row
 test_only_failed_run_still_reports_failed
 test_two_terminal_runs_resolve_to_most_recent
 test_no_run_for_branch_reports_no_source

@@ -29,9 +29,10 @@
 #      the same line of history). Local work that advanced past the run head, or
 #      diverged from it, invalidates attribution.
 #      When a branch has SEVERAL runs, ranking decides which one is even a
-#      candidate, and it is decided before the identity check: a LIVE run always
-#      outranks a TERMINAL one, and among runs of equal standing the most recent
-#      wins (see nm_runs_status_for_branch, the single owner of that rule).
+#      candidate, and it is decided before the identity check: a LIVE run
+#      outranks a TERMINAL one unless a terminal run is more recent than it, and
+#      among runs of equal standing the most recent wins (see
+#      nm_runs_status_for_branch, the single owner of that rule).
 #      A selected run that fails the identity check yields NO run at all, never a
 #      lower-ranked older one.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
@@ -384,20 +385,26 @@ nm_run_status_is_terminal() {  # <status-word>
 BRANCH_HAS_LIVE_RUN=0
 
 # Single owner of run RANKING for one branch:
-#   1. A LIVE run always outranks a TERMINAL one. A branch validating right now
-#      cannot be described by a run that already stopped.
-#   2. Among runs of equal standing, the most recent wins (the list is
-#      newest-first, so the first row of the winning standing).
-#   3. Identity is checked on the WINNER only. A winner that does not bind to
+#   1. A LIVE run outranks a TERMINAL one ONLY when no terminal row is more
+#      recent than it: a branch validating right now cannot be described by a
+#      run that stopped BEFORE that validation started. A terminal row newer
+#      than every live row wins instead - a run whose process was killed
+#      (machine sleep, CLI abort) never writes a terminal word, so its row
+#      lingers live forever and must not outrank the genuine later result.
+#   2. Among rows of equal standing, the most recent wins.
+#   3. Rows 1 and 2 together mean the branch's most recent row always wins, and
+#      the list is newest-first, so row order alone is the recency signal - the
+#      first row for the branch is the winner and no date is ever parsed.
+#   4. Identity is checked on the WINNER only. A winner that does not bind to
 #      this worktree's code yields no run at all, and the caller falls through
-#      to the pane/status-log sources.
+#      to the pane/status-log sources, never a lower-ranked older row.
 # Ranking deliberately precedes the identity check. Scanning row by row and
 # skipping every identity-mismatched row - the pre-2026-08 shape - walked past a
 # live run onto an older failed one and reported a healthy mid-review pipeline
 # as `failed`, the exact route AGENTS.md tells firstmate to trust.
 nm_runs_status_for_branch() {  # <branch>
   local branch=$1 out row st rest br sha
-  local live_st="" live_sha="" term_st="" term_sha=""
+  local win_st="" win_sha=""
   out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
@@ -411,25 +418,19 @@ nm_runs_status_for_branch() {  # <branch>
     rest=$(trim "$rest")
     sha=${rest%% *}
     [ "$br" = "$branch" ] || continue
-    if nm_run_status_is_terminal "$st"; then
-      [ -n "$term_st" ] || { term_st=$st; term_sha=$sha; }
-    else
-      [ -n "$live_st" ] || { live_st=$st; live_sha=$sha; }
-    fi
+    win_st=$st; win_sha=$sha
+    break
   done <<< "$out"
-  if [ -n "$live_st" ]; then
-    st=$live_st; sha=$live_sha
-  elif [ "$BRANCH_HAS_LIVE_RUN" = 1 ]; then
-    return 0
-  elif [ -n "$term_st" ]; then
-    st=$term_st; sha=$term_sha
-  else
+  [ -n "$win_st" ] || return 0
+  # The branch is validating right now per `axi status` itself, so no stopped
+  # run describes it - even when the live run falls outside the scanned rows.
+  if nm_run_status_is_terminal "$win_st" && [ "$BRANCH_HAS_LIVE_RUN" = 1 ]; then
     return 0
   fi
   # Same code-identity rule as axi status: a winner whose short sha does not
   # match this worktree (rewritten or advanced tip) is not attributable.
-  nm_coarse_head_matches_worktree "$sha" || return 0
-  printf '%s' "$st"
+  nm_coarse_head_matches_worktree "$win_sha" || return 0
+  printf '%s' "$win_st"
   return 0
 }
 
