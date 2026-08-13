@@ -25,6 +25,9 @@ The four enforced properties, rather than asserted ones:
 3. The run is rejected if its own transcript contains a single tool use.
 4. The fixture is scanned for the grading key and for the learnings file, and the composed
    prompt is scanned for their paths, before any model call.
+5. The procedure half of the composed prompt is refused if it names the incident under test,
+   because the procedure is a repository file an editor can annotate, while the evidence half
+   legitimately names the incident it preserves.
 
 Property 2 is why grading material may live in this repository at all: the agent under test
 has no way to read a file, so a checkout is not part of its input.
@@ -74,9 +77,21 @@ It also declared what the evidence could not settle rather than filling the gaps
 The missed sub-item is a prompt gap, not only a fixture gap.
 Draft prompts 1 to 6 all ask what the worker did, so a retrospective that answers them
 faithfully still never examines the supervisor's own contribution.
-Prompts 7 and 8 were added for that reason: prompt 7 asks what firstmate's own instruction or
-hygiene fix made the outcome more likely, and prompt 8 asks which failure hit more than one
-worker at once, which is the partially found item.
+Prompts 7 and 8 were added to `.agents/skills/lessons-learned/SKILL.md` for that reason, each
+traceable to exactly one graded verdict above: prompt 7 answers the missed sub-item, firstmate's
+own earlier instruction, and prompt 8 answers the partially found item, one shared quota failing
+every worker on it at once.
+
+This record, and not the skill, is where that attribution lives, which satisfies the skill's own
+Provenance section one hop away.
+The skill file is composed verbatim into the prompt the blind agent reads, so a sentence there
+naming this incident, or naming which key item a prompt was written for, would hand the agent
+the answers it is being tested on.
+For the same reason the skill carries no link back to this record: the link text would name the
+incident.
+`bin/fm-retro-backtest.sh` enforces that, refusing a run whose procedure section matches an
+incident marker and naming the offending line, so a future editor who adds such a sentence gets
+a refusal rather than a silently worthless run.
 
 Re-running the backtest after a change to the procedure is the regression test for that
 change.

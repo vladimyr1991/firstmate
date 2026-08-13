@@ -13,6 +13,8 @@
 #      ignored the deny list produces a failed test rather than a contaminated pass.
 #   4. The composed prompt is scanned for the sealed key's and learnings file's paths, and the
 #      fixture is scanned for a stray copy of either, before any model is called.
+#   5. The procedure half of the prompt is refused if it names the incident under test, because
+#      the procedure is a repository file an editor can annotate with what the test found.
 #
 # Usage:
 #   fm-retro-backtest.sh prompt              print the composed prompt and exit
@@ -36,9 +38,15 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
 
 FIXTURE="${FM_RETRO_BACKTEST_FIXTURE:-$FM_ROOT/tests/fixtures/retro-backtest-0811}"
-PROCEDURE="$FM_ROOT/.agents/skills/lessons-learned/SKILL.md"
+PROCEDURE="${FM_RETRO_BACKTEST_PROCEDURE:-$FM_ROOT/.agents/skills/lessons-learned/SKILL.md}"
 SEALED_KEY="$FM_HOME/data/retro-backtest-0811/SEALED-expected-answers.md"
 LEARNINGS="$FM_HOME/data/learnings.md"
+
+# Names for the incident under test. The procedure must never contain one: the evidence
+# names the incident because it is the incident, but the procedure is generic by design.
+INCIDENT_MARKERS='retro-backtest-0811|2026-08-11|0811|backtest'
+
+KEY_SCAN=''
 
 DENIED_TOOLS=(Bash Read Write Edit NotebookEdit Glob Grep WebFetch WebSearch Task Agent \
   TodoWrite Skill SlashCommand KillShell BashOutput ListMcpResourcesTool ReadMcpResourceTool)
@@ -68,12 +76,22 @@ guard_fixture() {
     die "an evidence file names the sealed key"
   fi
 
+  # Every substantial line of the key, not only the first: a copy that drops or rewords one
+  # line would otherwise walk straight past a single-marker scan.
   if [ -r "$SEALED_KEY" ]; then
-    local marker
-    marker=$(grep -m1 -E '^[A-Za-z].{24,}' "$SEALED_KEY" | cut -c1-48)
-    if [ -n "$marker" ] && grep -rqF -- "$marker" "$FIXTURE"; then
-      die "fixture repeats a line of the sealed key"
-    fi
+    local line marker
+    while IFS= read -r line; do
+      marker=$(printf '%s' "$line" | cut -c1-48)
+      [ -n "$marker" ] || continue
+      if grep -rqF -- "$marker" "$FIXTURE"; then
+        die "fixture repeats a line of the sealed key: ${marker}"
+      fi
+    done < <(grep -E '^[A-Za-z].{24,}' "$SEALED_KEY")
+    KEY_SCAN="ran against $SEALED_KEY"
+  else
+    # The key lives outside the repository on purpose, so this is the ordinary case on any
+    # checkout but the operator's. Say so, rather than letting a skipped guard read as a pass.
+    KEY_SCAN="skipped (key not readable at $SEALED_KEY)"
   fi
 }
 
@@ -85,9 +103,21 @@ guard_prompt() {
     || die "composed prompt names the learnings file"
 }
 
+# The procedure is a repository file, so an editor can annotate it with what this test found -
+# and every such annotation is a leak, because the whole file is composed into the prompt.
+guard_procedure() {
+  local tmp hit
+  tmp=$(mktemp) || die "cannot create a temporary file"
+  compose_procedure > "$tmp" || die "cannot compose the procedure section"
+  hit=$(grep -niE -- "$INCIDENT_MARKERS" "$tmp" | head -n 1)
+  rm -f "$tmp"
+  [ -z "$hit" ] \
+    || die "the procedure names the incident under test, which leaks it to the agent: $hit"
+}
+
 # --- prompt -----------------------------------------------------------------------------
 
-compose_prompt() {
+compose_procedure() {
   cat <<'HEADER'
 You are running a retrospective on a finished incident, using the procedure your organisation
 has already adopted. The procedure is reproduced below, followed by the surviving evidence.
@@ -107,15 +137,22 @@ prompt genuinely has no answer here, rather than filling it.
 ================================ THE PROCEDURE ================================
 HEADER
   cat "$PROCEDURE"
+}
 
-  # Only evidence/ reaches the agent. The fixture README is written for whoever runs and
-  # grades the test, and it necessarily discusses the key that the agent must not know about.
+# Only evidence/ reaches the agent. The fixture README is written for whoever runs and
+# grades the test, and it necessarily discusses the key that the agent must not know about.
+compose_evidence() {
   local f
   for f in "$FIXTURE"/evidence/*; do
     printf '\n================================ EVIDENCE: %s ================================\n' \
       "$(basename "$f")"
     cat "$f"
   done
+}
+
+compose_prompt() {
+  compose_procedure
+  compose_evidence
 }
 
 # --- run --------------------------------------------------------------------------------
@@ -137,6 +174,7 @@ run_agent() {
   # Guard the fixture before anything else, so a contaminated fixture costs a
   # refusal rather than a model call.
   guard_fixture
+  guard_procedure
   command -v claude >/dev/null || die "the claude CLI is not on PATH"
 
   [ -n "$stamp" ] || stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -169,14 +207,55 @@ run_agent() {
 
   local tool_uses
   tool_uses=$(count_tool_uses "$out/stream.jsonl")
-  [ "$tool_uses" -eq 0 ] \
-    || die "CONTAMINATED: the agent used $tool_uses tool(s); discard this run"
+  case $tool_uses in
+    0) ;;
+    unreadable)
+      die "CONTAMINATED: the transcript could not be parsed, so the no-tool-use property is unproven; discard this run" ;;
+    *)
+      die "CONTAMINATED: the agent used $tool_uses tool(s); discard this run" ;;
+  esac
 
   echo "answer: $out/answer.md"
 }
 
+# Echoes the number of tool_use content blocks in the transcript, or "unreadable" when the
+# transcript cannot be parsed at all. Whitespace and key order in a third-party CLI's output
+# are not a contract, so this parses the stream rather than matching bytes in it, and an
+# unreadable stream counts as contamination: a guard that cannot see must not clear the run.
 count_tool_uses() {
-  grep -o '"type":"tool_use"' "$1" 2>/dev/null | wc -l | tr -d ' '
+  python3 - "$1" <<'PY'
+import json, sys
+
+uses = 0
+events = 0
+broken = False
+try:
+    stream = open(sys.argv[1], encoding="utf-8")
+except OSError:
+    print("unreadable")
+    sys.exit(0)
+for line in stream:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        event = json.loads(line)
+    except ValueError:
+        broken = True
+        continue
+    if not isinstance(event, dict):
+        broken = True
+        continue
+    events += 1
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else event.get("content")
+    if not isinstance(content, list):
+        continue
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "tool_use":
+            uses += 1
+print("unreadable" if broken or events == 0 else uses)
+PY
 }
 
 extract_answer() {
@@ -207,6 +286,7 @@ isolation_report() {
   echo "tools denied:      ${DENIED_TOOLS[*]}"
   echo "tool uses in run:  $(count_tool_uses "$out/stream.jsonl")"
   echo "sealed key path:   $SEALED_KEY"
+  echo "key content scan:  $KEY_SCAN"
   echo "key in prompt:     $(grep -c 'SEALED-expected-answers' "$out/prompt.md" | tr -d ' ') references"
   echo "learnings path:    $LEARNINGS"
   echo "learnings in prompt: $(grep -c 'data/learnings.md' "$out/prompt.md" | tr -d ' ') references"
@@ -217,9 +297,11 @@ isolation_report() {
 
 case ${1:---help} in
   --help|-h|help) usage ;;
-  prompt) guard_fixture; compose_prompt ;;
-  check) guard_fixture; tmp=$(mktemp); compose_prompt > "$tmp"; guard_prompt "$tmp"; rm -f "$tmp"
-         echo "isolation guards pass" ;;
+  prompt) guard_fixture; guard_procedure; compose_prompt ;;
+  check) guard_fixture; guard_procedure
+         tmp=$(mktemp); compose_prompt > "$tmp"; guard_prompt "$tmp"; rm -f "$tmp"
+         echo "isolation guards pass"
+         echo "key content scan: $KEY_SCAN" ;;
   run) shift; run_agent "$@" ;;
   *) die "unknown command: $1" ;;
 esac
