@@ -60,10 +60,7 @@ It is repeated here because it is the flow most often skipped under time pressur
 3. **Commit in meaningful pieces**, not one dump.
    Each message says what broke and why the change is shaped that way, not what the diff shows.
 4. **Never merge without the captain's explicit word** (hard rule 2).
-5. `gh` defaults to the wrong repository whenever a home's clone is a fork - the upstream, not the fork.
-   **Always pass `--repo <owner>/<repo>` explicitly**, naming the fork this home actually pushes to, or PR creation fails with a confusing "no commits between".
-   That fork is the gate's push target, registered with `no-mistakes init --fork-url` (see [`CONTRIBUTING.md`](../../../CONTRIBUTING.md)), and it matches `git remote get-url origin` only when this home's clone is the fork itself.
-   The documented standard setup points `origin` at the parent instead, so deriving the repository from `origin` there produces exactly the "no commits between" failure this step exists to prevent.
+5. **Read [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) before opening a PR**: it owns the fork, parent, and push-target setup, including which repository a PR is opened against.
 6. After merge, **fast-forward the main clone** (`git merge --ff-only origin/main`).
    Skip it and the work is in GitHub but absent from the fleet.
 7. Tag releases: `VERSION`, `CHANGELOG.md`, `v<x.y.z>`.
