@@ -237,8 +237,8 @@ fm_backend_detect_cmux_app_is_ancestor() {
 # fm_backend_configured below. Auto-detect
 # fires only when nothing was explicitly configured, so an explicit setting
 # always wins. Selecting herdr or cmux via auto-detect prints one loud stderr
-# notice (both are experimental); auto-detecting tmux stays silent - it is
-# today's default-path behavior and callers must see zero change. The cmux
+# notice (both are experimental); auto-detecting tmux stays silent so an
+# existing tmux-hosted home sees zero change. The cmux
 # notice names the winning signal, so a fallback-detected cmux (bundle id or
 # ancestry, after the claude wrapper stripped CMUX_WORKSPACE_ID) is visibly
 # distinct from the primary-marker case.
