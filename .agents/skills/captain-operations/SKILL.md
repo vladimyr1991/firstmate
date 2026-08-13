@@ -78,7 +78,7 @@ Every setting below is LOCAL to a home and gitignored, so read a home's real val
 
 | Setting | Default when absent | Meaning |
 |---|---|---|
-| `config/backend` | auto-detected runtime, then `herdr` | Session backend. **Authoritative when set**: `fm-spawn.sh` refuses a `--backend` naming anything else. If it is unusable, report and stop - never spawn elsewhere. |
+| `config/backend` | auto-detected runtime, then `herdr` (tmux when herdr is absent) | Session backend. **Authoritative when set**: `fm-spawn.sh` refuses a `--backend` naming anything else. If it is unusable, report and stop - never spawn elsewhere. |
 | `config/crew-harness` | firstmate's own harness | Default harness for crewmates. |
 | `config/secondmate-harness` | `config/crew-harness`, then firstmate's own | Harness the primary uses to launch secondmates. |
 | `config/crew-dispatch.json` | no profiles | Per-role harness/model/effort rules. **The one place a vendor belongs** - rules elsewhere name roles. |
