@@ -54,14 +54,14 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
-# --sync-base <branch> adds a mandatory base-sync step ahead of any other work, for
-# projects whose task worktrees come from a shared pool. A pooled worktree does not
-# refresh its local branches between tasks, so its local <branch> can sit many commits
-# behind origin/<branch> and a branch cut from it silently targets code that is no
-# longer live. Pass it per task for any such project (parlino: --sync-base develop);
-# it is opt-in because the caller-supplied repo string cannot identify the project's
-# checkout pattern, and it is deliberately not the generic default so ordinary
-# single-checkout projects keep the shorter Setup.
+# --sync-base <branch> adds a mandatory base-sync step as the brief's first numbered
+# Setup step, for projects whose task worktrees come from a shared pool. A pooled
+# worktree does not refresh its local branches between tasks, so its local <branch>
+# can sit many commits behind origin/<branch> and a branch cut from it silently
+# targets code that is no longer live. Pass it per task for any such project
+# (parlino: --sync-base develop); it is opt-in because the caller-supplied repo
+# string cannot identify the project's checkout pattern, and it is deliberately not
+# the generic default so ordinary single-checkout projects keep the shorter Setup.
 # It applies to scout briefs too, where the same stale base produces a wrong
 # diagnosis rather than a wrong branch: a scout on a stale base reports a fix as
 # missing when it is already live on origin/<branch>. The scout step differs only in
