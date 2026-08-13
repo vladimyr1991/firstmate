@@ -297,9 +297,9 @@ else
   }
 fi
 
-# Backend selection (data/fm-backend-design-d7): explicit --backend, else
-# FM_BACKEND env, else config/backend, else runtime auto-detection, else
-# default tmux (fm_backend_name). fm_backend_validate_spawn refuses unknown or
+# Backend selection (data/fm-backend-design-d7): resolved by fm_backend_name;
+# docs/configuration.md "Runtime backend" owns the selection order and the
+# default. fm_backend_validate_spawn refuses unknown or
 # non-spawn-capable backends. The resolved value is always recorded in meta,
 # tmux included; an absent backend= is only a reader-side allowance for metas
 # written before that change. The meta-write block below owns that rationale.
