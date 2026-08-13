@@ -61,7 +61,9 @@ It is repeated here because it is the flow most often skipped under time pressur
    Each message says what broke and why the change is shaped that way, not what the diff shows.
 4. **Never merge without the captain's explicit word** (hard rule 2).
 5. `gh` defaults to the wrong repository whenever a home's clone is a fork - the upstream, not the fork.
-   **Always pass `--repo <owner>/<repo>` explicitly**, naming the fork that `git remote get-url origin` reports, or PR creation fails with a confusing "no commits between".
+   **Always pass `--repo <owner>/<repo>` explicitly**, naming the fork this home actually pushes to, or PR creation fails with a confusing "no commits between".
+   That fork is the gate's push target, registered with `no-mistakes init --fork-url` (see [`CONTRIBUTING.md`](../../../CONTRIBUTING.md)), and it matches `git remote get-url origin` only when this home's clone is the fork itself.
+   The documented standard setup points `origin` at the parent instead, so deriving the repository from `origin` there produces exactly the "no commits between" failure this step exists to prevent.
 6. After merge, **fast-forward the main clone** (`git merge --ff-only origin/main`).
    Skip it and the work is in GitHub but absent from the fleet.
 7. Tag releases: `VERSION`, `CHANGELOG.md`, `v<x.y.z>`.
@@ -74,7 +76,8 @@ MINOR adds capability, PATCH fixes.
 
 Every setting below is LOCAL to a home and gitignored, so read a home's real values out of its own `config/` directory rather than assuming the defaults in this table.
 `config/*.backup` files are firstmate's own snapshots, not settings - ignore them when reading state.
-[`docs/configuration.md`](../../../docs/configuration.md) owns the full schema for each of these; this table is the map, not the specification.
+[`docs/configuration.md`](../../../docs/configuration.md) owns the schema for the settings it documents, while `AGENTS.md` section 2's layout block and each producing script's own header and `--help` own the rest - `bin/fm-image-gen.sh` for the image model and the daily spend cap, `bin/fm-sprint-poll.sh` for the sprint poll.
+This table is the map, not the specification.
 
 | Setting | Default when absent | Meaning |
 |---|---|---|
