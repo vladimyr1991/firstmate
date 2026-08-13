@@ -52,6 +52,7 @@ INCIDENT_MARKERS='retro-backtest-0811|2026-08-11|0811|backtest|fleet stall|sessi
 INCIDENT_MARKERS="$INCIDENT_MARKERS|fm-quota-autoresume|fm-quota-dash-grok"
 
 KEY_SCAN=''
+SCRATCH_PROMPT=''
 
 DENIED_TOOLS=(Bash Read Write Edit NotebookEdit Glob Grep WebFetch WebSearch Task Agent \
   TodoWrite Skill SlashCommand KillShell BashOutput ListMcpResourcesTool ReadMcpResourceTool)
@@ -87,7 +88,7 @@ guard_fixture() {
   # evidence-based test quotes the evidence to justify its verdicts, and a guard that refuses a
   # clean fixture on the key's own quotations is a guard the next operator turns off.
   if [ -r "$SEALED_KEY" ]; then
-    local numbered number text marker
+    local numbered number text marker markers=0
     while IFS= read -r numbered; do
       number=${numbered%%:*}
       text=${numbered#*:}
@@ -95,11 +96,18 @@ guard_fixture() {
         *'"'*|*'`'*|*'>'*) continue ;;
       esac
       marker=$(printf '%s' "$text" | cut -c1-64)
+      markers=$((markers + 1))
       if grep -rqF -- "$marker" "$FIXTURE/evidence"; then
         die "fixture evidence repeats sealed key line $number, which the key alone may state"
       fi
     done < <(grep -nE '^[A-Za-z].{63,}' "$SEALED_KEY")
-    KEY_SCAN="ran against $SEALED_KEY"
+    if [ "$markers" -eq 0 ]; then
+      # Neither a completed scan nor a missing key: the key is there and nothing in it fits the
+      # marker shape, so nothing was compared and the discriminator needs revisiting.
+      KEY_SCAN="inconclusive (key readable at $SEALED_KEY, but no line of it is usable as a marker)"
+    else
+      KEY_SCAN="ran against $SEALED_KEY ($markers key line(s) compared)"
+    fi
   else
     # The key lives outside the repository on purpose, so this is the ordinary case on any
     # checkout but the operator's. Say so, rather than letting a skipped guard read as a pass.
@@ -167,6 +175,21 @@ compose_prompt() {
   compose_evidence
 }
 
+# Compose to a temporary file, guard it, and emit it only when asked. The trap matters: a
+# refusal exits through die, and the composed prompt it just refused must not survive on disk.
+guarded_prompt() {
+  local emit=${1:-}
+  SCRATCH_PROMPT=$(mktemp) || die "cannot create a temporary file for the composed prompt"
+  trap 'rm -f "$SCRATCH_PROMPT"' EXIT
+  compose_prompt > "$SCRATCH_PROMPT" || die "cannot write the prompt"
+  guard_prompt "$SCRATCH_PROMPT"
+  if [ "$emit" = emit ]; then
+    cat "$SCRATCH_PROMPT"
+  fi
+  rm -f "$SCRATCH_PROMPT"
+  trap - EXIT
+}
+
 # --- run --------------------------------------------------------------------------------
 
 run_agent() {
@@ -211,16 +234,18 @@ run_agent() {
   rmdir "$sandbox" 2>/dev/null || true
   [ "$rc" -eq 0 ] || die "the agent under test exited $rc; see $out/stream.jsonl"
 
+  # Contamination is decided before anything else about the answer, so a run that is both
+  # contaminated and empty dies on the cause that matters and still quarantines its artifact.
+  local tool_uses quarantine="$out/answer.CONTAMINATED.md"
+  tool_uses=$(count_tool_uses "$out/stream.jsonl")
+
   extract_answer "$out/stream.jsonl" > "$out/answer.md" || die "cannot extract the answer"
-  [ -s "$out/answer.md" ] || die "the agent produced no answer; see $out/stream.jsonl"
 
   isolation_report "$out" > "$out/isolation-report.txt"
   cat "$out/isolation-report.txt"
 
   # Grading is manual and reads answer.md, so a rejected run must not leave an artifact that
   # looks like a clean one.
-  local tool_uses quarantine="$out/answer.CONTAMINATED.md"
-  tool_uses=$(count_tool_uses "$out/stream.jsonl")
   case $tool_uses in
     0) ;;
     unreadable)
@@ -230,6 +255,9 @@ run_agent() {
       mv "$out/answer.md" "$quarantine" || true
       die "CONTAMINATED: the agent used $tool_uses tool(s); discard this run and its answer at $quarantine" ;;
   esac
+
+  grep -q '[^[:space:]]' "$out/answer.md" \
+    || die "the agent produced no answer; see $out"
 
   echo "answer: $out/answer.md"
 }
@@ -316,10 +344,8 @@ isolation_report() {
 
 case ${1:---help} in
   --help|-h|help) usage ;;
-  prompt) guard_fixture; guard_procedure
-          tmp=$(mktemp); compose_prompt > "$tmp"; guard_prompt "$tmp"; cat "$tmp"; rm -f "$tmp" ;;
-  check) guard_fixture; guard_procedure
-         tmp=$(mktemp); compose_prompt > "$tmp"; guard_prompt "$tmp"; rm -f "$tmp"
+  prompt) guard_fixture; guard_procedure; guarded_prompt emit ;;
+  check) guard_fixture; guard_procedure; guarded_prompt
          echo "isolation guards pass"
          echo "key content scan: $KEY_SCAN" ;;
   run) shift; run_agent "$@" ;;

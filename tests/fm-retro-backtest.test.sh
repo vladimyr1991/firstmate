@@ -17,11 +17,12 @@
 #   (g) a fixture with no evidence directory refuses the run
 #   (h) refusals happen before any model call, so they cost nothing
 #   (i) a procedure that names or paraphrases the incident under test refuses the run
-#   (j) the key content scan reports whether it ran, catches any key line by number, and
-#       does not fire on the key's own quotations of the evidence
+#   (j) the key content scan reports whether it ran and over how many key lines, catches
+#       any key line by number, and does not fire on the key's own quotations of the evidence
 #   (k) a transcript containing a tool use is refused however it is spelled or nested,
 #       and its answer is quarantined rather than left looking clean
-#   (l) a transcript that cannot be parsed is refused rather than cleared
+#   (l) a transcript that cannot be parsed, or that carries no answer at all, is refused
+#       rather than cleared
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -30,6 +31,13 @@ set -u
 
 BACKTEST="$ROOT/bin/fm-retro-backtest.sh"
 FIXTURE="$ROOT/tests/fixtures/retro-backtest-0811"
+
+# Every case runs against a scratch home unless it seeds a key of its own, so no case reads the
+# operator's private sealed key: a suite whose outcome depends on a file that exists on exactly
+# one machine is not a suite.
+FM_HOME=$(fm_test_tmproot fm-retro-backtest-scratch-home)
+mkdir -p "$FM_HOME"
+export FM_HOME
 
 # A scratch copy of the shipped fixture, so a mutation case never edits the
 # committed one.
@@ -205,9 +213,40 @@ seed_key() {
   cat > "$home/data/retro-backtest-0811/SEALED-expected-answers.md" <<'KEY'
 First expected answer of the key, stated at length so that the scan has a usable marker.
 Second expected answer of the key, also stated at length so that it too gives the scan one.
-The key quotes the evidence to justify a verdict, like this: "absorbed stale run pane" line.
+Mon Aug 10 21:36:50 2026  ->  signal: $FM_HOME/state/parlino-telegram-verify.turn-ended
 KEY
   printf '%s\n' "$home"
+}
+
+# A scratch home whose key is ordinary Markdown: headings, bullets, and a blockquote, none of
+# which the marker discriminator can use.
+seed_markerless_key() {
+  local home
+  home=$(fm_test_tmproot fm-retro-backtest-markerless)
+  mkdir -p "$home/data/retro-backtest-0811"
+  cat > "$home/data/retro-backtest-0811/SEALED-expected-answers.md" <<'KEY'
+# Expected answers
+
+- the first expected answer, written as a bullet rather than as a bare sentence of prose
+- the second expected answer, also written as a bullet and also comfortably past sixty chars
+
+> quoted evidence that justifies the verdicts above and is therefore never usable as a marker
+KEY
+  printf '%s\n' "$home"
+}
+
+test_markerless_key_reports_an_inconclusive_scan() {
+  # A key that yields no usable marker compared nothing, and must not report that it ran.
+  local home dest out rc
+  home=$(seed_markerless_key)
+  dest=$(copy_fixture)
+  out=$(FM_HOME="$home" FM_RETRO_BACKTEST_FIXTURE="$dest" "$BACKTEST" check 2>&1); rc=$?
+  expect_code 0 "$rc" "check with a key that yields no marker"
+  assert_contains "$out" "key content scan: inconclusive" \
+    "a scan that compared nothing must not report that it ran"
+  assert_not_contains "$out" "key content scan: ran against" \
+    "an inconclusive scan must not read as a completed one"
+  pass "a markerless key reports an inconclusive scan"
 }
 
 test_any_key_line_repeated_in_the_evidence_refuses() {
@@ -227,14 +266,19 @@ test_any_key_line_repeated_in_the_evidence_refuses() {
 }
 
 test_key_quoting_the_evidence_does_not_refuse() {
-  # The key justifies its verdicts by quoting the evidence, so a scan that treated its
-  # quotations as markers would refuse the one machine that can run the graded test.
+  # The key's third line is a verbatim copy of a delivery log line, so its first 64 characters
+  # do appear in the fixture: only the quotation discriminator keeps this clean fixture from
+  # being refused on the one machine that can run the graded test.
   local home dest out rc
   home=$(seed_key)
   dest=$(copy_fixture)
+  grep -qF 'Mon Aug 10 21:36:50 2026  ->  signal:' "$dest/evidence/watch-deliveries-0810-0811.log" \
+    || fail "the seeded key line must be a verbatim quotation of the shipped evidence"
   out=$(FM_HOME="$home" FM_RETRO_BACKTEST_FIXTURE="$dest" "$BACKTEST" check 2>&1); rc=$?
   expect_code 0 "$rc" "check with a key that quotes the evidence"
   assert_contains "$out" "key content scan: ran against" "the scan should report that it ran"
+  assert_contains "$out" "2 key line(s) compared" \
+    "the report should say how many key lines were actually compared"
   pass "a key that quotes the evidence does not refuse a clean fixture"
 }
 
@@ -300,6 +344,20 @@ not json at all')
   pass "an unparseable transcript refuses the run"
 }
 
+test_transcript_without_a_result_event_refuses() {
+  # An extracted answer of nothing but whitespace must never reach the manual grader as the
+  # agent's answer.
+  local dest bin out rc
+  dest=$(copy_fixture)
+  bin=$(fake_claude '{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"}]}}')
+  out=$(PATH="$bin:$PATH" FM_RETRO_BACKTEST_FIXTURE="$dest" \
+    "$BACKTEST" run --out "$dest/run" 2>&1); rc=$?
+  expect_code 1 "$rc" "run whose transcript carries no result event"
+  assert_contains "$out" "produced no answer" "the refusal should name the cause"
+  assert_contains "$out" "$dest/run" "the refusal should point at the run directory"
+  pass "a transcript without a result event refuses the run"
+}
+
 test_clean_transcript_passes_and_reports_isolation() {
   local dest bin out rc
   dest=$(copy_fixture)
@@ -329,8 +387,10 @@ test_prompt_refuses_before_composing_when_the_procedure_leaks
 test_key_content_scan_reports_that_it_was_skipped
 test_any_key_line_repeated_in_the_evidence_refuses
 test_key_quoting_the_evidence_does_not_refuse
+test_markerless_key_reports_an_inconclusive_scan
 test_key_copy_beside_the_evidence_is_scanned_by_name
 test_spaced_tool_use_in_the_transcript_refuses
 test_tool_use_in_an_unfamiliar_envelope_refuses
 test_unparseable_transcript_refuses
+test_transcript_without_a_result_event_refuses
 test_clean_transcript_passes_and_reports_isolation
