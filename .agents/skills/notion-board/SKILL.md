@@ -110,7 +110,7 @@ If the fleet is already at four, leave every eligible card untouched, whichever 
 Re-check capacity before every spawn in a multi-card handoff because another task may have started after the PM produced its report.
 An empty eligible set is a normal, silent result: report nothing and do not widen the filter to find work.
 That silence covers dispatch reporting only and never silences a divergence, whatever step found it, which is reported even when no card was eligible.
-That sweep is also not a widening of this filter: it selects no work and only detects divergence.
+The orphaned-status sweep is also not a widening of this filter: it selects no work and only detects divergence.
 
 ## Turning a card into a task
 
@@ -138,7 +138,6 @@ Record the card URL in the backlog item note alongside the resolved mode and yol
 Only after every successful spawn has its link does firstmate answer the PM with `resolved [key=dispatch]: <card-url>=<task-id> ... durably running and linked`.
 If capacity closes or one spawn fails, firstmate lists only the successfully linked mappings and states the failed or deferred cards explicitly; those cards keep the input state they were selected from and are eligible again on the next scan.
 The PM re-reads every successfully linked card, leaves any card untouched if the captain moved it meanwhile, otherwise sets it to `В работе`, updates the rolling status page, and finishes its scan.
-Linking a card and writing `В работе` are one transaction the PM never leaves half-done, so no card it dispatched is ever left sitting in `Нужны исправления` - that invariant is what lets any later writer read a live task on such a card as the captain's own hand rather than an unfinished dispatch.
 An eligible card is not handled merely because its body already contains an asset, prompt, result, or earlier work note.
 Only a linked task and the status events in the table below prove lifecycle progress.
 
@@ -161,8 +160,8 @@ A bare `done:` with staging prose in it is not that signal: firstmate does not r
 
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
 Never move a card the captain moved by hand; re-read the card before writing and, if it sits somewhere this table did not put it, leave it and report the divergence.
-A live task on a `Нужны исправления` card can only be the captain's own hand returning work still in flight, because the dispatch invariant above forbids the PM to leave a dispatched card there: never dispatch it or restatus it, and report it as a divergence so firstmate can steer the live worker.
-The rework row above therefore fires only for a `Нужны исправления` card no live task holds, which is fresh rework input rather than a status the captain placed.
+Exactly one write may overwrite a status this table did not place: the `В работе` write that immediately follows linking a task to a card the PM selected in this scan, which is how any dispatched card leaves the input state it was taken from and is what the two dispatch rows above describe.
+Every other write, by any writer at any later time, leaves that status untouched - so a `Нужны исправления` card held by a live task the PM did not link this scan is never dispatched and never restatused, and is reported as a divergence exactly as it stands.
 Reporting a divergence means leaving the card exactly as it is, writing it into the PM's scout report, and listing it on the rolling status page - never a silent correction, because only firstmate decides what to do about one.
 
 The orphaned-status sweep finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
@@ -231,8 +230,8 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
 
 1. Read the board.
    A card is taken only while a NON-TERMINAL task holds an active `notion_page=` link to it (`bin/fm-notion-link.sh` owns that link), and the brief's `linked_cards` list names exactly those cards, so skip the cards it names - a card whose only link belongs to a task already delivered and torn down is not taken, and that is the rework case.
-   A `Нужны исправления` card the list names is the captain's hand on work in flight, so skip it for dispatch and report it as a divergence per the status-sync section.
-   Only when the brief carries no `linked_cards` line at all, skip every card carrying a bare `notion_page=` link so two live workers never land on one card, and report any `Нужны исправления` card skipped that way as a return whose liveness this scan could not test.
+   A `Нужны исправления` card the list names is held by a live task, so skip it for dispatch and report it as a divergence per the status-sync section.
+   Only when the brief carries no `linked_cards` line at all, skip every card carrying a bare `notion_page=` link so two live workers never land on one card, and report any `Нужны исправления` card skipped that way as one whose liveness this scan could not test.
 2. **Run the orphaned-status sweep when the brief carries a `linked_cards` line, including `linked_cards: none`.**
    It selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
    Only when that line is missing entirely, skip the query and the sweep's report for this scan and continue to the next step.
