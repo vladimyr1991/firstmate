@@ -530,6 +530,9 @@ You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+An active run commits into the pipeline's own worktree while your checkout stays at the head you submitted, so when a live finding asserts a fact about the pipeline head, do not treat your checkout as confirming or refuting it.
+Verify such a claim from supported gate evidence; if it cannot be checked from that evidence, relay it as unverified instead of endorsing it, and do not make a scope decision that depends on it.
+Do not run \`axi sync\` while a validation run is active and owns the branch - its guarded custody recovery belongs only to the documented post-abort path, never to checking a finding.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
@@ -590,7 +593,8 @@ If the top-level path is the primary checkout or not the worktree you were launc
 $SETUP_STEPS
 
 **Establish a test baseline before your first edit.** Run the project's own test gate the way its \`AGENTS.md\` or \`README.md\` documents it, before you change anything.
-A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited.
+A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited, and a gate run that selects zero tests is a no-op rather than a baseline.
+When the gate you chose selects nothing, run the project's documented nonempty gate instead or record that no executable baseline exists; never call a zero-selection result green evidence.
 If the baseline is already red, treat that as inherited breakage: append \`blocked: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
 If the gate runs long enough that you would otherwise sit silent, append one \`working:\` line first so supervision does not read the wait as a wedged pane.
 
