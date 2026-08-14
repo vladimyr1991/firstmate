@@ -987,6 +987,58 @@ test_no_mistakes_dod_states_what_done_requires() {
   pass "fm-brief.sh: no-mistakes DOD states what done: requires and owns its exception"
 }
 
+# The failure this guards: during an active run the pipeline commits into its
+# own worktree while the worker's checkout stays at the submitted head, so a
+# worker asked to respond to a gate finding cannot see the tree the finding
+# describes. A finding once asserted a fixture was untracked and absent from the
+# diff when that step's own fix commit had already added it; the claim was
+# approved on its own say-so and the push then failed the documentation gate.
+# The remedy belongs with the gate-response guidance in the no-mistakes
+# definition of done, and nowhere else - the other modes run no pipeline.
+test_no_mistakes_dod_requires_verified_gate_claims() {
+  local home id brief mode
+  home="$TMP_ROOT/gate-claim-home"
+  mkdir -p "$home/data"
+  id="brief-gate-claim-e1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "no-mistakes brief was not scaffolded"
+
+  assert_grep "your checkout stays at the head you submitted" "$brief" \
+    "no-mistakes DOD lost the reason a live finding cannot be checked locally"
+  assert_grep "do not treat your checkout as confirming or refuting it" "$brief" \
+    "no-mistakes DOD lost the rule against judging a live finding from the worker checkout"
+  assert_grep "relay it as unverified instead of endorsing it" "$brief" \
+    "no-mistakes DOD lost the unverified-relay rule for an uncheckable claim"
+  assert_grep "do not make a scope decision that depends on it" "$brief" \
+    "no-mistakes DOD lost the bar on deciding scope from an unverified claim"
+  # The corrected wording, not the superseded draft: syncing is not the remedy,
+  # because the pipeline owns the branch for the whole active run.
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'Do not run `axi sync` while the run owns the branch.' "$brief" \
+    "no-mistakes DOD lost the prohibition on syncing while the run owns the branch"
+
+  # It sits with the gate-response guidance, not as a free-floating section.
+  grep -q '^Do not hand-edit, commit, or fix findings yourself while a run is active' "$brief" \
+    || fail "the gate-response guidance the verification rule attaches to is missing"
+  [ "$(grep -n 'do not treat your checkout as confirming or refuting it' "$brief" | cut -d: -f1)" \
+    = "$(( $(grep -n '^Do not hand-edit, commit, or fix findings yourself while a run is active' "$brief" | cut -d: -f1) + 1 ))" ] \
+    || fail "the finding-verification rule must follow the active-run gate-response guidance directly"
+
+  # No pipeline runs in the other scaffolds, so the rule must not leak into them.
+  for mode in direct-PR local-only; do
+    id="brief-gate-claim-e-$mode"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    assert_no_grep "do not treat your checkout as confirming or refuting it" "$home/data/$id/brief.md" \
+      "the live-finding verification rule leaked into the $mode brief"
+  done
+  id="brief-gate-claim-e-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  assert_no_grep "do not treat your checkout as confirming or refuting it" "$home/data/$id/brief.md" \
+    "the live-finding verification rule leaked into the scout brief"
+  pass "fm-brief.sh: no-mistakes DOD requires live gate claims to be verified or relayed unverified"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -1024,6 +1076,16 @@ test_ship_baseline_and_no_placeholder_contract() {
       "$id ($mode): brief lost the baseline-before-editing contract"
     assert_grep "treat that as inherited breakage" "$brief" \
       "$id ($mode): baseline contract lost the inherited-breakage stop condition"
+    # A changed-file selector on a clean tree exits 0 having selected nothing;
+    # that success was once recorded as a green baseline and proved nothing.
+    # The carve-out must stay inside the existing baseline instruction, and it
+    # must say what to run instead, so assert both halves.
+    assert_grep "a gate run that selects zero tests is a no-op rather than a baseline" "$brief" \
+      "$id ($mode): baseline contract lost the zero-selection carve-out"
+    assert_grep "run the project's documented nonempty gate instead or record that no executable baseline exists" "$brief" \
+      "$id ($mode): zero-selection carve-out lost its what-to-do-instead remedy"
+    assert_grep "never call a zero-selection result green evidence" "$brief" \
+      "$id ($mode): zero-selection carve-out lost its prohibition on claiming green evidence"
     assert_grep "Leave behind no placeholder or unimplemented code" "$brief" \
       "$id ($mode): brief lost the no-placeholder rule"
     assert_grep "an element a user can click and get nothing from is not done" "$brief" \
@@ -1541,6 +1603,7 @@ test_sync_base_divergence_check_survives_a_missing_origin_head
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_dod_states_what_done_requires
+test_no_mistakes_dod_requires_verified_gate_claims
 test_ship_project_memory_wording
 test_ship_baseline_and_no_placeholder_contract
 test_herdr_lab_contract_is_explicit_and_complete
