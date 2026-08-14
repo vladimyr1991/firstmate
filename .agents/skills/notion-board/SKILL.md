@@ -85,8 +85,9 @@ When a card is ambiguous, treat it as captain work and ask one concise question 
 Fill available implementation capacity up to four concurrent Notion-linked workers on every scan.
 Firstmate calculates capacity from reconciled live task state immediately before each spawn, counting every non-terminal task carrying an active `notion_page=` link, including blocked or paused workers whose endpoint and work remain live.
 Firstmate records that scan's `active_count` and remaining capacity in the PM brief before launch so the PM knows the maximum number of cards it may select.
-That same step records the card URL of every task it counted, so the brief carries the live linked-card list the orphaned-status sweep tests against and the PM never has to infer a task's terminality from the backlog.
-That list is what arms the sweep: a brief that omits it turns the orphaned-status sweep off for that cycle, so firstmate includes it whenever it wants the sweep run.
+That same step records `linked_cards`, the card URL of every task it counted, so the brief carries the live linked-card list the orphaned-status sweep tests against and the PM never has to infer a task's terminality from the backlog.
+Write that line on every brief, using `linked_cards: none` when `active_count` is 0, because an explicit empty list means zero live links while a missing line means the list was never supplied.
+Only a brief with no `linked_cards` line at all leaves the sweep unarmed; `linked_cards: none` arms it exactly like a populated list, and on an idle fleet every card that sweep returns is then a divergence.
 The PM may select at most `4 - active_count` dispatchable cards from the eligibility sweep and records each selected card separately in its report.
 If the fleet is already at four, leave every `Новая` card untouched and end the scan without dispatching another worker.
 Re-check capacity before every spawn in a multi-card handoff because another task may have started after the PM produced its report.
@@ -144,9 +145,10 @@ Never move a card the captain moved by hand in the meantime; re-read the card be
 Reporting a divergence means leaving the card exactly as it is, writing it into the PM's scout report, and listing it on the rolling status page - never a silent correction, because only firstmate decides what to do about one.
 
 The orphaned-status sweep finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
-Check every card that sweep returns against the brief's live linked-card list, not against bare `notion_page=` notes in the backlog.
+Check every card that sweep returns against the brief's `linked_cards` list, not against bare `notion_page=` notes in the backlog.
 That is deliberately a stronger test than the bare-presence check that keeps the eligibility sweep from dispatching a card twice: presence proves a card was taken once, while the brief's list proves a task is still working it.
-If the brief carries no such list, skip this sweep for that scan and report no divergence from it: a test the PM cannot answer is not evidence that every active card is orphaned, and firstmate owns supplying the list.
+If the brief carries no `linked_cards` line at all, skip this sweep for that scan and report no divergence from it: a test the PM cannot answer is not evidence that every active card is orphaned, and firstmate owns supplying the list.
+`linked_cards: none` is not that case and never skips the sweep - it is the answer that no task is live, so every card the sweep returns is a divergence.
 A returned card is healthy and needs no mention only when that list names it, because the list holds exactly the cards a non-terminal task carries an active `notion_page=` link to.
 A returned card the list does not name is a divergence and is reported exactly as above, whether no link points at it at all or its only live link is held by a task that already reached a terminal status without being recycled.
 Bare link presence is not the test: `bin/fm-notion-link.sh` retires a link only on `--archive` at recycle step 3 below, so a task that ended without being recycled leaves an active `notion_page=` behind and its card is orphaned exactly like an unlinked one.
@@ -207,9 +209,9 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
 
 1. Read the board.
    Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so skip them or the same card is picked up again every hour.
-2. **Run the orphaned-status sweep when the brief carries the live linked-card list.**
+2. **Run the orphaned-status sweep when the brief carries a `linked_cards` line, including `linked_cards: none`.**
    It selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
-   Without that list, skip the query and the sweep's report entirely for this scan and continue to the next step.
+   Only when that line is missing entirely, skip the query and the sweep's report for this scan and continue to the next step.
 3. **Fill available capacity; do not build the cards yourself.**
    Select as many dispatchable cards as the four-worker cap permits, write each one into the scout report, and open the single keyed dispatch hold described above.
    Stay live until firstmate confirms which dispatched workers are durably running and linked, then move only those cards to `В работе`.
