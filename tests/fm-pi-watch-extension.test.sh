@@ -774,7 +774,10 @@ const pi = {
   },
 };
 const lock = `${process.env.FM_HOME}/state/.lock`;
-writeFileSync(lock, `${process.pid}\n`);
+// The typed record form (bin/fm-session-lock-lib.sh): a home last acquired by a
+// harness that publishes a session id keeps that record until this session's
+// own acquisition rewrites it, so the adapter must still find its own pid in it.
+writeFileSync(lock, `pid=${process.pid} harness=claude session=prior-session\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-lock-close", {}, undefined, undefined, {});
@@ -796,7 +799,7 @@ EOF
   status=$?
   [ "$status" -eq 0 ] || fail "Pi close handler must verify session-lock ownership before successor launch: $out"
   [ -z "$out" ] || fail "Pi close lock test printed output: $out"
-  pass "Pi close handler verifies session-lock ownership before successor launch"
+  pass "Pi close handler verifies session-lock ownership, in either record form, before successor launch"
 }
 
 test_pi_arm_distinguishes_session_lock_ownership() {

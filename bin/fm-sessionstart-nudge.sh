@@ -16,14 +16,19 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 # shellcheck source=bin/fm-operational-input.sh
 . "$SCRIPT_DIR/fm-operational-input.sh"
+# Only for the lock record parser: this check deliberately keeps its own
+# minimal ancestry walk rather than the harness-aware ownership predicate, but
+# it must read both record forms the acquisition path can write.
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 fm_is_gate_agent "$FM_ROOT" && exit 0
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 lock_is_in_ancestry() {
   local lock_pid pid=$$ _
-  [ -f "$STATE/.lock" ] || return 1
-  IFS= read -r lock_pid < "$STATE/.lock" 2>/dev/null || return 1
+  fm_session_lock_read "$STATE" || return 1
+  lock_pid=$FM_LOCK_PID
   case "$lock_pid" in
     ''|*[!0-9]*|1) return 1 ;;
   esac

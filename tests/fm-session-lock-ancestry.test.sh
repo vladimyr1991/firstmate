@@ -36,13 +36,155 @@ NAMED_CLAUDE="$FAKEBIN/claude"
 
 # Run one library expression with <fakebin> shadowing ps. kill is stubbed so
 # liveness questions are decided by the process table alone.
-lib_eval() {  # <fakebin> <expression>
-  local fakebin=$1 expr=$2
-  PATH="$fakebin:$PATH" bash -c "
+# The optional session id is exported into the child only, so one case can
+# never leak its identity into the next.
+lib_eval() {  # <fakebin> <expression> [<session-id>]
+  local fakebin=$1 expr=$2 session=${3:-}
+  PATH="$fakebin:$PATH" CLAUDE_CODE_SESSION_ID="$session" bash -c "
     . \"\$0\"
     kill() { return 0; }
     $expr
   " "$LIB"
+}
+
+# A process table where pid 600 is a live claude session that is NOT anywhere in
+# this process's ancestry: the shape a session leaves behind when it is moved
+# into a background process tree, and the shape two sessions sharing one home
+# have. Ownership can only be decided by the recorded session id here.
+write_disjoint_ps() {  # <fakebin>
+  cat > "$1/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  600:comm=) printf '%s\n' claude ;;
+  600:args=) printf '%s\n' claude ;;
+  600:ppid=) printf '%s\n' 1 ;;
+  650:comm=) printf '%s\n' claude ;;
+  650:args=) printf '%s\n' claude ;;
+  650:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' bash ;;
+  *:ppid=) printf '%s\n' 650 ;;
+esac
+SH
+  chmod +x "$1/ps"
+}
+
+test_typed_record_survives_a_changed_process_tree() {
+  local dir fakebin
+  dir="$TMP_ROOT/typed-identity"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  printf 'pid=600 harness=claude session=70e62a49-6338-4383-9eb8-a58df9a3a006\n' > "$dir/state/.lock"
+
+  lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" 70e62a49-6338-4383-9eb8-a58df9a3a006 \
+    || fail "a session lost ownership of its own home because its process tree changed"
+  # The Stop payload carries the same id when the environment does not.
+  lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state' 70e62a49-6338-4383-9eb8-a58df9a3a006" \
+    || fail "the Stop payload's own session id did not establish ownership"
+  pass "session-lock: a recorded session id keeps ownership when the recorded pid leaves the ancestry"
+}
+
+test_typed_record_refuses_a_different_live_session() {
+  local dir fakebin
+  dir="$TMP_ROOT/typed-foreign"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  printf 'pid=600 harness=claude session=session-one\n' > "$dir/state/.lock"
+
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-two; then
+    fail "a different live session claimed a home recorded to session-one"
+  fi
+  lib_eval "$fakebin" 'fm_harness_pid_alive 600' \
+    || fail "the recorded live owner was classified as a dead lock owner"
+  pass "session-lock: a genuinely different live session is still refused a recorded home"
+}
+
+test_typed_record_pid_is_only_a_liveness_hint() {
+  local dir fakebin
+  dir="$TMP_ROOT/typed-ancestor-pid"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  # pid 650 IS this process's harness ancestor - the shape of a pooled host
+  # process shared by several sessions. A recorded session id that does not
+  # match must still refuse, or the two sessions sharing that host both claim
+  # the home.
+  printf 'pid=650 harness=claude session=session-one\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-two; then
+    fail "a shared ancestor pid overrode a non-matching recorded session id"
+  fi
+  pass "session-lock: a shared ancestor pid never overrides a recorded session id"
+}
+
+test_unrecognized_records_fail_closed() {
+  local dir fakebin record
+  dir="$TMP_ROOT/malformed-records"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  for record in 'pid=650' 'pid=650 harness=claude' 'session=session-one' \
+    'pid=abc harness=claude session=s1' 'pid=650 harness=claude session=s1 extra=1' \
+    'pid=650 harness=claude session=bad;rm'; do
+    printf '%s\n' "$record" > "$dir/state/.lock"
+    if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-one; then
+      fail "an unrecognized lock record was accepted as ownership: $record"
+    fi
+    lib_eval "$fakebin" "fm_session_lock_read '$dir/state'; [ \"\$FM_LOCK_FORM\" = malformed ]" \
+      || fail "an unrecognized lock record did not parse as malformed: $record"
+  done
+  pass "session-lock: unrecognized lock records fail closed with no pid to act on"
+}
+
+test_legacy_record_is_read_exactly_as_before() {
+  local dir fakebin
+  dir="$TMP_ROOT/legacy-record"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  printf '650\n' > "$dir/state/.lock"
+  # A legacy record is ancestry-decided even for a process that has its own
+  # session id, so a home mid-upgrade behaves exactly as it does today.
+  lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-one \
+    || fail "a legacy record stopped resolving through harness ancestry"
+  lib_eval "$fakebin" "fm_session_lock_read '$dir/state'; [ \"\$FM_LOCK_FORM\" = legacy ] && [ \"\$FM_LOCK_PID\" = 650 ]" \
+    || fail "a bare-integer record did not parse as the legacy form"
+  printf '600\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-one; then
+    fail "a legacy record outside this ancestry was claimed as this session's own"
+  fi
+  pass "session-lock: legacy bare-pid records keep their exact ancestry semantics"
+}
+
+test_session_id_is_resolved_only_for_publishing_harnesses() {
+  local dir fakebin got
+  dir="$TMP_ROOT/session-id-source"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  got=$(lib_eval "$fakebin" 'fm_harness_session_id claude payload-id' env-id) \
+    || fail "no session id was resolved for claude"
+  [ "$got" = env-id ] || fail "the environment id must win over a payload id, got '$got'"
+  got=$(lib_eval "$fakebin" 'fm_harness_session_id claude payload-id') \
+    || fail "the payload id was not used when the environment carries none"
+  [ "$got" = payload-id ] || fail "expected the payload id, got '$got'"
+  if lib_eval "$fakebin" 'fm_harness_session_id kimi' env-id; then
+    fail "a harness that publishes no session id resolved one anyway"
+  fi
+  if lib_eval "$fakebin" 'fm_harness_session_id claude "bad id"'; then
+    fail "an unsafe session id was accepted"
+  fi
+  pass "session-lock: only a publishing harness resolves a session id, environment first"
 }
 
 test_version_named_session_is_identified_on_both_platforms() {
@@ -355,6 +497,12 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
 }
 
 test_version_named_session_is_identified_on_both_platforms
+test_typed_record_survives_a_changed_process_tree
+test_typed_record_refuses_a_different_live_session
+test_typed_record_pid_is_only_a_liveness_hint
+test_unrecognized_records_fail_closed
+test_legacy_record_is_read_exactly_as_before
+test_session_id_is_resolved_only_for_publishing_harnesses
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live

@@ -57,7 +57,20 @@
 #      with the repair banner, bounded to FM_CLAUDE_TURNEND_BLOCK_BUDGET
 #      (default 3) consecutive blocks per session - safely below Claude Code's
 #      hard 8-consecutive-block override - then allow one loud attended
-#      fail-open only for an already verified failure episode.
+#      fail-open.
+#
+# Independence from the auto-arm's own files, --claude mode: every terminal
+# outcome above must be reachable from evidence THIS script can observe. A guard
+# whose only escape depends on a file the auto-arm writes cannot survive the
+# auto-arm going silent, which is the one failure it exists to survive: any
+# cause that silences that hook otherwise produces an unbounded, unsatisfiable
+# block. So the blocked-stop count advances on every blocking turn end rather
+# than only when the auto-arm's epoch changes, and the bounded fail-open also
+# accepts "no live auto-arm owner and no fresh epoch" as proof that no recovery
+# is under way. A session that does not hold the home lock is a separate case
+# entirely: it is forbidden from arming or repairing supervision at all
+# (AGENTS.md section 3), so blocking it can never be satisfied and it is allowed
+# to end its turn with one loud notice instead.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -86,6 +99,8 @@ done
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 # Read the whole turn-end hook payload once; never block on unreadable/absent
 # stdin.
@@ -134,6 +149,45 @@ OWNER_LOCK="$STATE/.claude-autoarm.lock"
 FAILURE_NOTICE="$STATE/.claude-autoarm-failure-notified"
 FAILURE_ALARM="$STATE/.claude-autoarm-failure-alarmed"
 SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // "unknown"' 2>/dev/null || printf 'unknown')
+PAYLOAD_SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // ""' 2>/dev/null || printf '')
+LOCK_OWNERSHIP=owned
+BUDGET_EVENT_COUNTED=0
+
+# Classify this session's standing against the home lock into LOCK_OWNERSHIP:
+#   owned    this session holds it
+#   free     no lock record exists yet
+#   stale    a record whose owner is dead or not a harness, so it is reclaimable
+#   foreign  a live owner that is not this session, or an unrecognized record
+# Only "foreign" means this session can never legally repair supervision: "free"
+# and "stale" are both claimable by the auto-arm's own guarded recovery path, so
+# they keep the ordinary blocking behavior.
+lock_classify() {
+  if fm_session_lock_owned_by_self "$STATE" "$PAYLOAD_SESSION_ID"; then
+    LOCK_OWNERSHIP=owned
+    return 0
+  fi
+  case "$FM_LOCK_FORM" in
+    absent) LOCK_OWNERSHIP=free ;;
+    malformed) LOCK_OWNERSHIP=foreign ;;
+    *)
+      if fm_harness_pid_alive "$FM_LOCK_PID"; then
+        LOCK_OWNERSHIP=foreign
+      else
+        LOCK_OWNERSHIP=stale
+      fi
+      ;;
+  esac
+}
+
+# Operator-facing description of the record parsed by lock_classify.
+lock_owner_desc() {
+  case "$FM_LOCK_FORM" in
+    typed) printf '%s session %s, pid %s' "$FM_LOCK_HARNESS" "$FM_LOCK_SESSION" "$FM_LOCK_PID" ;;
+    legacy) printf 'harness pid %s' "$FM_LOCK_PID" ;;
+    *) printf 'an unrecognized lock record' ;;
+  esac
+}
+
 budget_reset() {
   [ "$CLAUDE_MODE" -eq 1 ] || return 0
   fm_lock_try_acquire "$BUDGET_LOCK" || return 0
@@ -151,6 +205,25 @@ if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   fm_failure_episode_reset "$STATE" && exit 0
   exit 2
 fi
+
+# One line naming what the Stop-owned auto-arm is observably doing, so a block
+# never reads as "the hook is broken" when the real answer is "this session does
+# not hold the home lock" or "the epoch has been frozen for hours".
+autoarm_participation_line() {
+  local epoch_seq age
+  if [ "$LOCK_OWNERSHIP" = foreign ]; then
+    printf 'auto-arm: not participating (this session does not hold the home lock; owner %s)' "$(lock_owner_desc)"
+    return 0
+  fi
+  if [ ! -e "$STATE/.claude-autoarm-epoch" ]; then
+    printf 'auto-arm: no epoch recorded'
+    return 0
+  fi
+  epoch_seq=$(sed -n 's/^epoch=\([0-9][0-9]*\) .*/\1/p' "$STATE/.claude-autoarm-epoch" 2>/dev/null || true)
+  case "$epoch_seq" in ''|*[!0-9]*) epoch_seq=unknown ;; esac
+  age=$(fm_path_age "$STATE/.claude-autoarm-epoch")
+  printf 'auto-arm: epoch %s is %ss old' "$epoch_seq" "$age"
+}
 
 block_stop() {
   local afk x_mode reason rule
@@ -173,6 +246,7 @@ block_stop() {
     fi
     if [ "$CLAUDE_MODE" -eq 1 ]; then
       printf '●  The Stop-owned auto-arm did not claim this home either, so recovery is NOT already under way.\n'
+      printf '●  %s\n' "$(autoarm_participation_line)"
     fi
     printf '●  %s\n' "$reason"
     printf '●%s\n' "$rule"
@@ -184,16 +258,54 @@ if [ "$CLAUDE_MODE" -eq 0 ]; then
   block_stop
 fi
 
+# --- a session that does not hold the home lock is read-only -----------------
+# It may not arm, drain, or repair supervision (AGENTS.md section 3), so a block
+# demanding that repair can never be satisfied. Say who does hold the home once
+# per session and allow the turn to end. Away mode is deliberately excluded: the
+# daemon owns supervision there and both hooks keep their existing behavior.
+#
+# The one-per-session marker lives outside state/ on purpose: this path must
+# leave the home byte-for-byte untouched, including the block budget, because
+# the session taking it has no write authority over another session's home.
+# An unwritable temp dir must not silently swallow the notice, so only a marker
+# that is already there suppresses it.
+nonowner_notice_is_new() {
+  local key marker
+  key=$(printf '%s|%s' "$STATE" "$SESSION_ID" | cksum | tr -cd '0-9')
+  marker="${TMPDIR:-/tmp}/fm-turnend-nonowner-$key"
+  [ ! -e "$marker" ] || return 1
+  (set -C; : > "$marker") 2>/dev/null || true
+  return 0
+}
+
+lock_classify
+if [ "$LOCK_OWNERSHIP" = foreign ] && [ ! -e "$STATE/.afk" ]; then
+  if nonowner_notice_is_new; then
+    printf '{"systemMessage":"FIRSTMATE SUPERVISION IS NOT THIS SESSION'"'"'S TO REPAIR: the home lock is held by %s, so this session is read-only and must not arm, drain, or repair supervision. Its turn ends are no longer blocked. If that owner is gone, release the lock so this session can take the home over."}\n' \
+      "$(lock_owner_desc)"
+  fi
+  exit 0
+fi
+
 # --- --claude cooperative path -----------------------------------------------
 # The Stop-owned auto-arm fires on the same Stop event. Give it a brief bounded
 # window to prove it owns recovery for this event epoch before consuming one of
 # Claude's bounded continuations.
-budget_account_current_epoch() {
-  local current_epoch outcome old_session old_count old_epoch tmp initialized
+#
+# Pass "force" when accounting a turn end this guard is actually about to block.
+# A blocking turn end always advances the count, even when the auto-arm epoch is
+# unchanged: the epoch only tracks Stop events the auto-arm participated in, so
+# a frozen epoch would otherwise pin the count at its first value and make the
+# bounded progression unreachable for exactly as long as the auto-arm is silent.
+# BUDGET_EVENT_COUNTED keeps that at one advance per Stop event, which is what
+# the epoch-equality check was really protecting.
+budget_account_current_epoch() {  # [force]
+  local force=${1:-} current_epoch outcome old_session old_count old_epoch tmp initialized advanced
   fm_lock_try_acquire "$BUDGET_LOCK" || return 1
   current_epoch=$(sed -n 's/^epoch=\([0-9][0-9]*\) .*/\1/p' "$STATE/.claude-autoarm-epoch" 2>/dev/null || true)
   outcome=$(sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$STATE/.claude-autoarm-epoch" 2>/dev/null || true)
   initialized=0
+  advanced=0
   COUNT=0
   if [ -f "$BUDGET_FILE" ]; then
     old_session=$(sed -n '1s/^session=//p' "$BUDGET_FILE" 2>/dev/null || true)
@@ -204,10 +316,10 @@ budget_account_current_epoch() {
     esac
     if [ "$old_session" = "$SESSION_ID" ]; then
       COUNT=$old_count
-      if [ -n "$current_epoch" ] && [ "$old_epoch" = "$current_epoch" ]; then
-        :
-      else
+      if [ "$BUDGET_EVENT_COUNTED" -eq 0 ] \
+        && { [ "$force" = force ] || [ -z "$current_epoch" ] || [ "$old_epoch" != "$current_epoch" ]; }; then
         COUNT=$((COUNT + 1))
+        advanced=1
       fi
     fi
   fi
@@ -217,11 +329,13 @@ budget_account_current_epoch() {
         if [ -e "$FAILURE_NOTICE" ]; then
           initialized=1
           COUNT=0
+          advanced=0
         else
           COUNT=1
+          advanced=1
         fi
         ;;
-      *) COUNT=1 ;;
+      *) COUNT=1; advanced=1 ;;
     esac
   fi
   tmp="$BUDGET_FILE.tmp.$$"
@@ -233,6 +347,7 @@ budget_account_current_epoch() {
   fi
   rm -f "$tmp" 2>/dev/null || true
   BUDGET_INITIALIZED_FAILURE=$initialized
+  [ "$advanced" -eq 0 ] || BUDGET_EVENT_COUNTED=1
   fm_lock_release "$BUDGET_LOCK"
   return 0
 }
@@ -276,7 +391,7 @@ autoarm_owns_recovery() {
 terminal_fail_open() {
   local pid role old_session old_count
   [ "$COUNT" -gt "$BLOCK_BUDGET" ] || return 1
-  failure_episode_verified || return 1
+  terminal_evidence_ok || return 1
   [ ! -e "$FAILURE_ALARM" ] || return 1
   if ! fm_lock_try_acquire "$OWNER_LOCK"; then
     pid=$(cat "$OWNER_LOCK/pid" 2>/dev/null || true)
@@ -301,7 +416,7 @@ terminal_fail_open() {
   esac
   role=$(fm_lock_role "$OWNER_LOCK" 2>/dev/null || true)
   if [ "$role" != terminal-check ] || [ "$old_session" != "$SESSION_ID" ] \
-    || [ "$old_count" -le "$BLOCK_BUDGET" ] || ! failure_episode_verified \
+    || [ "$old_count" -le "$BLOCK_BUDGET" ] || ! terminal_evidence_ok \
     || [ -e "$FAILURE_ALARM" ]; then
     fm_lock_release "$BUDGET_LOCK"
     fm_lock_release "$OWNER_LOCK"
@@ -338,6 +453,35 @@ failure_episode_verified() {
   esac
 }
 
+# The auto-arm is provably not recovering this home, from evidence this script
+# owns rather than evidence the auto-arm must write: no live owner holds its
+# lock, and its epoch ledger is absent or has not moved inside the freshness
+# window. This is what makes the bounded terminal outcome reachable when the
+# hook has gone silent instead of failing - a silent hook writes neither the
+# failure notice nor a new epoch, so failure_episode_verified alone can never
+# become true again.
+autoarm_provably_absent() {
+  local pid role age
+  [ ! -e "$STATE/.afk" ] || return 1
+  pid=$(cat "$OWNER_LOCK/pid" 2>/dev/null || true)
+  role=$(fm_lock_role "$OWNER_LOCK" 2>/dev/null || true)
+  if fm_pid_alive "$pid" && [ "$role" = autoarm ]; then
+    return 1
+  fi
+  if [ -e "$STATE/.claude-autoarm-epoch" ]; then
+    age=$(fm_path_age "$STATE/.claude-autoarm-epoch")
+    [ "$age" -ge "$EPOCH_FRESH" ] || return 1
+  fi
+  return 0
+}
+
+# Either proof reaches the bounded loud allow: an auto-arm that reported its own
+# exhausted failure, or an auto-arm that is observably not participating at all.
+terminal_evidence_ok() {
+  failure_episode_verified && return 0
+  autoarm_provably_absent
+}
+
 i=0
 while [ "$i" -lt $((SYNC_WAIT_MS / 100)) ]; do
   if autoarm_owns_recovery; then
@@ -358,7 +502,7 @@ fi
 
 # The auto-arm genuinely failed to establish: consume the bounded re-block
 # budget before considering the verified one-time attended fail-open.
-budget_account_current_epoch || block_stop
+budget_account_current_epoch force || block_stop
 terminal_fail_open
 terminal_status=$?
 if [ "$terminal_status" -eq 0 ]; then
@@ -369,7 +513,8 @@ if [ "$terminal_status" -eq 0 ]; then
   else
     NEED_DESC="X-mode relay polling active"
   fi
-  printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, the Stop-owned auto-arm exhausted its bounded retries and one failure notice, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' "$NEED_DESC"
+  printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, %s, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' \
+    "$NEED_DESC" "$(autoarm_participation_line)"
   exit 0
 fi
 [ "$terminal_status" -eq 2 ] && exit 0

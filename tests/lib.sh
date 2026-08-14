@@ -34,6 +34,14 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# The session lock records a durable harness session id when one is published
+# (bin/fm-session-lock-lib.sh). The suite frequently runs INSIDE a real Claude
+# session, whose CLAUDE_CODE_SESSION_ID would otherwise leak into every fixture
+# home and decide which record form the acquisition path writes. Clear it so
+# fixtures start from the no-session-id baseline; a test that exercises the
+# typed record sets the variable itself, explicitly.
+unset CLAUDE_CODE_SESSION_ID
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

@@ -40,6 +40,13 @@ function lockOwnership(): LockOwnership {
   } catch {
     return "missing";
   }
+  // bin/fm-session-lock-lib.sh owns the record contract: a bare pid, or the
+  // typed "pid=<n> harness=<name> session=<id>" line written when the harness
+  // publishes a durable session id. Read the pid out of either form; every
+  // other record still falls through to the numeric test below and is treated
+  // as foreign, exactly as before.
+  const typedRecord = /^pid=([0-9]+) harness=[a-z-]+ session=[A-Za-z0-9._-]+$/.exec(lockPid);
+  if (typedRecord) lockPid = typedRecord[1];
   if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return "other";
   let pid = String(process.pid);
   for (let i = 0; i < 8; i += 1) {

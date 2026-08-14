@@ -115,6 +115,7 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-session-lock-lib.sh" "$dir/bin/fm-session-lock-lib.sh"
   mkdir -p "$dir/docs"
   cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
   chmod +x "$dir/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard-grok.sh" "$dir/bin/fm-operational-input.sh" "$dir/bin/fm-supervision-instructions.sh" "$dir/bin/fm-harness.sh"
@@ -1032,6 +1033,35 @@ run_hook_claude() {
   printf '{"stop_hook_active":%s,"session_id":"sess-claude-mode"}' "$stop_active" | CLAUDECODE=1 FM_HOME="$home" bash "$dir/bin/fm-turnend-guard.sh" --claude 2>&1
 }
 
+# Same as run_hook_claude, with the payload session id and the temp dir under
+# the caller's control. TMPDIR is where the read-only notice keeps its
+# one-per-session marker, so pinning it keeps that assertion hermetic.
+run_hook_claude_session() {  # <dir> <stop_active> <session-id>
+  local dir=$1 stop_active=$2 session=$3 home
+  home=$(cd "$dir" && pwd)
+  printf '{"stop_hook_active":%s,"session_id":"%s"}' "$stop_active" "$session" \
+    | CLAUDECODE=1 FM_HOME="$home" TMPDIR="$home" bash "$dir/bin/fm-turnend-guard.sh" --claude 2>&1
+}
+
+# Record the home lock as held by the session run_hook_claude presents.
+record_owned_lock() {  # <dir>
+  local dir=$1
+  printf 'pid=%s harness=claude session=sess-claude-mode\n' "$$" > "$dir/state/.lock"
+}
+
+# Record the home lock as held by a DIFFERENT, genuinely live harness session,
+# and echo that holder's pid so the caller can reap it.
+record_foreign_lock() {  # <dir>
+  local dir=$1 holder
+  ln -sf /bin/bash "$dir/claude"
+  # Detach the holder's stdio: this helper runs inside a command substitution,
+  # which would otherwise wait for the pipe the holder keeps open.
+  "$dir/claude" -c 'sleep 60; :' >/dev/null 2>&1 &
+  holder=$!
+  printf 'pid=%s harness=claude session=sess-other-session\n' "$holder" > "$dir/state/.lock"
+  printf '%s\n' "$holder"
+}
+
 seed_claude_failure() {
   local dir=$1 outcome=${2:-failed-suppressed}
   : > "$dir/state/.claude-autoarm-failure-notified"
@@ -1400,17 +1430,118 @@ test_hook_claude_mode_stale_rewake_epoch_blocks() {
   pass "fm-turnend-guard --claude: stale rewake epoch does not allow a blind stop"
 }
 
-test_hook_claude_mode_budget_without_verified_failure_keeps_blocking() {
+# The unbreakable-block regression. When the Stop-owned auto-arm never
+# participates it writes NO epoch and NO failure notice, so a terminal outcome
+# gated on those files can never be reached and the session blocks forever. The
+# guard must reach its bounded loud allow from its own evidence instead.
+test_hook_claude_mode_absent_autoarm_reaches_bounded_fail_open() {
   local dir out status i
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-budget")
   : > "$dir/state/task1.meta"
+  record_owned_lock "$dir"
   for i in 1 2 3 4; do
-    out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" false); status=$?
-    expect_code 2 "$status" "--claude block $i must exit 2 within the budget"
+    out=$(FM_CLAUDE_TURNEND_BLOCK_BUDGET=3 FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" false); status=$?
+    if [ "$i" -lt 4 ]; then
+      expect_code 2 "$status" "--claude block $i must exit 2 within the budget"
+      assert_not_contains "$out" 'systemMessage' "the guard failed open before its bounded progression ended"
+      assert_contains "$out" 'auto-arm: no epoch recorded' "block $i did not name the auto-arm's observable participation"
+    else
+      expect_code 0 "$status" "an auto-arm that never participates must still reach the bounded terminal outcome"
+      assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "the bounded terminal outcome was not loud"
+      assert_contains "$out" 'auto-arm: no epoch recorded' "the terminal notice did not name the auto-arm's observable participation"
+    fi
   done
-  assert_not_contains "$out" 'systemMessage' "budget exhaustion without verified auto-arm failure must not fail open"
-  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "unverified budget exhaustion recorded an attended alarm"
-  pass "fm-turnend-guard --claude: budget exhaustion alone cannot permit a blind stop"
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" "the bounded terminal outcome did not consume its one-time alarm"
+  assert_absent "$dir/state/.claude-autoarm-failure-notified" "the guard invented a failure notice only the auto-arm may write"
+  out=$(FM_CLAUDE_TURNEND_BLOCK_BUDGET=3 FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" false); status=$?
+  expect_code 2 "$status" "a later unhealthy stop in the same episode must block again"
+  assert_not_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "the attended alarm repeated in one episode"
+  pass "fm-turnend-guard --claude: a silent auto-arm still reaches one bounded loud allow, not an endless block"
+}
+
+# A frozen epoch is what a silent auto-arm actually leaves behind: the ledger
+# stops moving while the file stays. The blocked-stop count must keep advancing
+# anyway, or the budget is pinned at its first value forever.
+test_hook_claude_mode_frozen_epoch_cannot_pin_the_counter() {
+  local dir out status i count
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-frozen-epoch")
+  : > "$dir/state/task1.meta"
+  record_owned_lock "$dir"
+  printf 'epoch=1872 owner_pid=999 outcome=rewake updated_at=1\n' > "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.claude-autoarm-epoch"
+  for i in 1 2 3 4; do
+    out=$(FM_CLAUDE_TURNEND_BLOCK_BUDGET=3 FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+    count=$(sed -n '2s/^count=//p' "$dir/state/.turnend-claude-blocks")
+    [ "$count" = "$i" ] || fail "turn end $i left the blocked-stop count pinned at $count"
+    if [ "$i" -lt 4 ]; then
+      expect_code 2 "$status" "frozen-epoch block $i must exit 2 within the budget"
+      assert_contains "$out" 'auto-arm: epoch 1872 is ' "the block banner did not report the frozen epoch's age"
+    else
+      expect_code 0 "$status" "a frozen epoch must not make the bounded terminal outcome unreachable"
+      assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "the frozen-epoch terminal outcome was not loud"
+    fi
+  done
+  pass "fm-turnend-guard --claude: a frozen auto-arm epoch cannot pin the blocked-stop count"
+}
+
+test_hook_claude_mode_non_owner_session_is_never_blocked() {
+  local dir holder out status i notices
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-non-owner")
+  : > "$dir/state/task1.meta"
+  holder=$(record_foreign_lock "$dir")
+  notices=0
+  for i in 1 2 3; do
+    out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude_session "$dir" true sess-claude-mode); status=$?
+    expect_code 0 "$status" "turn end $i of a read-only session must not be blocked"
+    case "$out" in
+      *'systemMessage'*)
+        notices=$((notices + 1))
+        assert_contains "$out" 'sess-other-session' "the read-only notice did not name the session that holds the home"
+        assert_contains "$out" 'read-only' "the read-only notice did not say this session cannot repair supervision"
+        ;;
+      '') : ;;
+      *) fail "read-only allow produced unexpected output: $out" ;;
+    esac
+  done
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  [ "$notices" = 1 ] || fail "expected exactly one read-only notice across three turn ends, got $notices"
+  assert_absent "$dir/state/.turnend-claude-blocks" "a read-only session consumed the home's block budget"
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "a read-only session wrote into another session's home"
+  pass "fm-turnend-guard --claude: a session that does not hold the home lock ends its turns with one loud notice"
+}
+
+test_hook_claude_mode_away_mode_keeps_blocking_a_non_owner() {
+  local dir holder out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-non-owner-afk")
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/.afk"
+  holder=$(record_foreign_lock "$dir")
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude_session "$dir" true sess-claude-mode); status=$?
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  expect_code 2 "$status" "away mode must keep its existing behavior for a non-owning session too"
+  assert_contains "$out" 'auto-arm: not participating' "the away-mode block did not name the real cause"
+  assert_contains "$out" 'sess-other-session' "the away-mode block did not name the session that holds the home"
+  pass "fm-turnend-guard --claude: away mode keeps blocking, and the banner names the lock owner"
+}
+
+test_hook_claude_mode_live_autoarm_owner_still_blocks_nothing_and_costs_nothing() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-owner-untouched")
+  : > "$dir/state/task1.meta"
+  record_owned_lock "$dir"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "recovery already under way must allow without blocking"
+  [ -z "$out" ] || fail "an ordinary auto-arm-owned allow produced output: $out"
+  assert_absent "$dir/state/.turnend-claude-blocks" "an ordinary auto-arm-owned allow consumed block budget"
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "an ordinary auto-arm-owned allow recorded an attended alarm"
+  pass "fm-turnend-guard --claude: a live auto-arm owner still allows without consuming the bounded budget"
 }
 
 test_hook_claude_mode_verified_failure_alarm_is_loud_and_once() {
@@ -1432,23 +1563,41 @@ test_hook_claude_mode_verified_failure_alarm_is_loud_and_once() {
   pass "fm-turnend-guard --claude: verified fail-open is loud, bounded, attended, and non-repeating"
 }
 
-test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch() {
-  local no_notice notice_only out status
-  no_notice=$(make_primary_dir "$TMP_ROOT/hook-claude-alarm-no-notice")
-  : > "$no_notice/state/task1.meta"
-  printf 'epoch=3 owner_pid=999 outcome=failed-suppressed updated_at=1\n' > "$no_notice/state/.claude-autoarm-epoch"
-  touch -t 202001010000 "$no_notice/state/.claude-autoarm-epoch"
-  seed_claude_budget "$no_notice" 3
-  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$no_notice" true); status=$?
-  expect_code 2 "$status" "an exhausted failure epoch without the consumed notice must remain blocking"
+# The bounded terminal outcome needs proof that no recovery is under way, not
+# proof that the auto-arm reported a failure. A fresh epoch is that proof
+# failing: the auto-arm IS participating, so the guard must keep blocking.
+test_hook_claude_mode_fresh_epoch_keeps_blocking_past_the_budget() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-fresh-epoch-blocks")
+  : > "$dir/state/task1.meta"
+  record_owned_lock "$dir"
+  seed_claude_budget "$dir" 3
+  printf 'epoch=9 owner_pid=999 outcome=arming updated_at=%s\n' "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" "an auto-arm that is still moving must keep the guard blocking past the budget"
+  assert_not_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "the guard failed open while the auto-arm was still participating"
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "a participating auto-arm produced an attended alarm"
+  pass "fm-turnend-guard --claude: a still-moving auto-arm keeps the guard blocking, budget or not"
+}
 
-  notice_only=$(make_primary_dir "$TMP_ROOT/hook-claude-alarm-no-epoch")
-  : > "$notice_only/state/task1.meta"
-  : > "$notice_only/state/.claude-autoarm-failure-notified"
-  seed_claude_budget "$notice_only" 3
-  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$notice_only" true); status=$?
-  expect_code 2 "$status" "a consumed notice without an exhausted failure epoch must remain blocking"
-  pass "fm-turnend-guard --claude: fail-open requires both exhausted retries and consumed notice"
+test_hook_claude_mode_live_autoarm_owner_blocks_past_the_budget() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-owner-blocks")
+  : > "$dir/state/task1.meta"
+  record_owned_lock "$dir"
+  seed_claude_budget "$dir" 4
+  printf 'epoch=9 owner_pid=999 outcome=rewake updated_at=1\n' > "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.claude-autoarm-epoch"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "a live auto-arm owner must allow the stop it already owns"
+  assert_not_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "a live auto-arm owner produced the terminal outcome"
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "a live auto-arm owner consumed the attended alarm"
+  pass "fm-turnend-guard --claude: a live auto-arm owner is never mistaken for an absent one"
 }
 
 test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open() {
@@ -1591,9 +1740,14 @@ test_hook_claude_mode_integrated_monotonic_fail_open
 test_hook_claude_mode_recovery_contention_is_not_ordinary_allow
 test_hook_claude_mode_concurrent_recovery_resets_are_idempotent
 test_hook_claude_mode_stale_rewake_epoch_blocks
-test_hook_claude_mode_budget_without_verified_failure_keeps_blocking
+test_hook_claude_mode_absent_autoarm_reaches_bounded_fail_open
+test_hook_claude_mode_frozen_epoch_cannot_pin_the_counter
+test_hook_claude_mode_non_owner_session_is_never_blocked
+test_hook_claude_mode_away_mode_keeps_blocking_a_non_owner
+test_hook_claude_mode_live_autoarm_owner_still_blocks_nothing_and_costs_nothing
 test_hook_claude_mode_verified_failure_alarm_is_loud_and_once
-test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch
+test_hook_claude_mode_fresh_epoch_keeps_blocking_past_the_budget
+test_hook_claude_mode_live_autoarm_owner_blocks_past_the_budget
 test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open
 test_hook_claude_mode_allow_resets_budget
 test_hook_claude_mode_waits_for_late_claim

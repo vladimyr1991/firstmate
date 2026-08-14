@@ -130,6 +130,18 @@ The current Stop-owned main/secondmate inclusion and child-worktree exclusion ar
 Session-lock ownership in `bin/fm-session-lock-lib.sh` is decided against a session's whole contiguous harness ancestry rather than one chosen pid, so the Stop auto-arm reaches its lock owner wherever that owner sits: the outermost pid of Claude Code's multi-level `bg-spare` hook worker chain, or an inner pid when a harness-named daemon parents the session.
 Harness identity is read from the executable path and `argv[0]` as well as the command basename, because Claude Code's native installer names the per-session executable by its version (`.../share/claude/versions/2.1.220`): `ps -o comm=` reports that path on macOS and the bare version string on Linux, and neither basename names a harness.
 `tests/fm-session-lock-ancestry.test.sh` pins both platforms' reporting semantics behind a deterministic process table and runs the real Stop auto-arm in version-named, daemon-parented, and combined real process trees.
+
+Ancestry alone is not durable, which is why the record also carries a session id when the harness publishes one ([`turnend-guard.md`](../turnend-guard.md#home-lock-record-and-session-identity)).
+Measured on 2026-08-14 against Claude Code 2.1.231: moving a running session into a Claude Code background session replaces its process tree (`claude bg-spare` under `claude bg-pty-host` under init), so the pid recorded 8 days earlier stopped being an ancestor while staying alive and matching the harness predicate.
+In that home the Stop auto-arm then took its documented "a live owner keeps the competing hook inert" path 109 consecutive times, writing no epoch and no failure notice, and the turn-end guard - whose only terminal outcome was gated on that failure notice, with a blocked-stop count that advanced only when the epoch changed - blocked every turn end of the session with the count pinned at 1.
+`CLAUDE_CODE_SESSION_ID` is present in Claude Code 2.x tool and hook shells and equals the session's own id, which is the identity the typed record uses.
+
+The competing explanation - that `asyncRewake` simply does not fire in a backgrounded session - was ruled out in that same home on 2026-08-14.
+Retiring the abandoned foreign lock-holder process made the recorded owner dead, and on the very next turn end the hook recovered on its own with no manual arm: `state/.claude-autoarm-epoch` advanced `1872 -> 1873` with `outcome=arming`, `state/.lock` was rewritten from the dead foreign pid to the running backgrounded session's own pid, and a watcher armed and beat.
+The hook therefore does fire in a backgrounded Claude session, and the identity gate alone accounted for 109 blocked turn ends.
+That is what the typed record fixes: the gate closes on ancestry the migration destroyed, not on the hook's delivery.
+
+The narrower question of whether the session id string itself is byte-identical across a migration has not been measured directly, and nothing depends on it: a mismatch degrades to the legacy ancestry test, and the guard's bounded terminal outcome depends on neither, which `tests/fm-turnend-guard.test.sh` proves by reaching it with no auto-arm file present at all and with a frozen epoch.
 `tests/fm-watch-arm.test.sh` runs a real watcher and attached arm to verify that a delivered reason survives queue draining, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
 
 The Claude product live path ran with Claude Code 2.1.219 on 2026-07-24:

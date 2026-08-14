@@ -39,6 +39,38 @@ A fresh leftover beacon blocks when the lock is missing, dead, or identity-misma
 `FM_GUARD_GRACE` controls beacon freshness and defaults to 300 seconds.
 If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot safely read loop-guard fields.
 
+## Home-lock record and session identity
+
+`bin/fm-session-lock-lib.sh` is the single owner of the `state/.lock` record contract that `bin/fm-lock.sh`, the Claude Stop auto-arm, and this guard all read.
+Two forms are accepted: the legacy bare-integer pid, and the typed single line `pid=<n> harness=<name> session=<id>` that the acquisition path writes whenever the harness publishes a durable session id.
+Claude Code is the only verified harness that publishes one, in `CLAUDE_CODE_SESSION_ID` for tool and hook shells and as `session_id` in its Stop payload; every other harness keeps writing and reading the legacy form with unchanged behavior.
+There is no migration step and no backfill: a home mid-upgrade holds a legacy record until its next successful acquisition.
+
+Ownership of a typed record is decided by the recorded session id alone whenever the reading process can resolve one of its own.
+That identity is what survives a changed process tree, and it is also the only test that separates two sessions descending from one pooled background host process, whose pid is a genuine ancestor of both.
+A legacy record, and a typed record read by a process with no session id, keeps the harness-ancestry membership test unchanged.
+The recorded pid remains only a liveness hint: the lock is stale when that pid is dead or is not a harness, and a live pid under a non-matching session id is still another live session's home.
+An unrecognized record fails closed as malformed, with no pid any caller can act on.
+
+## Reaching a bounded outcome without the auto-arm
+
+The `--claude` mode's terminal outcomes must be reachable from evidence this guard observes itself.
+An earlier contract gated the one loud allow on `state/.claude-autoarm-failure-notified` and advanced the blocked-stop count only when `state/.claude-autoarm-epoch` changed, both written exclusively by the Stop auto-arm.
+Any cause that silences that hook therefore froze the count and made the terminal outcome unreachable, which produced an unbounded, unsatisfiable block.
+
+Three rules close that gap.
+The blocked-stop count now advances once per blocking turn end regardless of the epoch, bounded to one advance per Stop event, so a frozen epoch cannot pin it.
+The bounded loud allow accepts either proof: the auto-arm's own exhausted-failure episode as before, or the observation that no live `autoarm` owner holds `state/.claude-autoarm.lock` and the epoch ledger is absent or older than `FM_CLAUDE_AUTOARM_EPOCH_FRESH`.
+The block banner and the terminal notice both carry one line naming the auto-arm's observable participation - the lock owner when this session does not hold the home, `auto-arm: no epoch recorded`, or the epoch's sequence and age.
+
+A session that does not hold the home lock is a separate case.
+It may not arm, drain, or repair supervision at all (`AGENTS.md` section 3), so blocking it can never be satisfied.
+When supervision is needed, no watcher is healthy, and the lock is held by another live session or carries an unrecognized record, the guard exits 0 with one `systemMessage` per session naming the holder, and touches neither the block budget nor any other file in the home; the one-per-session marker lives under `TMPDIR` precisely because that session has no write authority over the home.
+A missing lock and a reclaimable stale lock are not that case: both are claimable by the auto-arm's own guarded recovery, so they keep the ordinary blocking behavior.
+Away mode is excluded from this path and keeps its existing behavior in both scripts.
+
+`bin/fm-lock.sh status` prints the recorded session id when the record carries one, so an operator can see an identity mismatch directly.
+
 ## Harness integrations
 
 - Claude registers two `Stop` hooks in `.claude/settings.json`, both anchored through `CLAUDE_PROJECT_DIR`: `bin/fm-turnend-guard.sh --claude`, and `bin/fm-claude-stop-autoarm.sh` with `asyncRewake: true` and `timeout: 28800`.
@@ -58,9 +90,9 @@ The Claude mode waits up to `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` (default 800 millis
 Fresh `failed` and `failed-suppressed` outcomes enter or advance the failure progression instead of acting as unconditional recovery proof.
 The auto-arm itself rechecks the healthy watcher predicate and retries a bounded number of times before reporting a genuine failure.
 The first fresh exhausted-failure epoch preserves its handoff without consuming a blocked-stop count, while later fresh failed epochs advance the same monotonic progression instead of resetting it.
-When none of those proofs appears, it re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override).
+When none of those proofs appears, it re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override), then takes the bounded loud allow described under "Reaching a bounded outcome without the auto-arm".
 In Claude mode, positive watcher recovery clears the block budget, failure notice, and attended alarm together under the existing budget lock before either hook reports ordinary recovery.
-The one loud attended fail-open is available only when the auto-arm has recorded an exhausted failure, its one notice is already consumed, the block budget is exhausted, and a final check finds neither a healthy watcher nor an automatic continuation.
+The one loud attended fail-open requires the block budget to be exhausted, a final check finding neither a healthy watcher nor an automatic continuation, and either an auto-arm that recorded an exhausted failure with its one notice already consumed, or an auto-arm that is observably absent.
 Each epoch identity is accounted at most once under the budget lock.
 Whenever both coordination locks are needed, positive auto-arm recovery and the terminal check acquire the auto-arm owner lock before the budget lock.
 After that alarm, the Stop auto-arm suppresses further exit-2 continuations until positive watcher recovery, so the final fail-open remains reachable.
@@ -104,6 +136,9 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 ## Regression coverage
 
 `tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the live-lock and fresh-beacon guard predicate, the cooperative `--claude` claim wait, monotonic failed-epoch progression, bounded attended fail-open, post-alarm continuation suppression, positive recovery reset, Pi logical-run latching, missing-`jq` behavior, all five primary registrations, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
+It also covers the auto-arm-independent contract above: a silent auto-arm still reaching one bounded loud allow, a frozen epoch failing to pin the blocked-stop count, a still-participating auto-arm continuing to block past the budget, the read-only non-owner allow with its one notice and untouched home, and away mode still blocking a non-owner.
+`tests/fm-session-lock-ancestry.test.sh` covers the record contract: a typed record surviving a changed process tree, a different live session still refused, a shared ancestor pid never overriding a recorded session id, unrecognized records failing closed, and legacy records keeping their exact ancestry semantics.
+`tests/fm-claude-stop-autoarm.test.sh` covers the hook's side of it: the Stop payload's session id keeping the auto-arm alive across a changed process tree, a home recorded to another live session left byte-for-byte untouched, and stale-lock recovery recording this session's durable identity.
 `tests/fm-guard-stale-banner.test.sh` covers the matching pull-guard predicate, including the fresh-leftover-beacon negative control.
 `tests/fm-kimi-harness.test.sh` covers the separate Kimi crew hook's format preservation, idempotence, refusal cases, token guard, spawn registration, and teardown cleanup.
 `tests/fm-supervision-instructions.test.sh` covers recovery-line ownership and pi-signed's identity-preserving reuse of Pi's protocol.
