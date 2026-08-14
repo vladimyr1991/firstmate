@@ -41,10 +41,12 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 
 ## Home-lock record and session identity
 
-`bin/fm-session-lock-lib.sh` is the single owner of the `state/.lock` record contract that `bin/fm-lock.sh`, the Claude Stop auto-arm, and this guard all read.
+`bin/fm-session-lock-lib.sh` is the single owner of the `state/.lock` record contract that `bin/fm-lock.sh`, the Claude Stop auto-arm, the session-start nudge, and this guard all read.
 Two forms are accepted: the legacy bare-integer pid, and the typed single line `pid=<n> harness=<name> session=<id>` that the acquisition path writes whenever the harness publishes a durable session id.
 Claude Code is the only verified harness that publishes one, in `CLAUDE_CODE_SESSION_ID` for tool and hook shells and as `session_id` in its Stop payload; every other harness keeps writing and reading the legacy form with unchanged behavior.
 There is no migration step and no backfill: a home mid-upgrade holds a legacy record until its next successful acquisition.
+The three non-shell primary adapters that cannot source that library - `.pi/extensions/fm-primary-turnend-guard.ts`, `.pi/extensions/fm-primary-pi-watch.ts`, and `.opencode/plugins/fm-primary-watch-arm.js` - read the pid out of either form and then keep their own unchanged ancestry test, because a home that switches from Claude to Pi or OpenCode holds the typed record until its next acquisition and would otherwise read its own home as foreign and lose watcher continuity.
+Any future record form has to be taught to every reader that cannot source the library, in the same change that introduces it.
 
 Ownership of a typed record is decided by the recorded session id alone whenever the reading process can resolve one of its own.
 That identity is what survives a changed process tree, and it is also the only test that separates two sessions descending from one pooled background host process, whose pid is a genuine ancestor of both.
@@ -145,6 +147,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 It also covers the auto-arm-independent contract above: a silent auto-arm still reaching one bounded loud allow, a frozen epoch failing to pin the blocked-stop count, a still-participating auto-arm continuing to block past the budget, the read-only non-owner allow with its one notice and untouched home, and away mode still blocking a non-owner.
 `tests/fm-session-lock-ancestry.test.sh` covers the record contract: a typed record surviving a changed process tree, a different live session still refused, a shared ancestor pid never overriding a recorded session id, unrecognized records failing closed, and legacy records keeping their exact ancestry semantics.
 `tests/fm-claude-stop-autoarm.test.sh` covers the hook's side of it: the Stop payload's session id keeping the auto-arm alive across a changed process tree, a home recorded to another live session left byte-for-byte untouched, and stale-lock recovery recording this session's durable identity.
+`tests/fm-turnend-guard.test.sh` proves the Pi turn-end extension and `tests/fm-pi-watch-extension.test.sh` proves the OpenCode watcher plugin resolve ownership from both record forms, each against a typed record carrying its own pid and one carrying another live session's.
 `tests/fm-guard-stale-banner.test.sh` covers the matching pull-guard predicate, including the fresh-leftover-beacon negative control.
 `tests/fm-kimi-harness.test.sh` covers the separate Kimi crew hook's format preservation, idempotence, refusal cases, token guard, spawn registration, and teardown cleanup.
 `tests/fm-supervision-instructions.test.sh` covers recovery-line ownership and pi-signed's identity-preserving reuse of Pi's protocol.

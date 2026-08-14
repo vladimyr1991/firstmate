@@ -1021,6 +1021,71 @@ EOF
   pass ".pi primary extension: delivery failure resets the logical-run latch"
 }
 
+# A home last acquired by Claude keeps the typed record (bin/fm-session-lock-lib.sh)
+# until the next session's own acquisition rewrites it, so a home switching from
+# Claude to Pi hands this extension that record. Its observable decision is the
+# load marker bin/fm-session-start.sh reads: a session that owns the home must
+# publish it, and a session that does not must never overwrite it.
+install_pi_turnend_extension() {  # <repo>
+  local repo=$1
+  mkdir -p "$repo/.pi/extensions/lib" "$repo/bin"
+  cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$repo/.pi/extensions/fm-primary-turnend-guard.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
+}
+
+test_pi_extension_reads_both_session_lock_record_forms() {
+  local repo own_home other_home out status
+  repo="$TMP_ROOT/pi-lock-record-root"
+  own_home="$TMP_ROOT/pi-lock-record-own"
+  other_home="$TMP_ROOT/pi-lock-record-other"
+  mkdir -p "$own_home/state" "$other_home/state"
+  install_pi_turnend_extension "$repo"
+
+  out=$(PLUGIN="$repo/.pi/extensions/fm-primary-turnend-guard.ts" FM_HOME="$own_home" node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const state = `${process.env.FM_HOME}/state`;
+writeFileSync(`${state}/.lock`, `pid=${process.pid} harness=claude session=sess-typed\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default({ on() {} });
+const marker = `${state}/.pi-turnend-extension-loaded`;
+if (!existsSync(marker)) throw new Error("a session holding the home lock did not publish its extension load marker");
+if (!readFileSync(marker, "utf8").includes(String(process.pid))) {
+  throw new Error("the load marker did not record this session's own pid");
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "the Pi turn-end extension must find its own pid in a typed lock record: $out"
+  [ -z "$out" ] || fail "Pi typed-record ownership test printed output: $out"
+
+  out=$(PLUGIN="$repo/.pi/extensions/fm-primary-turnend-guard.ts" FM_HOME="$other_home" node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const state = `${process.env.FM_HOME}/state`;
+const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+try {
+  writeFileSync(`${state}/.lock`, `pid=${other.pid} harness=claude session=sess-other\n`);
+  const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+  mod.default({ on() {} });
+  if (existsSync(`${state}/.pi-turnend-extension-loaded`)) {
+    throw new Error("a session published a load marker into a home another live session holds");
+  }
+} finally {
+  other.kill("SIGTERM");
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "a typed record naming another live session must stay foreign to the Pi extension: $out"
+  [ -z "$out" ] || fail "Pi typed-record foreign test printed output: $out"
+  pass ".pi primary extension: session-lock ownership is read from both record forms"
+}
+
 # --- --claude cooperative mode -----------------------------------------------
 # In --claude mode the guard ignores stop_hook_active (Claude marks every stop
 # after ANY stop-hook continuation true, including asyncRewake rewake turns) and
@@ -1729,6 +1794,7 @@ test_codex_hook_ignores_nested_git_root_guard
 test_opencode_plugin_anchors_guard_to_worktree
 test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
+test_pi_extension_reads_both_session_lock_record_forms
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive
