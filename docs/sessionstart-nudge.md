@@ -12,8 +12,11 @@ It sources `bin/fm-gate-refuse-lib.sh` and stays silent for a no-mistakes gate a
 It shares `bin/fm-primary-scope-lib.sh` with `bin/fm-turnend-guard.sh`, so the hooks use one primary-detection owner.
 The Shared Predicate section of [`turnend-guard.md`](turnend-guard.md#shared-predicate) owns marker validation, plain-checkout detection, and required Firstmate-shaped paths.
 
-Before printing, the wrapper reads the `state/.lock` pid through `fm_session_lock_read()` in `bin/fm-session-lock-lib.sh`, the single owner of that record contract, then walks at most eight parents from its own pid in its own separate, hard-coded loop, independent of `bin/fm-lock.sh`'s ancestry walk (`fm_harness_ancestry_pid()` in the same library, which walks up to sixteen parents and can extend past a claude-named match to a still-more-ancestral one) and of Pi's `lockOwnership()`.
-If the lock names a live pid in that ancestry, session start already ran in this harness session and the wrapper stays silent.
+Before printing, the wrapper reads the `state/.lock` record through `fm_session_lock_read()` in `bin/fm-session-lock-lib.sh`, the single owner of that record contract, and answers exactly one question: did this harness session already acquire this home?
+A typed record answers it by the recorded session id whenever the wrapper resolves a session id of its own for that record's harness, and a mismatch means session start has not run in this session, so the wrapper prints.
+That matters because an ordinary `/clear` starts a new session inside an unchanged process tree, so the previous session's record still names a live ancestor pid while belonging to a session that is gone.
+A legacy record, and a typed record read by a process that resolves no session id, keep the existing test unchanged: the wrapper walks at most eight parents from its own pid in its own separate, hard-coded loop, independent of `bin/fm-lock.sh`'s ancestry walk (`fm_harness_ancestry_pid()` in the same library, which walks up to sixteen parents and can extend past a claude-named match to a still-more-ancestral one) and of Pi's `lockOwnership()`, and stays silent when the lock names a live pid in that ancestry.
+In every record form the recorded pid must still be live and above pid 1, so a dead owner never suppresses the instruction.
 Every path exits 0, including malformed state and adapter errors, because a Claude SessionStart exit 2 blocks session initialization.
 
 ## Harness transports
@@ -34,7 +37,8 @@ That alternative expands trust and writes outside this repository, so Firstmate 
 
 ## Regression coverage
 
-`tests/fm-sessionstart-nudge.test.sh` proves wrapper silence for both gate signals, an unmarked linked worktree, a missing state directory, and an already-owned lock.
+`tests/fm-sessionstart-nudge.test.sh` proves wrapper silence for both gate signals, an unmarked linked worktree, a missing state directory, a legacy lock held in this process ancestry, and a typed record carrying this session's own id.
+It also proves the wrapper still prints when a typed record names a live ancestor pid under a different session id, and `tests/fm-session-lock-ancestry.test.sh` runs that post-`/clear` state end to end through the real wrapper, turn-end guard, and `bin/fm-lock.sh` in one live harness process tree.
 It proves exact U+2063 `FIRSTMATE_OP:`-prefixed, `session-start`-typed one-line output for a plain primary and a marked linked secondmate primary.
 `tests/fm-pi-primary-live-e2e.test.sh` and `tests/fm-opencode-primary-live-e2e.test.sh` exercise native startup paths with first-message and later-message Ahoy regressions.
 `tests/fm-turnend-guard.test.sh`, `tests/fm-pi-watch-extension.test.sh`, and `tests/fm-daemon.test.sh` cover marked guard, monitoring, and away-mode delivery.

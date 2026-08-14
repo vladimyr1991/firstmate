@@ -496,6 +496,127 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+# --- end-to-end layer: a /clear inside one unchanged process tree ------------
+#
+# Clearing a Claude session publishes a new session id while its process tree is
+# untouched, so the previous session's typed record still names a live ancestor
+# pid. Every reader of state/.lock has to agree about that state, and the three
+# real scripts are run here in one live harness process so nothing about the
+# identity they resolve is simulated.
+
+install_clear_sequence_scripts() {  # <dir>
+  local dir=$1 script
+  mkdir -p "$dir/bin" "$dir/docs"
+  for script in fm-sessionstart-nudge.sh fm-turnend-guard.sh fm-lock.sh \
+    fm-supervision-instructions.sh fm-operational-input.sh fm-harness.sh \
+    fm-gate-refuse-lib.sh fm-primary-scope-lib.sh fm-supervision-lib.sh \
+    fm-session-lock-lib.sh fm-wake-lib.sh; do
+    cp "$ROOT/bin/$script" "$dir/bin/$script"
+  done
+  cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
+  chmod +x "$dir/bin/fm-sessionstart-nudge.sh" "$dir/bin/fm-turnend-guard.sh" \
+    "$dir/bin/fm-lock.sh" "$dir/bin/fm-supervision-instructions.sh" \
+    "$dir/bin/fm-operational-input.sh" "$dir/bin/fm-harness.sh"
+}
+
+# A primary home holding the record of a session that has been cleared away,
+# plus the sequence a cleared session actually runs: session-start nudge, one
+# turn end, the session-start acquisition, then both readers again.
+make_clear_sequence_home() {  # <dir>
+  local dir=$1
+  mkdir -p "$dir/state"
+  git init -q "$dir"
+  git -C "$dir" commit -q --allow-empty -m init
+  : > "$dir/AGENTS.md"
+  : > "$dir/state/task1.meta"
+  install_clear_sequence_scripts "$dir"
+  cat > "$dir/sequence.sh" <<'SH'
+#!/usr/bin/env bash
+# Runs AS the harness-named session process, so $$ is the pid an unchanged
+# process tree keeps handing every reader below.
+state="$FM_HOME/state"
+unset NO_MISTAKES_GATE
+export CLAUDE_CODE_SESSION_ID="$FM_POST_CLEAR_ID"
+export CLAUDECODE=1
+export TMPDIR="$FM_HOME"
+export FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100
+printf 'pid=%s harness=claude session=%s\n' "$$" "$FM_PRE_CLEAR_ID" > "$state/.lock"
+
+run_step() {  # <name> <command...>
+  local name=$1
+  shift
+  "$@" > "$state/$name.out" 2>&1
+  printf '%s\n' "$?" > "$state/$name.rc"
+}
+
+run_turn_end() {  # <name>
+  local name=$1
+  printf '{"stop_hook_active":true,"session_id":"%s"}' "$CLAUDE_CODE_SESSION_ID" \
+    | "$FM_HOME/bin/fm-turnend-guard.sh" --claude > "$state/$name.out" 2>&1
+  printf '%s\n' "$?" > "$state/$name.rc"
+}
+
+run_step nudge-before "$FM_HOME/bin/fm-sessionstart-nudge.sh"
+run_turn_end guard-before
+run_step reclaim "$FM_HOME/bin/fm-lock.sh"
+run_step status-after "$FM_HOME/bin/fm-lock.sh" status
+run_step nudge-after "$FM_HOME/bin/fm-sessionstart-nudge.sh"
+run_turn_end guard-after
+SH
+  chmod +x "$dir/sequence.sh"
+}
+
+run_clear_sequence() {  # <dir>
+  local dir=$1
+  FM_HOME="$dir" FM_PRE_CLEAR_ID=sess-pre-clear FM_POST_CLEAR_ID=sess-post-clear \
+    "$NAMED_CLAUDE" "$dir/sequence.sh"
+}
+
+step_rc() {  # <dir> <name>
+  tr -d '[:space:]' < "$1/state/$2.rc"
+}
+
+step_out() {  # <dir> <name>
+  cat "$1/state/$2.out"
+}
+
+test_e2e_cleared_session_is_told_to_claim_the_home_and_can() {
+  local dir record
+  dir="$TMP_ROOT/e2e-clear-sequence"
+  make_clear_sequence_home "$dir"
+  run_clear_sequence "$dir"
+
+  expect_code 0 "$(step_rc "$dir" nudge-before)" "the session-start nudge must never block session init"
+  assert_contains "$(step_out "$dir" nudge-before)" 'bin/fm-session-start.sh' \
+    "a record left by the pre-clear session silenced the session-start instruction"
+
+  expect_code 0 "$(step_rc "$dir" guard-before)" "a session that does not hold the home must not be blocked"
+  assert_contains "$(step_out "$dir" guard-before)" 'systemMessage' \
+    "the read-only allow was silent, so the session was left with no reason it stopped being blocked"
+  assert_contains "$(step_out "$dir" guard-before)" 'sess-pre-clear' \
+    "the read-only notice did not name the identity that holds the home"
+  assert_contains "$(step_out "$dir" guard-before)" 'read-only' \
+    "the read-only notice did not say this session cannot repair supervision"
+
+  expect_code 0 "$(step_rc "$dir" reclaim)" \
+    "the cleared session could not reclaim its own home: $(step_out "$dir" reclaim)"
+  record=$(cat "$dir/state/.lock")
+  case "$record" in
+    *'session=sess-post-clear'*) : ;;
+    *) fail "the reclaimed record does not carry the current session id: $record" ;;
+  esac
+  assert_contains "$(step_out "$dir" status-after)" 'sess-post-clear' \
+    "fm-lock.sh status did not show the reclaimed session id"
+
+  [ -z "$(step_out "$dir" nudge-after)" ] \
+    || fail "the nudge still fired after the home was reclaimed: $(step_out "$dir" nudge-after)"
+  expect_code 2 "$(step_rc "$dir" guard-after)" \
+    "after the reclaim the guard must own the home again and block an unsupervised turn end"
+  assert_contains "$(step_out "$dir" guard-after)" 'TURN WOULD END BLIND' \
+    "the owning session's block lost its banner"
+  pass "session-lock e2e: a cleared session is nudged to claim its home, ends its turns loudly until it does, and every reader agrees after it does"
+}
+
 test_version_named_session_is_identified_on_both_platforms
 test_typed_record_survives_a_changed_process_tree
 test_typed_record_refuses_a_different_live_session
@@ -509,3 +630,4 @@ test_competing_version_named_session_is_seen_as_live
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
+test_e2e_cleared_session_is_told_to_claim_the_home_and_can

@@ -144,9 +144,10 @@ That is what the typed record fixes: the gate closes on ancestry the migration d
 The narrower question of whether the session id string itself is byte-identical across a migration was measured on 2026-08-14 against Claude Code 2.1.231.
 The primary session moved into a background session at 2026-08-13T23:34Z still reports `CLAUDE_CODE_SESSION_ID` `70e62a49-63f7-4383-9eb8-a58df9a3a006`, identical to the id it carried before that migration according to its own pre-migration transcript records.
 The id is therefore stable across a background migration, which settles approved assumption 1 as observed rather than assumed; the scope of that evidence is one measured session on one Claude Code version.
-Nothing depends on it either way.
+The guard's bounded terminal outcome does not depend on that stability, but the auto-arm's ability to keep arming its own home across a migration does, which is why FR-1 records the id at all.
+An id that changed under a running session would make that session's own record read as foreign, the Stop auto-arm would go inert again, and the home would lose watcher continuity while the guard allowed instead of blocking - bounded, but not harmless.
 For a typed record, a reader that resolves any session id of its own returns not-owned on a mismatch and deliberately skips the ancestry walk, so a mismatch degrades to not-owned rather than to the legacy ancestry test.
-The guard then classifies the home as foreign and takes the bounded read-only allow, and `tests/fm-turnend-guard.test.sh` proves the bounded terminal outcome by reaching it with no auto-arm file present at all and with a frozen epoch.
+The guard then classifies the home as foreign and takes the bounded read-only allow, and `tests/fm-turnend-guard.test.sh` proves the guard's bounded terminal outcome by reaching it with no auto-arm file present at all and with a frozen epoch.
 `tests/fm-watch-arm.test.sh` runs a real watcher and attached arm to verify that a delivered reason survives queue draining, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
 
 The Claude product live path ran with Claude Code 2.1.219 on 2026-07-24:

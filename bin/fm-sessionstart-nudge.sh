@@ -16,23 +16,36 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 # shellcheck source=bin/fm-operational-input.sh
 . "$SCRIPT_DIR/fm-operational-input.sh"
-# Only for the lock record parser: this check deliberately keeps its own
-# minimal ancestry walk rather than the harness-aware ownership predicate, but
-# it must read both record forms the acquisition path can write.
+# For the lock record contract: a legacy record deliberately keeps this file's
+# own minimal ancestry walk rather than the harness-aware ownership predicate,
+# while a typed record is answered the way its own contract defines identity.
 # shellcheck source=bin/fm-session-lock-lib.sh
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 fm_is_gate_agent "$FM_ROOT" && exit 0
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
-lock_is_in_ancestry() {
-  local lock_pid pid=$$ _
+# True when the lock records an acquisition made by THIS harness session, which
+# is the one question that decides silence.
+#
+# A typed record answers it by session id whenever this process resolves one of
+# its own for that record's harness: the id is what identifies the session, and
+# a new session can meet the previous session's still-live recorded pid in an
+# unchanged process tree. A legacy record, and a typed record read by a process
+# that resolves no session id, keep the minimal ancestry walk unchanged. In
+# every form the recorded pid must still be live and above pid 1.
+lock_is_this_session() {
+  local lock_pid pid=$$ self_session _
   fm_session_lock_read "$STATE" || return 1
   lock_pid=$FM_LOCK_PID
   case "$lock_pid" in
     ''|*[!0-9]*|1) return 1 ;;
   esac
   kill -0 "$lock_pid" 2>/dev/null || return 1
+  if [ "$FM_LOCK_FORM" = typed ] && self_session=$(fm_harness_session_id "$FM_LOCK_HARNESS"); then
+    [ "$self_session" = "$FM_LOCK_SESSION" ] || return 1
+    return 0
+  fi
   for _ in 1 2 3 4 5 6 7 8; do
     [ "$pid" = "$lock_pid" ] && return 0
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
@@ -41,7 +54,7 @@ lock_is_in_ancestry() {
   return 1
 }
 
-lock_is_in_ancestry && exit 0
+lock_is_this_session && exit 0
 nudge=
 fm_operational_input_encode session-start \
   "Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions." \

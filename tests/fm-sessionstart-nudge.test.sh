@@ -29,6 +29,15 @@ run_nudge() {
   FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" "$NUDGE"
 }
 
+# Same wrapper run, with the harness session id this process publishes under the
+# caller's control and exported into that child only, so one case can never leak
+# its identity into the next.
+run_nudge_as_session() {  # <root> <session-id>
+  local root=$1 session=$2
+  FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" \
+    CLAUDE_CODE_SESSION_ID="$session" "$NUDGE"
+}
+
 expect_silent_zero() {
   local label=$1
   shift
@@ -109,6 +118,36 @@ test_owned_lock_is_silent() {
   pass "fm-sessionstart-nudge: a lock holder in process ancestry is already run"
 }
 
+test_typed_record_for_this_session_is_silent() {
+  local root="$TMP_ROOT/typed-own-session"
+  make_primary "$root"
+  printf 'pid=%s harness=claude session=sess-current\n' "$$" > "$root/state/.lock"
+  expect_silent_zero "typed own-session nudge" run_nudge_as_session "$root" sess-current
+  pass "fm-sessionstart-nudge: a typed record carrying this session's own id is already run"
+}
+
+# The post-/clear state: a new session id meets the previous session's record,
+# whose recorded pid is still a live ancestor because the process tree never
+# changed. Session start has NOT run in this session, so the nudge must fire.
+test_typed_record_from_a_previous_session_still_nudges() {
+  local root="$TMP_ROOT/typed-stale-session" out status=0
+  make_primary "$root"
+  printf 'pid=%s harness=claude session=sess-pre-clear\n' "$$" > "$root/state/.lock"
+  out=$(run_nudge_as_session "$root" sess-post-clear) || status=$?
+  expect_code 0 "$status" "post-clear nudge"
+  [ "$out" = "$NUDGE_LINE" ] \
+    || fail "a record left by a previous session suppressed the session-start instruction: '$out'"
+  pass "fm-sessionstart-nudge: a live ancestor pid under another session's id still nudges"
+}
+
+test_typed_record_without_a_resolvable_id_keeps_ancestry() {
+  local root="$TMP_ROOT/typed-no-id"
+  make_primary "$root"
+  printf 'pid=%s harness=claude session=sess-pre-clear\n' "$$" > "$root/state/.lock"
+  expect_silent_zero "typed no-id nudge" run_nudge "$root"
+  pass "fm-sessionstart-nudge: a typed record read with no session id keeps the ancestry test"
+}
+
 test_opencode_plugin_delivers_exact_nudge_once() {
   local root="$TMP_ROOT/opencode-primary" out status=0
   make_primary "$root"
@@ -155,4 +194,7 @@ test_unmarked_linked_worktree_is_silent
 test_linked_secondmate_primary_nudges
 test_missing_state_is_silent
 test_owned_lock_is_silent
+test_typed_record_for_this_session_is_silent
+test_typed_record_from_a_previous_session_still_nudges
+test_typed_record_without_a_resolvable_id_keeps_ancestry
 test_opencode_plugin_delivers_exact_nudge_once
