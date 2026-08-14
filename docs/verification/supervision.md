@@ -148,6 +148,13 @@ The guard's bounded terminal outcome does not depend on that stability, but the 
 An id that changed under a running session would make that session's own record read as foreign, the Stop auto-arm would go inert again, and the home would lose watcher continuity while the guard allowed instead of blocking - bounded, but not harmless.
 For a typed record, a reader that resolves any session id of its own returns not-owned on a mismatch and deliberately skips the ancestry walk, so a mismatch degrades to not-owned rather than to the legacy ancestry test.
 The guard then classifies the home as foreign and takes the bounded read-only allow, and `tests/fm-turnend-guard.test.sh` proves the guard's bounded terminal outcome by reaching it with no auto-arm file present at all and with a frozen epoch.
+A record that does not parse at all is an accepted limitation of the same contract.
+It classifies as not-owned, so the turn-end guard takes the loud read-only allow and the Stop auto-arm stays inert, even though `bin/fm-lock.sh` would overwrite that record and reclaim the home in one step.
+The concrete path is a crash between truncate and write, which leaves a zero-byte `state/.lock` that parses as malformed.
+Before this work an unparsable record did not affect the guard at all, which kept blocking until the model repaired it, so this is a real change in behavior.
+It is accepted because the outcome is loud rather than silent, the session-start nudge still fires - the record does not parse as this session's own acquisition - and session start reclaims the record, so the exposure is the bounded window before session start rather than an unbounded block.
+The same shape applies to any future record form an older checkout cannot parse.
+
 `tests/fm-watch-arm.test.sh` runs a real watcher and attached arm to verify that a delivered reason survives queue draining, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
 
 The Claude product live path ran with Claude Code 2.1.219 on 2026-07-24:

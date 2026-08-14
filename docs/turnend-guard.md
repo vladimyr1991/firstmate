@@ -55,7 +55,8 @@ An unrecognized record fails closed as malformed, with no pid any caller can act
 One residual of that contract is accepted deliberately.
 Session-id separation is enforced when ownership is read, but the acquisition path still treats a recorded pid equal to this process's own resolved harness pid as non-contesting, so two primary sessions sharing one pooled background host process in the same home can still take the lock from each other, because that shared pid is a genuine ancestor of both.
 Refusing on a typed-record id mismatch regardless of pid would be worse: it would lock a session out of its own home after an ordinary `/clear`, where a new session id meets a still-live recorded pid, which is the same live-but-stale-owner outage this contract exists to end, on a routine daily operation.
-The residual is tolerable because the displaced session no longer blocks forever, it takes the bounded and loud read-only allow described below.
+The session-start nudge makes that residual actively prompted rather than merely reachable: in the pooled shape the sibling session mismatches on the recorded session id, is told to run session start, and the pid-equality rule above then lets it take the record.
+The residual is tolerable because every session is already instructed to run session start, watcher health keys on `state/.watch.lock` rather than `state/.lock` so an existing watcher survives the rewrite, and the displaced session no longer blocks forever - it takes the bounded and loud read-only allow described below.
 
 ## Reaching a bounded outcome without the auto-arm
 
