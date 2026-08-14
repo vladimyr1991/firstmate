@@ -188,6 +188,28 @@ test_ready_spec_passes() {
   pass "a structurally complete READY specification passes the installed validator"
 }
 
+# The skill now requires a current-state claim to carry the exact verified ref
+# and the implementer's re-check obligation. That annotation lands inside the
+# specification the validator reads, so the gate has to keep accepting it: a
+# resolved SHA, a branch name, and the re-check sentence must not read as an
+# unresolved placeholder or a structural break.
+test_current_state_claim_with_verified_ref_still_validates() {
+  local spec="$TMP_ROOT/current-state-ref.md" out
+  write_ready_spec "$spec"
+  awk '
+    { print }
+    /^The report page renders rows from/ {
+      print "Verified on branch `fm/example` at resolved SHA `8930ea64878e9cffc8c66f690b488ddf4a5f9293` (`git rev-parse HEAD`, `grep -n useReportRows src/pages/report.tsx`)."
+      print "Before your first edit, re-run those checks against the base you were actually dispatched onto and report any disagreement as a deviation, instead of silently preserving or overturning this claim."
+    }
+  ' "$spec" > "$spec.tmp" && mv "$spec.tmp" "$spec"
+  out=$(run_validator "$spec") \
+    || fail "a READY specification recording its verified current-state ref was rejected: $out"
+  assert_contains "$out" "VALID" \
+    "a current-state claim carrying its branch, resolved SHA, and re-check obligation was not accepted"
+  pass "a current-state claim carrying its verified ref and re-check obligation passes the installed validator"
+}
+
 test_missing_required_section_is_rejected() {
   local spec="$TMP_ROOT/no-verification.md"
   write_ready_spec "$spec"
@@ -244,6 +266,7 @@ test_registration_checkers_accept_the_installed_gate() {
 
 test_installed_links_resolve
 test_ready_spec_passes
+test_current_state_claim_with_verified_ref_still_validates
 test_missing_required_section_is_rejected
 test_ready_spec_with_placeholder_is_rejected
 test_ready_spec_with_open_blockers_is_rejected

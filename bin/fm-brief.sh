@@ -41,11 +41,11 @@
 # (data/captain.md, "Delivery autonomy"): instead of stopping at a ready branch,
 # the worker branches from origin/develop, lands fm/<id> -> develop -> staging
 # itself, pushes both, watches CI to a final result, and closes with the keyed
-# "done [key=staging]: staging=<sha> ci=<run-id>
-# result=green" line; a UI-touching task stops first at the browser-evaluation gate
-# with "blocked [key=evaluation]: ...", which only firstmate can clear. Firstmate
-# resolves this flag from the project's standing posture at intake, so the captain's
-# contract is generated rather than hand-patched over contradicting boilerplate.
+# "done [key=staging]: staging=<sha> ci=<run-id> result=green" line; a UI-touching
+# task stops first at the browser-evaluation gate with "blocked [key=evaluation]: ...",
+# which only firstmate can clear. Firstmate resolves this flag from the project's
+# standing posture at intake, so the captain's contract is generated rather than
+# hand-patched over contradicting boilerplate.
 # It is not a yolo passthrough: the worker still owns no approval decision beyond
 # the landing the captain's standing posture already granted, and releasing main
 # still needs the captain's explicit word each time.
