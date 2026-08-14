@@ -37,8 +37,9 @@
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
-#   blocked backend contract. Default tmux spawns do not write backend= to meta;
-#   absent backend= means tmux. cmux does not support --secondmate spawns yet.
+#   blocked backend contract. Every spawn writes backend= to meta, tmux
+#   included; readers still treat an absent backend= as tmux for metas written
+#   before that change. cmux does not support --secondmate spawns yet.
 #   A backend spawn refusal (missing dependency, version gate, unauthenticated
 #   socket, or unsupported secondmate mode) is terminal for that selected backend;
 #   callers must surface it instead of silently retrying another backend.
@@ -299,10 +300,9 @@ fi
 # Backend selection (data/fm-backend-design-d7): explicit --backend, else
 # FM_BACKEND env, else config/backend, else runtime auto-detection, else
 # default tmux (fm_backend_name). fm_backend_validate_spawn refuses unknown or
-# non-spawn-capable backends. The resolved value is
-# recorded in meta only when it is NOT tmux (fm-teardown.sh and fm-watch.sh's
-# window_backend/fm_backend_of_meta already treat an absent backend= as tmux),
-# so the default path's meta stays byte-identical.
+# non-spawn-capable backends. The resolved value is always recorded in meta,
+# tmux included; an absent backend= is only a reader-side allowance for metas
+# written before that change. The meta-write block below owns that rationale.
 if [ "$BACKEND_SET" -eq 1 ]; then
   BACKEND=$BACKEND_ARG
 else
@@ -317,8 +317,8 @@ if [ "$BACKEND_SET" -eq 1 ]; then
   # Paid for on 2026-08-05: with config/backend=herdr, a task was spawned with
   # --backend tmux because herdr was briefly refusing commands. The machinery
   # worked, but the task became invisible - the captain looked for it in herdr
-  # and it was not there, and the deviation reads as an ABSENT backend= line in
-  # meta (tmux is the implicit default) rather than as a statement. When the
+  # and it was not there, and back then the deviation read as an ABSENT
+  # backend= line in meta rather than as a statement. When the
   # configured backend is unusable that is a condition to report, not to work
   # around, so refuse the spawn instead of quietly relocating the task.
   # Deliberate change stays available to an operator: edit config/backend, or
