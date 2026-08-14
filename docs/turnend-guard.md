@@ -52,6 +52,11 @@ A legacy record, and a typed record read by a process with no session id, keeps 
 The recorded pid remains only a liveness hint: the lock is stale when that pid is dead or is not a harness, and a live pid under a non-matching session id is still another live session's home.
 An unrecognized record fails closed as malformed, with no pid any caller can act on.
 
+One residual of that contract is accepted deliberately.
+Session-id separation is enforced when ownership is read, but the acquisition path still treats a recorded pid equal to this process's own resolved harness pid as non-contesting, so two primary sessions sharing one pooled background host process in the same home can still take the lock from each other, because that shared pid is a genuine ancestor of both.
+Refusing on a typed-record id mismatch regardless of pid would be worse: it would lock a session out of its own home after an ordinary `/clear`, where a new session id meets a still-live recorded pid, which is the same live-but-stale-owner outage this contract exists to end, on a routine daily operation.
+The residual is tolerable because the displaced session no longer blocks forever, it takes the bounded and loud read-only allow described below.
+
 ## Reaching a bounded outcome without the auto-arm
 
 The `--claude` mode's terminal outcomes must be reachable from evidence this guard observes itself.
