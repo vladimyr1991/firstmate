@@ -208,7 +208,9 @@ test_reclaims_stale_session_lock_before_arming() {
   : > "$dir/state/task.meta"
   printf '9999999\n' > "$dir/state/.lock"
   write_arm_fixture "$dir" actionable
-  out=$(printf '%s\n' '{"session_id":"stale"}' \
+  # A payload with no session id is the no-durable-identity case, which must
+  # keep writing and reading the bare-pid legacy record exactly as before.
+  out=$(printf '%s\n' '{"stop_hook_active":false}' \
     | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
         printf "%s\n" "$$" > "$FM_HOME/state/expected-owner"
         "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
@@ -220,6 +222,27 @@ test_reclaims_stale_session_lock_before_arming() {
   [ -e "$dir/state/arm-ran" ] || fail "hook did not arm after reclaiming the stale session lock"
   [ "$(epoch_outcome "$dir")" = rewake ] || fail "stale-lock recovery must record outcome=rewake"
   pass "auto-arm: a demonstrably dead recorded session owner is reclaimed through fm-lock.sh before arming"
+}
+
+test_stale_lock_reclaim_records_the_session_id() {
+  local dir out status record status_out
+  dir=$(make_primary_dir "$TMP_ROOT/stale-lock-typed")
+  : > "$dir/state/task.meta"
+  printf '9999999\n' > "$dir/state/.lock"
+  write_arm_fixture "$dir" actionable
+  out=$(printf '%s\n' '{"session_id":"session-reclaim"}' \
+    | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+        printf "%s\n" "$$" > "$FM_HOME/state/expected-owner"
+        "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+      ' 2>&1); status=$?
+  expect_code 2 "$status" "a dead recorded owner must still be reclaimed before the actionable rewake"
+  record=$(cat "$dir/state/.lock")
+  [ "$record" = "pid=$(cat "$dir/state/expected-owner") harness=claude session=session-reclaim" ] \
+    || fail "the reclaimed lock did not record this session's durable identity: $record"
+  status_out=$(FM_HOME="$dir" bash "$dir/bin/fm-lock.sh" status)
+  assert_contains "$status_out" "claude session session-reclaim" \
+    "fm-lock.sh status must show the recorded session id an operator needs to spot a mismatch"
+  pass "auto-arm: stale-lock recovery records this session's durable identity and status reports it"
 }
 
 test_inert_when_lock_held_by_other_harness() {
@@ -241,6 +264,56 @@ test_inert_when_lock_held_by_other_harness() {
   [ ! -e "$dir/state/arm-ran" ] || fail "hook armed while another session owned the lock"
   [ ! -e "$dir/state/.claude-autoarm-epoch" ] || fail "hook wrote an epoch while another session owned the lock"
   pass "auto-arm: inert without arm, rewake, or lock replacement when another live harness owns the home"
+}
+
+test_inert_when_lock_records_a_different_live_session() {
+  local dir out status owner_after recorded_pid
+  dir=$(make_primary_dir "$TMP_ROOT/other-session")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  # The recorded pid IS this hook's own live harness ancestor, so the ancestry
+  # test alone would hand it the home. That is the pooled-host shape: several
+  # sessions descend from one live harness process, and only the recorded
+  # session id separates them. A mismatch must leave the home untouched.
+  out=$(printf '%s\n' '{"session_id":"session-two"}' \
+    | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+        printf "pid=%s harness=claude session=session-one\n" "$$" > "$FM_HOME/state/.lock"
+        printf "%s\n" "$$" > "$FM_HOME/state/recorded-pid"
+        "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+      ' 2>&1); status=$?
+  owner_after=$(cat "$dir/state/.lock")
+  recorded_pid=$(cat "$dir/state/recorded-pid")
+  expect_code 0 "$status" "hook must stay inert when the lock records a different live session"
+  [ -z "$out" ] || fail "inert foreign-session hook produced output: $out"
+  [ "$owner_after" = "pid=$recorded_pid harness=claude session=session-one" ] \
+    || fail "hook rewrote another session's lock record: $owner_after"
+  assert_absent "$dir/state/arm-ran" "hook armed while another session owned the home"
+  assert_absent "$dir/state/.claude-autoarm.lock" "hook claimed the owner lock for another session's home"
+  assert_absent "$dir/state/.claude-autoarm-epoch" "hook wrote an epoch for another session's home"
+  assert_absent "$dir/state/.claude-autoarm-failure-notified" "hook wrote a failure notice for another session's home"
+  pass "auto-arm: a lock recorded to a different live session leaves this home byte-for-byte untouched"
+}
+
+test_payload_session_id_owns_a_home_whose_pid_left_the_ancestry() {
+  local dir other out status
+  dir=$(make_primary_dir "$TMP_ROOT/payload-session")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  # A live harness pid that is NOT this process's ancestor: the shape a session
+  # is left with after it is moved into a background process tree. Only the
+  # recorded session id can still prove the home is its own. Its stdio is
+  # detached so the holder never keeps this suite's output pipe open.
+  "$FAKE_CLAUDE" -c 'sleep 60; :' >/dev/null 2>&1 &
+  other=$!
+  printf 'pid=%s harness=claude session=session-one\n' "$other" > "$dir/state/.lock"
+  out=$(printf '%s\n' '{"session_id":"session-one"}' \
+    | FM_HOME="$dir" bash "$dir/bin/fm-claude-stop-autoarm.sh" 2>&1); status=$?
+  kill "$other" 2>/dev/null || true
+  wait "$other" 2>/dev/null || true
+  expect_code 2 "$status" "the recorded session must keep arming its own home after its process tree changed"
+  assert_present "$dir/state/arm-ran" "the recorded session did not arm its own home"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "background-migrated session did not record a claim, got: $(epoch_outcome "$dir")"
+  pass "auto-arm: the Stop payload's session id keeps the auto-arm alive across a changed process tree"
 }
 
 test_inert_when_afk() {
@@ -578,7 +651,10 @@ test_fm_lock_status_still_works_with_shared_lib() {
 test_inert_in_child_worktree
 test_inert_without_session_lock
 test_reclaims_stale_session_lock_before_arming
+test_stale_lock_reclaim_records_the_session_id
 test_inert_when_lock_held_by_other_harness
+test_inert_when_lock_records_a_different_live_session
+test_payload_session_id_owns_a_home_whose_pid_left_the_ancestry
 test_inert_when_afk
 test_stale_lock_recovery_preserves_afk_and_need_gates
 test_resolves_outermost_claude_pid_in_nested_bgspare_chain

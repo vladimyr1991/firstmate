@@ -774,7 +774,10 @@ const pi = {
   },
 };
 const lock = `${process.env.FM_HOME}/state/.lock`;
-writeFileSync(lock, `${process.pid}\n`);
+// The typed record form (bin/fm-session-lock-lib.sh): a home last acquired by a
+// harness that publishes a session id keeps that record until this session's
+// own acquisition rewrites it, so the adapter must still find its own pid in it.
+writeFileSync(lock, `pid=${process.pid} harness=claude session=prior-session\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-lock-close", {}, undefined, undefined, {});
@@ -796,7 +799,7 @@ EOF
   status=$?
   [ "$status" -eq 0 ] || fail "Pi close handler must verify session-lock ownership before successor launch: $out"
   [ -z "$out" ] || fail "Pi close lock test printed output: $out"
-  pass "Pi close handler verifies session-lock ownership before successor launch"
+  pass "Pi close handler verifies session-lock ownership, in either record form, before successor launch"
 }
 
 test_pi_arm_distinguishes_session_lock_ownership() {
@@ -1345,6 +1348,72 @@ EOF
   expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
   [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
   pass "OpenCode watcher plugin requires session lock ownership"
+}
+
+# A home last acquired by Claude keeps the typed record (bin/fm-session-lock-lib.sh)
+# until this session's own acquisition rewrites it, so a home switching from
+# Claude to OpenCode hands this plugin that record. Reading only the bare-pid
+# form would make the plugin treat its own home as foreign and silently stop
+# arming the watcher.
+test_opencode_watch_plugin_reads_both_session_lock_record_forms() {
+  local plugin repo home log out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-lock-record-root"
+  home="$TMP_ROOT/opencode-lock-record-home"
+  log="$TMP_ROOT/opencode-lock-record.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+printf 'watcher: healthy pid=1 (beacon 0s)\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+const hooks = await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
+const lock = `${process.env.FM_HOME}/state/.lock`;
+
+const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+try {
+  writeFileSync(lock, `pid=${other.pid} harness=claude session=session-other\n`);
+  await hooks.event(event);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  if (existsSync(process.env.FM_ARM_LOG)) {
+    console.error("watch arm ran for a home a different live session records");
+    process.exit(1);
+  }
+} finally {
+  other.kill("SIGTERM");
+}
+
+writeFileSync(lock, `pid=${process.pid} harness=claude session=session-own\n`);
+await hooks.event(event);
+for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+if (!existsSync(process.env.FM_ARM_LOG)) {
+  console.error("watch arm did not run for a typed record carrying this session's own pid");
+  process.exit(1);
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode watch plugin must resolve ownership from the typed lock record too"
+  [ -z "$out" ] || fail "OpenCode typed-record session-lock test printed output: $out"
+  pass "OpenCode watcher plugin reads session-lock ownership from both record forms"
 }
 
 test_opencode_watch_arm_coordinator_respects_primary_scope() {
@@ -2143,6 +2212,7 @@ test_opencode_plugin_package_boundary_is_explicit_esm
 test_opencode_primary_watch_plugin_uses_effective_state_home
 test_opencode_primary_watch_plugin_sources_effective_config
 test_opencode_primary_watch_plugin_requires_session_lock
+test_opencode_watch_plugin_reads_both_session_lock_record_forms
 test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake
 test_opencode_pre_ready_actionable_close_preserves_its_successor

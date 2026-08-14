@@ -36,13 +36,155 @@ NAMED_CLAUDE="$FAKEBIN/claude"
 
 # Run one library expression with <fakebin> shadowing ps. kill is stubbed so
 # liveness questions are decided by the process table alone.
-lib_eval() {  # <fakebin> <expression>
-  local fakebin=$1 expr=$2
-  PATH="$fakebin:$PATH" bash -c "
+# The optional session id is exported into the child only, so one case can
+# never leak its identity into the next.
+lib_eval() {  # <fakebin> <expression> [<session-id>]
+  local fakebin=$1 expr=$2 session=${3:-}
+  PATH="$fakebin:$PATH" CLAUDE_CODE_SESSION_ID="$session" bash -c "
     . \"\$0\"
     kill() { return 0; }
     $expr
   " "$LIB"
+}
+
+# A process table where pid 600 is a live claude session that is NOT anywhere in
+# this process's ancestry: the shape a session leaves behind when it is moved
+# into a background process tree, and the shape two sessions sharing one home
+# have. Ownership can only be decided by the recorded session id here.
+write_disjoint_ps() {  # <fakebin>
+  cat > "$1/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  600:comm=) printf '%s\n' claude ;;
+  600:args=) printf '%s\n' claude ;;
+  600:ppid=) printf '%s\n' 1 ;;
+  650:comm=) printf '%s\n' claude ;;
+  650:args=) printf '%s\n' claude ;;
+  650:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' bash ;;
+  *:ppid=) printf '%s\n' 650 ;;
+esac
+SH
+  chmod +x "$1/ps"
+}
+
+test_typed_record_survives_a_changed_process_tree() {
+  local dir fakebin
+  dir="$TMP_ROOT/typed-identity"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  printf 'pid=600 harness=claude session=70e62a49-6338-4383-9eb8-a58df9a3a006\n' > "$dir/state/.lock"
+
+  lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" 70e62a49-6338-4383-9eb8-a58df9a3a006 \
+    || fail "a session lost ownership of its own home because its process tree changed"
+  # The Stop payload carries the same id when the environment does not.
+  lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state' 70e62a49-6338-4383-9eb8-a58df9a3a006" \
+    || fail "the Stop payload's own session id did not establish ownership"
+  pass "session-lock: a recorded session id keeps ownership when the recorded pid leaves the ancestry"
+}
+
+test_typed_record_refuses_a_different_live_session() {
+  local dir fakebin
+  dir="$TMP_ROOT/typed-foreign"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  printf 'pid=600 harness=claude session=session-one\n' > "$dir/state/.lock"
+
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-two; then
+    fail "a different live session claimed a home recorded to session-one"
+  fi
+  lib_eval "$fakebin" 'fm_harness_pid_alive 600' \
+    || fail "the recorded live owner was classified as a dead lock owner"
+  pass "session-lock: a genuinely different live session is still refused a recorded home"
+}
+
+test_typed_record_pid_is_only_a_liveness_hint() {
+  local dir fakebin
+  dir="$TMP_ROOT/typed-ancestor-pid"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  # pid 650 IS this process's harness ancestor - the shape of a pooled host
+  # process shared by several sessions. A recorded session id that does not
+  # match must still refuse, or the two sessions sharing that host both claim
+  # the home.
+  printf 'pid=650 harness=claude session=session-one\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-two; then
+    fail "a shared ancestor pid overrode a non-matching recorded session id"
+  fi
+  pass "session-lock: a shared ancestor pid never overrides a recorded session id"
+}
+
+test_unrecognized_records_fail_closed() {
+  local dir fakebin record
+  dir="$TMP_ROOT/malformed-records"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  for record in 'pid=650' 'pid=650 harness=claude' 'session=session-one' \
+    'pid=abc harness=claude session=s1' 'pid=650 harness=claude session=s1 extra=1' \
+    'pid=650 harness=claude session=bad;rm'; do
+    printf '%s\n' "$record" > "$dir/state/.lock"
+    if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-one; then
+      fail "an unrecognized lock record was accepted as ownership: $record"
+    fi
+    lib_eval "$fakebin" "fm_session_lock_read '$dir/state'; [ \"\$FM_LOCK_FORM\" = malformed ]" \
+      || fail "an unrecognized lock record did not parse as malformed: $record"
+  done
+  pass "session-lock: unrecognized lock records fail closed with no pid to act on"
+}
+
+test_legacy_record_is_read_exactly_as_before() {
+  local dir fakebin
+  dir="$TMP_ROOT/legacy-record"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  printf '650\n' > "$dir/state/.lock"
+  # A legacy record is ancestry-decided even for a process that has its own
+  # session id, so a home mid-upgrade behaves exactly as it does today.
+  lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-one \
+    || fail "a legacy record stopped resolving through harness ancestry"
+  lib_eval "$fakebin" "fm_session_lock_read '$dir/state'; [ \"\$FM_LOCK_FORM\" = legacy ] && [ \"\$FM_LOCK_PID\" = 650 ]" \
+    || fail "a bare-integer record did not parse as the legacy form"
+  printf '600\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" session-one; then
+    fail "a legacy record outside this ancestry was claimed as this session's own"
+  fi
+  pass "session-lock: legacy bare-pid records keep their exact ancestry semantics"
+}
+
+test_session_id_is_resolved_only_for_publishing_harnesses() {
+  local dir fakebin got
+  dir="$TMP_ROOT/session-id-source"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  write_disjoint_ps "$fakebin"
+  got=$(lib_eval "$fakebin" 'fm_harness_session_id claude payload-id' env-id) \
+    || fail "no session id was resolved for claude"
+  [ "$got" = env-id ] || fail "the environment id must win over a payload id, got '$got'"
+  got=$(lib_eval "$fakebin" 'fm_harness_session_id claude payload-id') \
+    || fail "the payload id was not used when the environment carries none"
+  [ "$got" = payload-id ] || fail "expected the payload id, got '$got'"
+  if lib_eval "$fakebin" 'fm_harness_session_id kimi' env-id; then
+    fail "a harness that publishes no session id resolved one anyway"
+  fi
+  if lib_eval "$fakebin" 'fm_harness_session_id claude "bad id"'; then
+    fail "an unsafe session id was accepted"
+  fi
+  pass "session-lock: only a publishing harness resolves a session id, environment first"
 }
 
 test_version_named_session_is_identified_on_both_platforms() {
@@ -354,10 +496,138 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+# --- end-to-end layer: a /clear inside one unchanged process tree ------------
+#
+# Clearing a Claude session publishes a new session id while its process tree is
+# untouched, so the previous session's typed record still names a live ancestor
+# pid. Every reader of state/.lock has to agree about that state, and the three
+# real scripts are run here in one live harness process so nothing about the
+# identity they resolve is simulated.
+
+install_clear_sequence_scripts() {  # <dir>
+  local dir=$1 script
+  mkdir -p "$dir/bin" "$dir/docs"
+  for script in fm-sessionstart-nudge.sh fm-turnend-guard.sh fm-lock.sh \
+    fm-supervision-instructions.sh fm-operational-input.sh fm-harness.sh \
+    fm-gate-refuse-lib.sh fm-primary-scope-lib.sh fm-supervision-lib.sh \
+    fm-session-lock-lib.sh fm-wake-lib.sh; do
+    cp "$ROOT/bin/$script" "$dir/bin/$script"
+  done
+  cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
+  chmod +x "$dir/bin/fm-sessionstart-nudge.sh" "$dir/bin/fm-turnend-guard.sh" \
+    "$dir/bin/fm-lock.sh" "$dir/bin/fm-supervision-instructions.sh" \
+    "$dir/bin/fm-operational-input.sh" "$dir/bin/fm-harness.sh"
+}
+
+# A primary home holding the record of a session that has been cleared away,
+# plus the sequence a cleared session actually runs: session-start nudge, one
+# turn end, the session-start acquisition, then both readers again.
+make_clear_sequence_home() {  # <dir>
+  local dir=$1
+  mkdir -p "$dir/state"
+  git init -q "$dir"
+  git -C "$dir" commit -q --allow-empty -m init
+  : > "$dir/AGENTS.md"
+  : > "$dir/state/task1.meta"
+  install_clear_sequence_scripts "$dir"
+  cat > "$dir/sequence.sh" <<'SH'
+#!/usr/bin/env bash
+# Runs AS the harness-named session process, so $$ is the pid an unchanged
+# process tree keeps handing every reader below.
+state="$FM_HOME/state"
+unset NO_MISTAKES_GATE
+export CLAUDE_CODE_SESSION_ID="$FM_POST_CLEAR_ID"
+export CLAUDECODE=1
+export TMPDIR="$FM_HOME"
+export FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100
+printf 'pid=%s harness=claude session=%s\n' "$$" "$FM_PRE_CLEAR_ID" > "$state/.lock"
+
+run_step() {  # <name> <command...>
+  local name=$1
+  shift
+  "$@" > "$state/$name.out" 2>&1
+  printf '%s\n' "$?" > "$state/$name.rc"
+}
+
+run_turn_end() {  # <name>
+  local name=$1
+  printf '{"stop_hook_active":true,"session_id":"%s"}' "$CLAUDE_CODE_SESSION_ID" \
+    | "$FM_HOME/bin/fm-turnend-guard.sh" --claude > "$state/$name.out" 2>&1
+  printf '%s\n' "$?" > "$state/$name.rc"
+}
+
+run_step nudge-before "$FM_HOME/bin/fm-sessionstart-nudge.sh"
+run_turn_end guard-before
+run_step reclaim "$FM_HOME/bin/fm-lock.sh"
+run_step status-after "$FM_HOME/bin/fm-lock.sh" status
+run_step nudge-after "$FM_HOME/bin/fm-sessionstart-nudge.sh"
+run_turn_end guard-after
+SH
+  chmod +x "$dir/sequence.sh"
+}
+
+run_clear_sequence() {  # <dir>
+  local dir=$1
+  FM_HOME="$dir" FM_PRE_CLEAR_ID=sess-pre-clear FM_POST_CLEAR_ID=sess-post-clear \
+    "$NAMED_CLAUDE" "$dir/sequence.sh"
+}
+
+step_rc() {  # <dir> <name>
+  tr -d '[:space:]' < "$1/state/$2.rc"
+}
+
+step_out() {  # <dir> <name>
+  cat "$1/state/$2.out"
+}
+
+test_e2e_cleared_session_is_told_to_claim_the_home_and_can() {
+  local dir record
+  dir="$TMP_ROOT/e2e-clear-sequence"
+  make_clear_sequence_home "$dir"
+  run_clear_sequence "$dir"
+
+  expect_code 0 "$(step_rc "$dir" nudge-before)" "the session-start nudge must never block session init"
+  assert_contains "$(step_out "$dir" nudge-before)" 'bin/fm-session-start.sh' \
+    "a record left by the pre-clear session silenced the session-start instruction"
+
+  expect_code 0 "$(step_rc "$dir" guard-before)" "a session that does not hold the home must not be blocked"
+  assert_contains "$(step_out "$dir" guard-before)" 'systemMessage' \
+    "the read-only allow was silent, so the session was left with no reason it stopped being blocked"
+  assert_contains "$(step_out "$dir" guard-before)" 'sess-pre-clear' \
+    "the read-only notice did not name the identity that holds the home"
+  assert_contains "$(step_out "$dir" guard-before)" 'read-only' \
+    "the read-only notice did not say this session cannot repair supervision"
+
+  expect_code 0 "$(step_rc "$dir" reclaim)" \
+    "the cleared session could not reclaim its own home: $(step_out "$dir" reclaim)"
+  record=$(cat "$dir/state/.lock")
+  case "$record" in
+    *'session=sess-post-clear'*) : ;;
+    *) fail "the reclaimed record does not carry the current session id: $record" ;;
+  esac
+  assert_contains "$(step_out "$dir" status-after)" 'sess-post-clear' \
+    "fm-lock.sh status did not show the reclaimed session id"
+
+  [ -z "$(step_out "$dir" nudge-after)" ] \
+    || fail "the nudge still fired after the home was reclaimed: $(step_out "$dir" nudge-after)"
+  expect_code 2 "$(step_rc "$dir" guard-after)" \
+    "after the reclaim the guard must own the home again and block an unsupervised turn end"
+  assert_contains "$(step_out "$dir" guard-after)" 'TURN WOULD END BLIND' \
+    "the owning session's block lost its banner"
+  pass "session-lock e2e: a cleared session is nudged to claim its home, ends its turns loudly until it does, and every reader agrees after it does"
+}
+
 test_version_named_session_is_identified_on_both_platforms
+test_typed_record_survives_a_changed_process_tree
+test_typed_record_refuses_a_different_live_session
+test_typed_record_pid_is_only_a_liveness_hint
+test_unrecognized_records_fail_closed
+test_legacy_record_is_read_exactly_as_before
+test_session_id_is_resolved_only_for_publishing_harnesses
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
+test_e2e_cleared_session_is_told_to_claim_the_home_and_can

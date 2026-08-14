@@ -130,6 +130,31 @@ The current Stop-owned main/secondmate inclusion and child-worktree exclusion ar
 Session-lock ownership in `bin/fm-session-lock-lib.sh` is decided against a session's whole contiguous harness ancestry rather than one chosen pid, so the Stop auto-arm reaches its lock owner wherever that owner sits: the outermost pid of Claude Code's multi-level `bg-spare` hook worker chain, or an inner pid when a harness-named daemon parents the session.
 Harness identity is read from the executable path and `argv[0]` as well as the command basename, because Claude Code's native installer names the per-session executable by its version (`.../share/claude/versions/2.1.220`): `ps -o comm=` reports that path on macOS and the bare version string on Linux, and neither basename names a harness.
 `tests/fm-session-lock-ancestry.test.sh` pins both platforms' reporting semantics behind a deterministic process table and runs the real Stop auto-arm in version-named, daemon-parented, and combined real process trees.
+
+Ancestry alone is not durable, which is why the record also carries a session id when the harness publishes one ([`turnend-guard.md`](../turnend-guard.md#home-lock-record-and-session-identity)).
+Measured on 2026-08-14 against Claude Code 2.1.231: moving a running session into a Claude Code background session replaces its process tree (`claude bg-spare` under `claude bg-pty-host` under init), so the pid recorded 8 days earlier stopped being an ancestor while staying alive and matching the harness predicate.
+In that home the Stop auto-arm then took its documented "a live owner keeps the competing hook inert" path 109 consecutive times, writing no epoch and no failure notice, and the turn-end guard - whose only terminal outcome was gated on that failure notice, with a blocked-stop count that advanced only when the epoch changed - blocked every turn end of the session with the count pinned at 1.
+`CLAUDE_CODE_SESSION_ID` is present in Claude Code 2.x tool and hook shells and equals the session's own id, which is the identity the typed record uses.
+
+The competing explanation - that `asyncRewake` simply does not fire in a backgrounded session - was ruled out in that same home on 2026-08-14.
+Retiring the abandoned foreign lock-holder process made the recorded owner dead, and on the very next turn end the hook recovered on its own with no manual arm: `state/.claude-autoarm-epoch` advanced `1872 -> 1873` with `outcome=arming`, `state/.lock` was rewritten from the dead foreign pid to the running backgrounded session's own pid, and a watcher armed and beat.
+The hook therefore does fire in a backgrounded Claude session, and the identity gate alone accounted for 109 blocked turn ends.
+That is what the typed record fixes: the gate closes on ancestry the migration destroyed, not on the hook's delivery.
+
+The narrower question of whether the session id string itself is byte-identical across a migration was measured on 2026-08-14 against Claude Code 2.1.231.
+The primary session moved into a background session at 2026-08-13T23:34Z still reports `CLAUDE_CODE_SESSION_ID` `70e62a49-63f7-4383-9eb8-a58df9a3a006`, identical to the id it carried before that migration according to its own pre-migration transcript records.
+The id is therefore stable across a background migration, which settles approved assumption 1 as observed rather than assumed; the scope of that evidence is one measured session on one Claude Code version.
+The guard's bounded terminal outcome does not depend on that stability, but the auto-arm's ability to keep arming its own home across a migration does, which is why FR-1 records the id at all.
+An id that changed under a running session would make that session's own record read as foreign, the Stop auto-arm would go inert again, and the home would lose watcher continuity while the guard allowed instead of blocking - bounded, but not harmless.
+For a typed record, a reader that resolves any session id of its own returns not-owned on a mismatch and deliberately skips the ancestry walk, so a mismatch degrades to not-owned rather than to the legacy ancestry test.
+The guard then classifies the home as foreign and takes the bounded read-only allow, and `tests/fm-turnend-guard.test.sh` proves the guard's bounded terminal outcome by reaching it with no auto-arm file present at all and with a frozen epoch.
+A record that does not parse at all is an accepted limitation of the same contract.
+It classifies as not-owned, so the turn-end guard takes the loud read-only allow and the Stop auto-arm stays inert, even though `bin/fm-lock.sh` would overwrite that record and reclaim the home in one step.
+The concrete path is a crash between truncate and write, which leaves a zero-byte `state/.lock` that parses as malformed.
+Before this work an unparsable record did not affect the guard at all, which kept blocking until the model repaired it, so this is a real change in behavior.
+It is accepted because the outcome is loud rather than silent, the session-start nudge still fires - the record does not parse as this session's own acquisition - and session start reclaims the record, so the exposure is the bounded window before session start rather than an unbounded block.
+The same shape applies to any future record form an older checkout cannot parse.
+
 `tests/fm-watch-arm.test.sh` runs a real watcher and attached arm to verify that a delivered reason survives queue draining, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
 
 The Claude product live path ran with Claude Code 2.1.219 on 2026-07-24:
