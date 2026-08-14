@@ -32,6 +32,7 @@ The firstmate primary and implementation workers never scan the board or substit
 `query_data_sources` and `query_database_view` are rate-limited on the captain's plan; `search` and `fetch` are not.
 Spend at most TWO `query_data_sources` calls per cycle - the eligibility sweep and the orphaned-status sweep below - and read individual cards with `fetch`.
 Never issue a query per card, and never re-run either sweep inside the same cycle.
+The comment read below is bounded the same way: call `get_comments` once per SELECTED rework card, never once per card a sweep returned, so it stays inside this budget instead of becoming a call per card.
 
 ## Board contract
 
@@ -79,12 +80,12 @@ A rework card is taken under exactly the conditions above - the same `Stream` an
 
 **The captain's comment is the requirement.**
 A returned card's page comment states what failed their check, so its description alone does not say what to build.
-Read the card's discussions and not only its body: the per-card `fetch` needs `include_discussions`, or read them with the comments tool.
+Read the card's discussions and not only its body: the per-card `fetch` with `include_discussions` only locates the threads and returns a preview of each, so the full text must be read with `get_comments`.
 Carry that comment text into the scout report, because it is what the rework task implements.
 
-**A returned card is unlinked, and rework is a NEW task.**
-The task that delivered it is finished and torn down, and its `notion_page=` was retired to `notion_page_archived=`, which no sync step reads - so the card correctly reads as eligible again.
-Do not read an archived link as proof the card was already handled and skip it: it records that the card's previous task is over, and it is not the bare `notion_page=` presence that keeps a card from being dispatched twice.
+**A returned card's old link is stale, and rework is a NEW task.**
+The task that delivered it is finished and torn down, but a link is retired only at recycle step 3 below, so such a card normally still carries a live-looking `notion_page=` from a task that is already over.
+Do not read that stale link as proof the card was already handled and skip it: what keeps a card from being dispatched twice is a NON-TERMINAL task holding an active `notion_page=` to it, which the sprint-check step 1 skip rule tests against the brief's `linked_cards` list, never the bare presence of a link.
 Bind the card to the new task with the ordinary link step below; never reopen or re-link the finished one.
 
 Eligibility is necessary, not sufficient.
@@ -163,7 +164,7 @@ Reporting a divergence means leaving the card exactly as it is, writing it into 
 
 The orphaned-status sweep finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
 Check every card that sweep returns against the brief's `linked_cards` list, not against bare `notion_page=` notes in the backlog.
-That is deliberately a stronger test than the bare-presence check that keeps the eligibility sweep from dispatching a card twice: presence proves a card was taken once, while the brief's list proves a task is still working it.
+That is deliberately the same live-task test the sprint-check step 1 skip rule applies to the eligibility sweep, and for the same reason: bare presence proves only that a card was taken once, while the brief's list proves a task is still working it.
 If the brief carries no `linked_cards` line at all, skip this sweep for that scan and report no divergence from it: a test the PM cannot answer is not evidence that every active card is orphaned, and firstmate owns supplying the list.
 `linked_cards: none` is not that case and never skips the sweep - it is the answer that no task is live, so every card the sweep returns is a divergence.
 A returned card is healthy and needs no mention only when that list names it, because the list holds exactly the cards a non-terminal task carries an active `notion_page=` link to.
@@ -226,7 +227,9 @@ that out yourself, in the turn the wake opened.
 On a `sprint-check` wake or a direct captain request that launched this PM:
 
 1. Read the board.
-   Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so skip them or the same card is picked up again every hour.
+   A card is already taken only while a NON-TERMINAL task holds an active `notion_page=` link to it (`bin/fm-notion-link.sh` owns that link), and the brief's `linked_cards` list names exactly those cards, so skip the cards it names or the same card is picked up again every hour.
+   A card whose only link belongs to a task that has already delivered and been torn down is NOT taken and is not skipped - that is the rework case, and skipping it would leave `Нужны исправления` inert.
+   Only when the brief carries no `linked_cards` line at all, fall back to skipping every card carrying a bare `notion_page=` link in the backlog, because a PM that cannot test liveness must still never put two live workers on one card.
 2. **Run the orphaned-status sweep when the brief carries a `linked_cards` line, including `linked_cards: none`.**
    It selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
    Only when that line is missing entirely, skip the query and the sweep's report for this scan and continue to the next step.
