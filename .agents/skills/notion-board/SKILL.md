@@ -89,6 +89,8 @@ The PM may select at most `4 - active_count` dispatchable cards from the eligibi
 If the fleet is already at four, leave every `Новая` card untouched and end the scan without dispatching another worker.
 Re-check capacity before every spawn in a multi-card handoff because another task may have started after the PM produced its report.
 An empty eligible set is a normal, silent result: report nothing and do not widen the filter to find work.
+That silence covers dispatch reporting only, and it never silences a divergence the orphaned-status sweep found, which is reported even when no card was eligible.
+That sweep is also not a widening of this filter: it selects no work and only detects divergence.
 
 ## Turning a card into a task
 
@@ -141,9 +143,11 @@ Reporting a divergence means leaving the card exactly as it is, writing it into 
 
 The orphaned-status sweep finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
 Check every card that sweep returns against the backlog's `notion_page=` links, the same check that keeps the eligibility sweep from dispatching a card twice.
-A returned card with a matching live link is healthy and needs no mention.
-A returned card with no matching link is a divergence and is reported exactly as above.
+A returned card is healthy and needs no mention only when a non-terminal task carries an active `notion_page=` link to it, the same test firstmate counts capacity by above.
+A returned card with no such task is a divergence and is reported exactly as above, whether no link points at it at all or its only live link is held by a task that already reached a terminal status without being recycled.
+Bare link presence is not the test: `bin/fm-notion-link.sh` retires a link only on `--archive` at recycle step 3 below, so a task that ended without being recycled leaves an active `notion_page=` behind and its card is orphaned exactly like an unlinked one.
 This sweep is read-only detection: never change such a card's `Status`, never dispatch work for it, and never treat it as an eligible card, whatever its content says.
+It runs on every scan, so an unresolved divergence is deliberately re-reported every cycle until firstmate acts on it; never suppress a repeat because an earlier scan already named the card.
 
 ## Reporting
 
