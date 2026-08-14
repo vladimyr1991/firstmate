@@ -123,14 +123,17 @@ For an existing draft, run `python3 scripts/validate_spec.py path/to/spec.md` fr
 
 ## Handoff behavior
 
-If the user requested only a specification, stop after delivering it. If the same agent is also asked to implement:
+If the user requested only a specification, stop after delivering it.
+
+A specification that makes a repository-current-state claim binds whichever agent implements it, including a separately dispatched implementer that never saw the inspection: before its first edit that implementer re-runs the cited current-state checks against the actual dispatch base, and reports any disagreement as a deviation rather than silently preserving or overturning the claim. Carry this obligation in the specification itself, next to the claim and its recorded ref, so a fresh implementer receives it with nothing but the specification.
+
+If the same agent is also asked to implement:
 
 1. complete the readiness gate first;
 2. show the final spec or obtain approval if the change is high-risk;
-3. implement strictly within scope;
-4. before the first edit, re-run the specification's cited current-state checks against the actual dispatch base;
-5. report any disagreement as a deviation rather than silently preserving or overturning the specification's claim;
-6. verify against every acceptance criterion;
-7. report deviations instead of silently changing the specification.
+3. re-run the specification's cited current-state checks against the actual dispatch base before the first edit;
+4. implement strictly within scope;
+5. verify against every acceptance criterion;
+6. report deviations - including disagreement with a cited current-state claim - instead of silently changing the specification.
 
 Do not let implementation discoveries silently rewrite product intent. Escalate any discovery that invalidates a requirement or approved assumption.
