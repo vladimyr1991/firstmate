@@ -197,6 +197,45 @@ SH
   chmod +x "$fakebin/ps"
 }
 
+# make_fake_ps_pi_holder_with_foreign <fakebin> <holder_pid> <foreign_pid>: as
+# make_fake_ps_pi_holder, plus a SECOND live harness pid that is deliberately
+# not in this session's ancestry - a leftover Claude session still holding the
+# home lock, which is what forces the read-only path.
+make_fake_ps_pi_holder_with_foreign() {
+  local fakebin=$1 holder_pid=$2 foreign_pid=$3
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+pid=""
+prev=""
+for arg in "\$@"; do
+  [ "\$prev" = "-p" ] && pid="\$arg"
+  prev="\$arg"
+done
+case "\$*" in
+  *"comm="*)
+    case "\$pid" in
+      $holder_pid) printf '/usr/local/bin/pi\n' ;;
+      $foreign_pid) printf '/usr/local/bin/claude\n' ;;
+      *) printf '/bin/zsh\n' ;;
+    esac
+    exit 0
+    ;;
+  *"args="*)
+    case "\$pid" in
+      $holder_pid) printf 'pi\n' ;;
+      $foreign_pid) printf 'claude\n' ;;
+      *) printf 'zsh\n' ;;
+    esac
+    exit 0
+    ;;
+  *"ppid="*) printf '%s\n' "$holder_pid"; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+}
+
 # make_fake_tmux <fakebin> <live-target>: display-message succeeds only for
 # the given "session:window" target - the exact primitive
 # fm_backend_target_exists uses for a tmux endpoint liveness read.
@@ -1448,6 +1487,45 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+# The loaded-marker check must read the recorded pid through the session-lock
+# record contract, not off the lock file's raw first line. A typed record only
+# survives into this check on the read-only path, because any successful
+# acquisition rewrites the lock with this Pi session's own legacy pid - so the
+# fixture holds the lock with a live foreign Claude session and asserts the
+# refusal, then pins that the marker pid is compared against the record's pid
+# rather than the whole "pid=... harness=... session=..." line.
+test_pi_diagnostic_reads_typed_lock_record_pid() {
+  local rec root home fakebin out holder_pid foreign_pid
+  rec=$(new_world pi-typed-lock-record)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+
+  sleep 300 &
+  holder_pid=$!
+  sleep 300 &
+  foreign_pid=$!
+  make_fake_ps_pi_holder_with_foreign "$fakebin" "$holder_pid" "$foreign_pid"
+  install_pi_turnend_extension_fixture "$root"
+  install_pi_watch_extension_fixture "$root"
+
+  printf 'pid=%s harness=claude session=typed-session-id\n' "$foreign_pid" > "$home/state/.lock"
+  write_pi_loaded_markers "$home" "$root" "$foreign_pid"
+
+  out=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" "$foreign_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  wait "$foreign_pid" 2>/dev/null || true
+
+  assert_contains "$out" "another live firstmate session holds the lock" \
+    "fixture never reached the read-only path that preserves a typed lock record"
+  assert_not_contains "$out" "PI_WATCH_EXTENSION: not loaded" \
+    "pi diagnostic compared the marker pid against a whole typed lock record"
+
+  pass "session start reads the marker pid out of a typed session-lock record"
+}
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
@@ -1478,3 +1556,4 @@ test_pi_diagnostic_rejects_stale_loaded_marker
 test_pi_diagnostic_accepts_prelock_loaded_marker
 test_pi_diagnostic_rejects_missing_turnend_guard_marker
 test_pi_diagnostic_rejects_previous_session_loaded_marker
+test_pi_diagnostic_reads_typed_lock_record_pid

@@ -111,6 +111,11 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# For the Pi loaded-marker check below: the session-lock record contract - a
+# bare legacy pid, or the typed "pid=<n> harness=<name> session=<id>" line - is
+# owned by this lib, so the pid is parsed there and never re-derived here.
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
@@ -239,14 +244,22 @@ hash_file() {
   fi
 }
 
+# True when state dir $3's session lock records the same pid the loaded marker
+# $1 published, at the extension version $2 this clone currently ships.
+#
+# The recorded pid comes from fm_session_lock_read, not from the file's first
+# line, because the lock carries two record forms: a bare legacy pid and the
+# typed "pid=<n> harness=<name> session=<id>" line. Reading the raw line would
+# compare the marker pid against a whole typed record and never match. A
+# missing or unparsable record still yields not-loaded, as before.
 pi_extension_loaded() {
-  local marker=$1 expected_version=$2 lock=$3 marker_version marker_pid lock_pid
-  [ -f "$marker" ] && [ -f "$lock" ] && [ -n "$expected_version" ] || return 1
+  local marker=$1 expected_version=$2 state=$3 marker_version marker_pid
+  [ -f "$marker" ] && [ -n "$expected_version" ] || return 1
+  fm_session_lock_read "$state" || return 1
   marker_version=$(sed -n '1p' "$marker")
   marker_pid=$(sed -n '2p' "$marker")
-  lock_pid=$(sed -n '1p' "$lock")
   [ -n "$marker_pid" ] || return 1
-  [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ]
+  [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$FM_LOCK_PID" ]
 }
 
 queue_startup_sprint_check() {
@@ -338,13 +351,12 @@ if [ "$PRIMARY_HARNESS" = pi ] || [ "$PRIMARY_HARNESS" = pi-signed ]; then
   PI_TURNEND_EXT="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
   PI_WATCH_MARKER="$STATE/.pi-watch-extension-loaded"
   PI_TURNEND_MARKER="$STATE/.pi-turnend-extension-loaded"
-  PI_LOCK="$STATE/.lock"
   PI_RESTART_COMMAND=$PRIMARY_HARNESS
   [ "$PRIMARY_HARNESS" != pi ] || PI_RESTART_COMMAND='plain pi'
   PI_WATCH_VERSION=$(hash_file "$PI_EXT" || printf '')
   PI_TURNEND_VERSION=$(hash_file "$PI_TURNEND_EXT" || printf '')
-  if ! pi_extension_loaded "$PI_WATCH_MARKER" "$PI_WATCH_VERSION" "$PI_LOCK" \
-    || ! pi_extension_loaded "$PI_TURNEND_MARKER" "$PI_TURNEND_VERSION" "$PI_LOCK"; then
+  if ! pi_extension_loaded "$PI_WATCH_MARKER" "$PI_WATCH_VERSION" "$STATE" \
+    || ! pi_extension_loaded "$PI_TURNEND_MARKER" "$PI_TURNEND_VERSION" "$STATE"; then
     printf 'PI_WATCH_EXTENSION: not loaded - approve Pi project trust once per clone, then restart %s so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s only if project hooks are not trusted\n' "$PI_RESTART_COMMAND" "$PI_TURNEND_EXT" "$PI_EXT" "$PI_TURNEND_EXT" "$PI_EXT"
   fi
 fi
