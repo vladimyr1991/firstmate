@@ -569,8 +569,9 @@ test_sync_base_divergence_stop_spares_only_the_default_branch() {
     || fail "the divergence stop fired on an already-current base: $out"
 
   # The regression: a default branch holding a published commit the sync base never
-  # took. The old raw ahead-count sees it and blocks; the merge-base check must not,
-  # and the stale remedy must still carry the task onto current sync-base code.
+  # took. The old raw ahead-count sees it and blocks; excluding the remote's default
+  # branch must not, and the stale remedy must still carry the task onto current
+  # sync-base code.
   pool="$fixture/lineage"
   git clone --quiet "$upstream" "$pool"
   git -C "$pool" checkout -q --detach refs/remotes/origin/main
