@@ -88,7 +88,7 @@ Firstmate calculates capacity from reconciled live task state immediately before
 Firstmate records that scan's `active_count` and remaining capacity in the PM brief before launch so the PM knows the maximum number of cards it may select.
 That same step records `linked_cards`, the card URL of every task it counted, so the brief carries the live linked-card list the orphaned-status sweep tests against and the PM never has to infer a task's terminality from the backlog.
 Write that line on every brief, using `linked_cards: none` when `active_count` is 0, because an explicit empty list means zero live links while a missing line means the list was never supplied.
-Only a brief with no `linked_cards` line at all leaves the sweep unarmed; `linked_cards: none` arms it exactly like a populated list, and on an idle fleet every card that sweep returns is then a divergence.
+Only a brief with no `linked_cards` line at all leaves the sweep unarmed; `linked_cards: none` arms it exactly like a populated list, and on an idle fleet every `В работе` or `На ревью` card that sweep returns is then a divergence.
 The PM may select at most `4 - active_count` dispatchable cards from the eligibility sweep and records each selected card separately in its report.
 If the fleet is already at four, leave every `Новая` card untouched and end the scan without dispatching another worker.
 Re-check capacity before every spawn in a multi-card handoff because another task may have started after the PM produced its report.
@@ -145,15 +145,15 @@ Move a card back out of `На ревью` when the decision is resolved and the 
 Never move a card the captain moved by hand in the meantime; re-read the card before writing and, if it has moved somewhere this table did not put it, leave it and report the divergence.
 Reporting a divergence means leaving the card exactly as it is, writing it into the PM's scout report, and listing it on the rolling status page - never a silent correction, because only firstmate decides what to do about one.
 
-The orphaned-status sweep finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
-Check every card that sweep returns against the brief's `linked_cards` list, not against bare `notion_page=` notes in the backlog.
+The orphaned-status sweep finds the divergence this table cannot produce: a card the board shows as `В работе` or `На ревью` with no task behind it.
+Check every `В работе` or `На ревью` card that sweep returns against the brief's `linked_cards` list, not against bare `notion_page=` notes in the backlog.
 That is deliberately a stronger test than the bare-presence check that keeps the eligibility sweep from dispatching a card twice: presence proves a card was taken once, while the brief's list proves a task is still working it.
 If the brief carries no `linked_cards` line at all, report no orphan divergence for that scan: a test the PM cannot answer is not evidence that every active card is orphaned, and firstmate owns supplying the list.
-`linked_cards: none` is not that case and never skips the sweep - it is the answer that no task is live, so every card the sweep returns is a divergence.
-A returned card is healthy and needs no mention only when that list names it, because the list holds exactly the cards a non-terminal task carries an active `notion_page=` link to.
-A returned card the list does not name is a divergence and is reported exactly as above, whether no link points at it at all or its only live link is held by a task that already reached a terminal status without being recycled.
+`linked_cards: none` is not that case and never skips the sweep - it is the answer that no task is live, so every such card the sweep returns is a divergence.
+A `В работе` or `На ревью` card is healthy and needs no mention only when that list names it, because the list holds exactly the cards a non-terminal task carries an active `notion_page=` link to.
+A `В работе` or `На ревью` card the list does not name is a divergence and is reported exactly as above, whether no link points at it at all or its only live link is held by a task that already reached a terminal status without being recycled.
 Bare link presence is not the test: `bin/fm-notion-link.sh` retires a link only on `--archive` at recycle step 3 below, so a task that ended without being recycled leaves an active `notion_page=` behind and its card is orphaned exactly like an unlinked one.
-This sweep is read-only detection: never change such a card's `Status`, never dispatch work for it, and never treat it as an eligible card, whatever its content says.
+This sweep is read-only detection whatever status it returned: never change a card's `Status`, never dispatch work for it, and never treat it as an eligible card, whatever its content says.
 Every scan that runs it re-detects an unresolved divergence, which is deliberately re-reported every such cycle until firstmate acts on it; never suppress a repeat because an earlier scan already named the card.
 
 The same sweep returns every `Нужны исправления` card, the captain's rework return: a delivered task they checked, found a discrepancy in, and sent back with a comment saying what is wrong.
