@@ -32,7 +32,7 @@ The firstmate primary and implementation workers never scan the board or substit
 `query_data_sources` and `query_database_view` are rate-limited on the captain's plan; `search` and `fetch` are not.
 Spend at most TWO `query_data_sources` calls per cycle - the eligibility sweep and the orphaned-status sweep below - and read individual cards with `fetch`.
 Never issue a query per card, and never re-run either sweep inside the same cycle.
-The comment read below is bounded the same way: call `get_comments` once per SELECTED rework card, never once per card a sweep returned, so it stays inside this budget instead of becoming a call per card.
+The comment read below is bounded the same way, and `get_comments` is not in the rate-limited set above, so reading it for every rework CANDIDATE the PM evaluates costs no rate-limited call: read it once per such candidate, never once per card the eligibility sweep returned.
 
 ## Board contract
 
@@ -81,6 +81,8 @@ A rework card is taken under exactly the conditions above - the same `Stream` an
 **The captain's comment is the requirement.**
 A returned card's page comment states what failed their check, so its description alone does not say what to build.
 Read the card's discussions and not only its body: the per-card `fetch` with `include_discussions` only locates the threads and returns a preview of each, so the full text must be read with `get_comments`.
+`get_comments` returns page-level discussions only by default, and the captain normally anchors their comment to the block they found wrong, so pass `include_all_blocks: true` or pass each `discussion://` URL the `fetch` returned as `discussion_id` - a default page-level read comes back empty on exactly the card that needs it.
+Read that comment before judging the card, because for a rework card the dispatchability test below is answered by the comment rather than by the description, and a slot must never be spent on work that test would have refused.
 Carry that comment text into the scout report, because it is what the rework task implements.
 
 **A returned card's old link is stale, and rework is a NEW task.**
@@ -159,7 +161,8 @@ A bare `done:` with staging prose in it is not that signal: firstmate does not r
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
 Never move a card the captain moved by hand in the meantime; re-read the card before writing and, if it has moved somewhere this table did not put it, leave it and report the divergence.
 `Нужны исправления` does not weaken that rule: a card carrying a live task that the captain moves there is an ordinary divergence, left alone and reported like any other.
-The rework row above fires only on the eligibility path, where the card holds no task at all, so nothing the captain placed is ever overwritten - such a card leaves `Нужны исправления` only once its new task is spawned and linked.
+No sweep but the eligibility one returns such a card, so sprint-check step 1 is where it surfaces: it is skipped for dispatch, never skipped silently, and reported exactly as below.
+The rework row above fires only on the eligibility path, where the card holds no live task, so nothing the captain placed is ever overwritten - such a card leaves `Нужны исправления` only once its new task is spawned and linked.
 Reporting a divergence means leaving the card exactly as it is, writing it into the PM's scout report, and listing it on the rolling status page - never a silent correction, because only firstmate decides what to do about one.
 
 The orphaned-status sweep finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
@@ -230,6 +233,7 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
    A card is already taken only while a NON-TERMINAL task holds an active `notion_page=` link to it (`bin/fm-notion-link.sh` owns that link), and the brief's `linked_cards` list names exactly those cards, so skip the cards it names or the same card is picked up again every hour.
    A card whose only link belongs to a task that has already delivered and been torn down is NOT taken and is not skipped - that is the rework case, and skipping it would leave `Нужны исправления` inert.
    Only when the brief carries no `linked_cards` line at all, fall back to skipping every card carrying a bare `notion_page=` link in the backlog, because a PM that cannot test liveness must still never put two live workers on one card.
+   A card skipped this way that sits in `Нужны исправления` is the captain's return landing on a card a live task still holds, so it is skipped for dispatch and reported as a divergence per the status-sync section, never skipped silently.
 2. **Run the orphaned-status sweep when the brief carries a `linked_cards` line, including `linked_cards: none`.**
    It selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
    Only when that line is missing entirely, skip the query and the sweep's report for this scan and continue to the next step.
@@ -238,7 +242,7 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
    Stay live until firstmate confirms which dispatched workers are durably running and linked, then move only those cards to `В работе`.
 4. **Found nothing? End the turn silently.**
    Around eleven checks run each weekday, so reporting "nothing new" every time trains the captain to stop reading reports and hides the one that matters.
-   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched.
+   A divergence is something to say, whether the orphaned-status sweep found it or step 1 skipped a `Нужны исправления` card a live task still holds, so it is reported even when no card was dispatched.
 
 ## When a card is unclear
 
