@@ -1448,8 +1448,8 @@ test_staging_autonomy_generates_the_landing_contract() {
     "staging-autonomy brief did not state the git-flow landing sequence"
   assert_grep "watch CI to a final result" "$brief" \
     "staging-autonomy brief did not require watching CI to a final result"
-  assert_grep "fast-forward this worktree's own local \`develop\`" "$brief" \
-    "staging-autonomy brief did not close the stale-base loop after landing"
+  assert_no_grep "fast-forward this worktree's own local \`develop\`" "$brief" \
+    "staging-autonomy brief retained an impossible local-develop synchronization instruction"
   assert_grep "done [key=staging]: staging=<sha> ci=<run-id> result=green" "$brief" \
     "staging-autonomy brief did not require the keyed staging close line"
   assert_grep "blocked [key=evaluation]: test gate green, UI touched, awaiting browser evaluation before merge" "$brief" \

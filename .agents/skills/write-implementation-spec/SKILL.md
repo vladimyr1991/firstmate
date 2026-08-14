@@ -34,6 +34,7 @@ Read the request and all supplied artifacts. When repository access exists, insp
 - build, lint, test, preview, and migration commands.
 
 Do not ask the author for facts that can be discovered safely. Cite concrete paths, symbols, endpoints, or screenshots in the eventual specification. If no repository or artifacts are available, say which details could not be verified.
+When a specification makes a repository-current-state claim, record the exact inspected ref - branch and resolved SHA - that verified the claim.
 
 ### 2. Classify and size the task
 
@@ -127,7 +128,9 @@ If the user requested only a specification, stop after delivering it. If the sam
 1. complete the readiness gate first;
 2. show the final spec or obtain approval if the change is high-risk;
 3. implement strictly within scope;
-4. verify against every acceptance criterion;
-5. report deviations instead of silently changing the specification.
+4. before the first edit, re-run the specification's cited current-state checks against the actual dispatch base;
+5. report any disagreement as a deviation rather than silently preserving or overturning the specification's claim;
+6. verify against every acceptance criterion;
+7. report deviations instead of silently changing the specification.
 
 Do not let implementation discoveries silently rewrite product intent. Escalate any discovery that invalidates a requirement or approved assumption.
