@@ -39,7 +39,7 @@ Database `✅ Tasks (Тактический уровень)`, id `4163a7f3-7122-
 
 | Property | Values that matter here |
 |---|---|
-| `Status` | `Новая`, `В работе`, `На ревью`, `Тестирование`, `Завершена`, `Отложена`, `♻️ Пул` |
+| `Status` | `Новая`, `В работе`, `На ревью`, `Нужны исправления`, `Тестирование`, `Завершена`, `Отложена`, `♻️ Пул` |
 | `Stream` | `Маркетинг`, `Продажи`, `Деливери`, `Финансы`, `Лигал` |
 | `Sprint` | `🏃 Текущий спринт`, `⏭️ Следующий спринт`, `📋 Бэклог` |
 | `Priority` | `Низкий`, `Средний`, `Высокий` |
@@ -63,9 +63,9 @@ The orphaned-status sweep, the second call, which selects nothing and only detec
 ```sql
 SELECT url, "Name", "Status"
 FROM "collection://f33b6b87-20fb-40c0-a601-4ac8b88cd5f4"
-WHERE "Stream" = ? AND "Sprint" = ? AND "Status" IN (?, ?)
+WHERE "Stream" = ? AND "Sprint" = ? AND "Status" IN (?, ?, ?)
 ```
-with params `["Деливери", "🏃 Текущий спринт", "В работе", "На ревью"]`.
+with params `["Деливери", "🏃 Текущий спринт", "В работе", "На ревью", "Нужны исправления"]`.
 The status-sync section below owns what its results mean and how they are reported.
 
 ## What the PM may take
