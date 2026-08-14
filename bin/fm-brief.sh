@@ -532,7 +532,7 @@ When starting no-mistakes, make \`--intent\` preserve all relevant content from 
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 An active run commits into the pipeline's own worktree while your checkout stays at the head you submitted, so when a live finding asserts a fact about the pipeline head, do not treat your checkout as confirming or refuting it.
 Verify such a claim from supported gate evidence; if it cannot be checked from that evidence, relay it as unverified instead of endorsing it, and do not make a scope decision that depends on it.
-Do not run \`axi sync\` while the run owns the branch.
+Do not run \`axi sync\` while a validation run is active and owns the branch - its guarded custody recovery belongs only to the documented post-abort path, never to checking a finding.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.

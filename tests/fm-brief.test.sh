@@ -1013,10 +1013,14 @@ test_no_mistakes_dod_requires_verified_gate_claims() {
   assert_grep "do not make a scope decision that depends on it" "$brief" \
     "no-mistakes DOD lost the bar on deciding scope from an unverified claim"
   # The corrected wording, not the superseded draft: syncing is not the remedy,
-  # because the pipeline owns the branch for the whole active run.
+  # because the pipeline owns the branch for as long as the run is active. The
+  # prohibition is scoped to that window so it cannot be read as forbidding the
+  # guarded custody recovery that follows an authorized abort.
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
-  assert_grep 'Do not run `axi sync` while the run owns the branch.' "$brief" \
-    "no-mistakes DOD lost the prohibition on syncing while the run owns the branch"
+  assert_grep 'Do not run `axi sync` while a validation run is active and owns the branch' "$brief" \
+    "no-mistakes DOD lost the prohibition on syncing while an active run owns the branch"
+  assert_grep "belongs only to the documented post-abort path" "$brief" \
+    "no-mistakes DOD lost the carve-out preserving the post-abort custody recovery"
 
   # It sits with the gate-response guidance, not as a free-floating section.
   grep -q '^Do not hand-edit, commit, or fix findings yourself while a run is active' "$brief" \
@@ -1026,14 +1030,18 @@ test_no_mistakes_dod_requires_verified_gate_claims() {
     || fail "the finding-verification rule must follow the active-run gate-response guidance directly"
 
   # No pipeline runs in the other scaffolds, so the rule must not leak into them.
+  # assert_present first: assert_no_grep on a file that was never written
+  # passes vacuously, so a brief that stopped generating would read as clean.
   for mode in direct-PR local-only; do
     id="brief-gate-claim-e-$mode"
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    assert_present "$home/data/$id/brief.md" "$mode brief was not scaffolded"
     assert_no_grep "do not treat your checkout as confirming or refuting it" "$home/data/$id/brief.md" \
       "the live-finding verification rule leaked into the $mode brief"
   done
   id="brief-gate-claim-e-scout"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  assert_present "$home/data/$id/brief.md" "scout brief was not scaffolded"
   assert_no_grep "do not treat your checkout as confirming or refuting it" "$home/data/$id/brief.md" \
     "the live-finding verification rule leaked into the scout brief"
   pass "fm-brief.sh: no-mistakes DOD requires live gate claims to be verified or relayed unverified"
