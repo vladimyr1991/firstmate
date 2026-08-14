@@ -40,12 +40,12 @@
 # staging-inclusive landing autonomy a project's registered posture can grant
 # (data/captain.md, "Delivery autonomy"): instead of stopping at a ready branch,
 # the worker branches from origin/develop, lands fm/<id> -> develop -> staging
-# itself, pushes both, watches CI to a final result, fast-forwards its own local
-# develop, and closes with the keyed "done [key=staging]: staging=<sha> ci=<run-id>
-# result=green" line; a UI-touching task stops first at the browser-evaluation gate
-# with "blocked [key=evaluation]: ...", which only firstmate can clear. Firstmate
-# resolves this flag from the project's standing posture at intake, so the captain's
-# contract is generated rather than hand-patched over contradicting boilerplate.
+# itself, pushes both, watches CI to a final result, and closes with the keyed
+# "done [key=staging]: staging=<sha> ci=<run-id> result=green" line; a UI-touching
+# task stops first at the browser-evaluation gate with "blocked [key=evaluation]: ...",
+# which only firstmate can clear. Firstmate resolves this flag from the project's
+# standing posture at intake, so the captain's contract is generated rather than
+# hand-patched over contradicting boilerplate.
 # It is not a yolo passthrough: the worker still owns no approval decision beyond
 # the landing the captain's standing posture already granted, and releasing main
 # still needs the captain's explicit word each time.
@@ -496,7 +496,6 @@ Run the project's own test gate first and land only genuinely clean work; never 
 If this task touched the UI, stop before merging anything and append \`blocked [key=evaluation]: test gate green, UI touched, awaiting browser evaluation before merge\`, then wait.
 Only firstmate can spawn the independent browser evaluator, so that key stays open until firstmate answers \`resolved [key=evaluation]:\` and releases you to land.
 To land: merge \`fm/$ID\` -> \`develop\` -> \`staging\`, push both branches, and watch CI to a final result.
-Then fast-forward this worktree's own local \`develop\` to what you pushed, so the next task branching here does not start from a stale base.
 If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked: {the failing run}\` and stop.
 Close with the keyed line, never free prose:
    \`done [key=staging]: staging=<sha> ci=<run-id> result=green\`
