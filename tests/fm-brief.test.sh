@@ -507,11 +507,12 @@ test_sync_base_instruction_catches_a_stale_pooled_base() {
 # - an ordinary git-flow shape - was blocked before it could start, producing no work
 # at all. Excluding everything on the remote instead is too coarse the other way: a
 # pooled worktree left parked on a finished task's published tip would read as
-# compatible. The commands are extracted from the generated brief and executed
-# against fixtures, so this asserts the instruction's real behavior rather than the
-# presence of prose.
-test_sync_base_divergence_stop_uses_the_merge_base() {
-  local home brief fixture upstream diverge_cmd drift_cmd branch_cmd mergebase_cmd mergebase_clause pool out
+# compatible. Excluding the remote's default branch alone is the line that separates
+# them. The commands are extracted from the generated brief and executed against
+# fixtures, so this asserts the instruction's real behavior rather than the presence
+# of prose.
+test_sync_base_divergence_stop_spares_only_the_default_branch() {
+  local home brief fixture upstream diverge_cmd drift_cmd branch_cmd pool out
   home="$TMP_ROOT/sync-base-diverge-home"
   mkdir -p "$home/data"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sync-diverge pooled-proj --mode local-only --sync-base develop >/dev/null 2>&1 \
@@ -520,13 +521,10 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
   # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
   drift_cmd=$(sed -n 's/^ *Run `\([^`]*\)`.*/\1/p' "$brief" | head -1)
   # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
-  mergebase_cmd=$(sed -n 's/.*resolve the merge base with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
-  # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
   diverge_cmd=$(sed -n 's/.*rule out a genuinely divergent base with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
   # shellcheck disable=SC2016 # Backticks delimit the brief's own code spans.
   branch_cmd=$(sed -n 's/.*instead, with `\([^`]*\)`.*/\1/p' "$brief" | head -1)
   [ -n "$drift_cmd" ] || fail "could not extract the drift-check command from the generated brief"
-  [ -n "$mergebase_cmd" ] || fail "could not extract the merge-base command from the generated brief"
   [ -n "$diverge_cmd" ] || fail "could not extract the divergence-check command from the generated brief"
   [ -n "$branch_cmd" ] || fail "could not extract the stale-base branch command from the generated brief"
 
@@ -615,10 +613,9 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
   printf '%s' "$out" | grep -q local-scratch \
     || fail "the divergence stop no longer catches unpublished work on the pooled base: $out"
 
-  # An unresolvable merge base must read as diverged, not as compatible. The worker
-  # resolves it as its own step precisely because the divergence check cannot carry
-  # that decision: with an empty substitution its range degrades to HEAD..HEAD, which
-  # exits 0 and prints nothing, so a base sharing no history would read as fine.
+  # A pool re-initialised onto a history the remote shares nothing with. The check
+  # needs no special clause for it: every commit HEAD holds is one origin/develop
+  # does not, so the range prints them all and the base blocks on its own.
   pool="$fixture/unrelated"
   git clone --quiet "$upstream" "$pool"
   git -C "$pool" checkout -q --orphan unrelated-history
@@ -628,35 +625,25 @@ test_sync_base_divergence_stop_uses_the_merge_base() {
   git -C "$pool" add reinit.txt
   git -C "$pool" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm unrelated-root
   git -C "$pool" checkout -q --detach HEAD
-  out=$( cd "$pool" && eval "$mergebase_cmd" 2>&1 ) && [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
-    && fail "a base sharing no history with the remote resolved a merge base: $out"
-  # The degradation the separate step exists to prevent, shown on this same pool.
-  if out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ); then
-    [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
-      || fail "the divergence check no longer degrades to a silent range here, so the merge-base step is being tested against the wrong hazard: $out"
-  else
-    fail "the divergence check no longer exits 0 on an unresolvable merge base, so the merge-base step is being tested against the wrong hazard: $out"
-  fi
-  # So the generated Setup - the brief is this script's output contract - must route
-  # that failed merge base to the stop itself rather than leaning on the check.
-  mergebase_clause=$(grep -F "$mergebase_cmd" "$brief" | head -1)
-  case $mergebase_clause in
-    *"fails or prints nothing"*"blocked: pooled base diverged from origin/develop"*) : ;;
-    *) fail "the merge-base step does not route an unresolvable merge base to the diverged stop: $mergebase_clause" ;;
-  esac
+  out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ) || fail "divergence check failed on the unrelated-history pool: $out"
+  printf '%s' "$out" | grep -q unrelated-root \
+    || fail "a base sharing no history with the remote read as compatible instead of blocking: $out"
 
   # And the brief still carries the stop the checks feed.
   assert_grep 'blocked: pooled base diverged from origin/develop' "$brief" \
     "the generated Setup lost the diverged-base stop"
-  pass "fm-brief.sh: the divergence stop measures from the merge base, sparing a published lineage variant"
+  pass "fm-brief.sh: the divergence stop spares the remote's default branch and blocks everything else off the sync base"
 }
 
-# The divergence check names the remote's default branch, and a pool built with
-# `git init` + `git remote add` + fetch can have no refs/remotes/origin/HEAD at all.
-# Naming that ref outright made the check exit non-zero there, so every task on such
+# The divergence check names the remote's default branch, and a pool can easily have
+# no usable refs/remotes/origin/HEAD: `git init` + `git remote add` + fetch never
+# writes one, and an upstream default-branch rename leaves the existing symref
+# dangling because nothing runs `git remote set-head origin -a` afterwards. Naming
+# that ref outright made the check exit non-zero in both states, so every task on such
 # a pool blocked before starting - the same produced-no-work outcome --sync-base's
-# merge-base fix set out to remove. The emitted command resolves the default branch
-# with the fallback the rest of the repo uses instead.
+# divergence fix set out to remove. The emitted command resolves the default branch
+# with the fallback the rest of the repo uses, and verifies the name origin/HEAD gives
+# before using it, since a dangling symref reports success and a stale name.
 test_sync_base_divergence_check_survives_a_missing_origin_head() {
   local home brief fixture upstream diverge_cmd pool out
   home="$TMP_ROOT/sync-base-no-origin-head-home"
@@ -705,6 +692,33 @@ test_sync_base_divergence_check_survives_a_missing_origin_head() {
   printf '%s' "$out" | grep -q local-scratch \
     || fail "the default-branch fallback swallowed genuine divergence: $out"
 
+  # A dangling origin/HEAD, the state an upstream master-to-main rename leaves behind.
+  # symbolic-ref reports success and the stale name here, so a fallback that only
+  # checks its exit status never fires and the check dies on an unknown revision.
+  local rename_upstream
+  rename_upstream="$fixture/renamed-default"
+  mkdir -p "$rename_upstream"
+  git -C "$rename_upstream" init -q
+  git -C "$rename_upstream" symbolic-ref HEAD refs/heads/master
+  printf 'shared\n' > "$rename_upstream/feature.txt"
+  git -C "$rename_upstream" add feature.txt
+  git -C "$rename_upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm shared-base
+  git -C "$rename_upstream" branch develop
+  printf 'released\n' > "$rename_upstream/release.txt"
+  git -C "$rename_upstream" add release.txt
+  git -C "$rename_upstream" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm release-on-default
+  pool="$fixture/dangling-origin-head"
+  git clone --quiet "$rename_upstream" "$pool"
+  git -C "$rename_upstream" branch -m master main
+  git -C "$pool" fetch -q --prune origin
+  [ "$(git -C "$pool" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" = origin/master ] \
+    || fail "the fixture's origin/HEAD is not dangling, so it does not exercise the stale-symref path"
+  git -C "$pool" checkout -q --detach refs/remotes/origin/main
+  out=$( cd "$pool" && eval "$diverge_cmd" 2>&1 ) \
+    || fail "the divergence check errored on a pool whose origin/HEAD dangles, blocking a task that should proceed: $out"
+  [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
+    || fail "the divergence stop fired on a published lineage variant once origin/HEAD dangled: $out"
+
   # A remote with no main or master either: the exclusion set collapses to the sync
   # base alone, and the command must still run rather than error on an empty ref.
   local bare_upstream
@@ -723,7 +737,7 @@ test_sync_base_divergence_check_survives_a_missing_origin_head() {
     || fail "the divergence check errored when no default branch could be resolved at all: $out"
   [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] \
     || fail "the divergence stop fired on a base that is exactly the sync base: $out"
-  pass "fm-brief.sh: the divergence check resolves the default branch with a fallback instead of blocking without origin/HEAD"
+  pass "fm-brief.sh: the divergence check resolves the default branch with a verified fallback instead of blocking on a missing or dangling origin/HEAD"
 }
 
 # A pooled default branch can strictly contain the sync base - main right after a
@@ -1520,7 +1534,7 @@ test_sync_base_step_precedes_branch_creation
 test_sync_base_is_refused_where_it_does_not_apply
 test_sync_base_guards_a_scout_investigation_base
 test_sync_base_instruction_catches_a_stale_pooled_base
-test_sync_base_divergence_stop_uses_the_merge_base
+test_sync_base_divergence_stop_spares_only_the_default_branch
 test_sync_base_step_routes_a_default_branch_that_contains_the_base
 test_sync_base_divergence_check_survives_a_missing_origin_head
 test_faster_paths_use_configured_authority_without_stacked_review
