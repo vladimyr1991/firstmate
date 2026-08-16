@@ -77,6 +77,8 @@ Collapsing a rule stated three times into a rule stated once is an ordinary cons
 Briefs for tasks that touch firstmate's own tracked material should tell the crewmate to load this skill.
 `bin/fm-brief.sh`'s `REPO` argument is a caller-supplied string with no reliable signal that it names firstmate's own repo, unlike a project registered in `data/projects.md`, so there is no clean point inside the scaffold to detect this case automatically.
 Firstmate adds this skill's load instruction to firstmate-repo briefs by hand instead.
+Firstmate-repo briefs also carry two standing facts the crewmate cannot look up: this repo's root `CLAUDE.md` is firstmate's job description and the brief's own rules win over it; and this repo has never run a CI check, so the CI-cannot-run exception is the expected terminal path - apply it as soon as the pipeline reports no configured checks rather than waiting on the poll.
+Where the specification and `firstmate-coding-guidelines` disagree, the guidelines win and the conflict is a `needs-decision`, not a judgement call.
 `CONTRIBUTING.md`'s "Development" section carries the same instruction as a durable reminder.
 
 ## Compatibility and enforcement
@@ -105,6 +107,8 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 - Colocate tests with the existing pattern in `tests/`, name them `<subject>.test.sh`, and extend an existing script rather than inventing a new runner.
 - A new tracked file needs its wiring, not just its content: classify tracked prose in `docs/documentation-audiences.json`, and give a new test a family in `bin/fm-test-run.sh` so a lane actually selects it - an unclassified test belongs to no family, passes locally, and never runs in CI. A new tracked file TYPE also needs a changed-file mapping there, because `--changed` refuses an unmapped path rather than silently under-selecting.
 - Tests must exercise behavior through an executable or public interface and must never assert implementation-source bytes, including through parsers, regexes, snapshots, or indirect wrappers.
+  A shipped `bin/*-check.sh` guard that inspects repository files is itself such an interface: the invariant lives in the guard, with its own contract and `--help`, and the test drives the guard - including against a deliberately broken fixture copy, so the guard's own failure path is proven.
+  A helper that exists only to let a test read source bytes is the wrapper this forbids.
 - A maintainer-verification record under `docs/verification/` records active empirical facts, not assumptions or task chronology.
 - Include the date, version, exact commands run, and exact output needed to support the current guarantee.
 - Keep incident chronology and delivery evidence in private task reports or PR evidence unless a concise rationale is required to maintain a current safety boundary.

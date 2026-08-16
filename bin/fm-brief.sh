@@ -438,13 +438,18 @@ $SCOUT_SYNC
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
-   append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
-   When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+   append \`needs-decision [key=<slug>]: {summary of options}\` - the \`[key=...]\` token sits
+   between the verb and the colon, never after it, or the fold silently files it under \`default\` -
+   and stop. Firstmate will reply with the decision. When firstmate replies or a blocker clears and
+   you resume, append \`resolved [key=<slug>]: {how it was decided or unblocked}\` with the same
+   key so the decision or blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 8. Report status and findings to firstmate only. Never address "the captain" or "you" (the human)
    anywhere in your output or your report; firstmate is the sole channel to the captain.
+   A project's own \`CLAUDE.md\` or \`AGENTS.md\` describes that project's resident agent, not you: where
+   it and these rules disagree - including on who may be addressed and how - these rules win.
 9. A test or probe that writes into a real outward-facing surface must delete what it wrote: capture
    the evidence first, then delete, then re-probe to confirm it is gone. A consumed id is fine;
    visible text left behind is not. That cleanup belongs in the test's own teardown, including the
@@ -624,8 +629,12 @@ $RULE1
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
-   append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
-   When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+   append \`needs-decision [key=<slug>]: {summary of options}\` - the \`[key=...]\` token sits
+   between the verb and the colon, never after it, or the fold silently files it under \`default\` -
+   and stop. Firstmate will apply the configured authority and reply with the decision. When
+   firstmate replies or a blocker clears and you resume, append
+   \`resolved [key=<slug>]: {how it was decided or unblocked}\` with the same key so the decision or
+   blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
@@ -634,9 +643,11 @@ $RULE1
    fixed value that stands in for real work, no "wire this up later" comment. Code that compiles and
    renders is not evidence that it works - an element a user can click and get nothing from is not done.
    If the task turns out larger than it looked and you cannot finish it honestly, append
-   \`needs-decision: {what is missing and what you propose}\` and stop; never quietly ship a reduced version.
+   \`needs-decision [key=<slug>]: {what is missing and what you propose}\` and stop; never quietly ship a reduced version.
 9. Report status and findings to firstmate only. Never address "the captain" or "you" (the human)
    anywhere in your output; firstmate is the sole channel to the captain.
+   A project's own \`CLAUDE.md\` or \`AGENTS.md\` describes that project's resident agent, not you: where
+   it and these rules disagree - including on who may be addressed and how - these rules win.
 10. A test that writes into a real outward-facing surface must delete what it wrote: capture the
     evidence first, then delete, then re-probe to confirm it is gone. A consumed id is fine; visible
     text left behind is not. That cleanup belongs in the test's own teardown, including the failure
