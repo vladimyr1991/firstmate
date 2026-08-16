@@ -436,16 +436,17 @@ $SCOUT_SYNC
    run to finish, an upstream release, a rate-limit reset): firstmate then leaves your idle pane
    alone and rechecks it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
-5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+5. If you hit the same obstacle twice, append \`blocked [key=<slug>]: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision [key=<slug>]: {summary of options}\` - the \`[key=...]\` token sits
-   between the verb and the colon, never after it, or the fold silently files it under \`default\` -
+   between the verb and the colon, never after it, or the fold silently files it under \`default\`,
+   and the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces -
    and stop. Firstmate will reply with the decision. When firstmate replies or a blocker clears and
    you resume, append \`resolved [key=<slug>]: {how it was decided or unblocked}\` with the same
    key so the decision or blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+   daemon error, append \`blocked [key=<slug>]: {the daemon error}\` and stop; only firstmate manages the daemon.
 8. Report status and findings to firstmate only. Never address "the captain" or "you" (the human)
    anywhere in your output or your report; firstmate is the sole channel to the captain.
    A project's own \`CLAUDE.md\` or \`AGENTS.md\` describes that project's resident agent, not you: where
@@ -627,17 +628,18 @@ $RULE1
    run to finish, an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves
    your idle pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
-5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+5. If you hit the same obstacle twice, append \`blocked [key=<slug>]: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision [key=<slug>]: {summary of options}\` - the \`[key=...]\` token sits
-   between the verb and the colon, never after it, or the fold silently files it under \`default\` -
+   between the verb and the colon, never after it, or the fold silently files it under \`default\`,
+   and the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces -
    and stop. Firstmate will apply the configured authority and reply with the decision. When
    firstmate replies or a blocker clears and you resume, append
    \`resolved [key=<slug>]: {how it was decided or unblocked}\` with the same key so the decision or
    blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+   daemon error, append \`blocked [key=<slug>]: {the daemon error}\` and stop; only firstmate manages the daemon.
 8. Implement what the task asks for, completely. Leave behind no placeholder or unimplemented code:
    no handler that accepts input and does nothing, no control wired to nothing, no branch returning a
    fixed value that stands in for real work, no "wire this up later" comment. Code that compiles and

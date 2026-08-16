@@ -1453,6 +1453,9 @@ test_outward_write_cleanup_rule_reaches_both_scaffolds() {
 # A no-mistakes worker's most common legitimate idle is its own pipeline gate or a
 # CI run, and leaving `working:` as the last event during that wait produced false
 # wedge escalations. Both scaffolds must name those two waits as pause examples.
+# The same rules block prescribes the keyed status forms status_open_decisions()
+# folds on: an unkeyed opener collapses to the single key `default`, so every
+# opening form a worker copies must carry [key=<slug>] and its close must reuse it.
 test_pause_examples_name_pipeline_and_ci_waits() {
   local home brief label
   home="$TMP_ROOT/pause-examples-home"
@@ -1469,8 +1472,14 @@ test_pause_examples_name_pipeline_and_ci_waits() {
       "$label: pause examples omitted a CI run"
     assert_grep "an upstream release, a rate-limit reset" "$brief" \
       "$label: pause examples lost their original external waits"
+    assert_grep 'needs-decision [key=<slug>]' "$brief" \
+      "$label: brief did not open an escalation with the keyed needs-decision form"
+    assert_grep 'blocked [key=<slug>]' "$brief" \
+      "$label: brief did not open a blocker with the keyed blocked form"
+    assert_grep 'resolved [key=<slug>]' "$brief" \
+      "$label: brief did not close a keyed escalation or blocker with the same key"
   done
-  pass "fm-brief.sh: pause examples name the pipeline-gate and CI waits in both scaffolds"
+  pass "fm-brief.sh: both scaffolds name the pipeline-gate and CI waits and prescribe keyed status forms"
 }
 
 # Hard rule 4 lives only in firstmate's own AGENTS.md, which no worker reads, so
