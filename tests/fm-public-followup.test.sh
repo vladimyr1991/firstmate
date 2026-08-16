@@ -91,6 +91,16 @@ EOF
   printf '%s\n' "$home"
 }
 
+# Ship teardown's default-branch probe accepts origin/HEAD, main, or master only
+# (bin/fm-teardown.sh default_branch). A bare fm_git_init_commit inherits the
+# operator's init.defaultBranch (e.g. develop), which is not one of those and
+# fails closed even when the rest of the fixture is sound. Force main so this
+# suite is hermetic on portable CI and on developer machines alike.
+make_ship_worktree() {  # <dir>
+  fm_git_init_commit "$1"
+  git -C "$1" branch -M main
+}
+
 run_pf() {  # <home> <args...>
   local home=$1
   shift
@@ -641,7 +651,7 @@ test_secondmate_teardown_requires_parent_binding() {
 test_relay_disabled_unmarked_teardown_skips_public_path() {
   local home tasks_log out rc
   home=$(make_home teardown-disabled-unmarked relay-off)
-  fm_git_init_commit "$home/projects/worktree"
+  make_ship_worktree "$home/projects/worktree"
   tasks_log="$home/tasks-axi.log"; : > "$tasks_log"
   printf 'manual\n' > "$home/config/backlog-backend"
   cat > "$home/fakebin/tasks-axi" <<'SH'
@@ -679,7 +689,7 @@ test_relay_disabled_parent_allows_marked_child_teardown() {
   local parent child tasks_log out rc
   parent=$(make_home teardown-disabled-parent relay-off)
   child=$(make_home teardown-disabled-child relay-off)
-  fm_git_init_commit "$child/projects/worktree"
+  make_ship_worktree "$child/projects/worktree"
   printf '%s\n' disabled-mate > "$child/.fm-secondmate-home"
   printf -- '- disabled-mate - synthetic (home: %s; scope: synthetic; projects: ; added 2026-07-30)\n' \
     "$child" > "$parent/data/secondmates.md"
@@ -696,6 +706,14 @@ SH
     "window=firstmate:fm-work-disabled" "endpoint_task_id=work-disabled" \
     "worktree=$child/projects/worktree" "project=$child/projects/worktree" \
     "kind=ship" "mode=local-only"
+  # Ship teardown requires a lessons-learned attestation before public-followup
+  # checks run; this case is about a relay-disabled parent letting the marked
+  # child proceed without tasks-axi, so record the retro through the real path
+  # the same way the unmarked relay-disabled teardown fixture does.
+  FM_HOME="$child" FM_STATE_OVERRIDE="$child/state" FM_DATA_OVERRIDE="$child/data" \
+    "$ROOT/bin/fm-retro.sh" collect work-disabled >/dev/null
+  FM_HOME="$child" FM_STATE_OVERRIDE="$child/state" FM_DATA_OVERRIDE="$child/data" \
+    "$ROOT/bin/fm-retro.sh" complete work-disabled --none >/dev/null
 
   rc=0
   out=$(PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
