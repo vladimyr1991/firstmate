@@ -27,7 +27,8 @@ The concise standing authority boundary remains always loaded in `AGENTS.md` sec
 6. Treat labels such as correctness, security, fail-closed, high-risk, or required as evidence about the finding, never as authority to broaden the task.
 7. Examine the causal theme across prior findings and fix rounds.
    Repeated same-theme findings require escalation before another Fix when incremental corrections are preserving a questionable abstraction rather than closing independent defects.
-8. Apply the existing stronger captain boundaries first.
+8. When successive fixes are adding sentences that each patch one more side effect of the same prescribed command or mechanism, escalate to replace the mechanism rather than approving the next sentence; a mechanism needing a third caveat is the wrong mechanism, not an under-documented one.
+9. Apply the existing stronger captain boundaries first.
    Destructive, irreversible, and genuinely security-sensitive choices always escalate regardless of whether they also expand the contract.
 
 The implementation worker never decides or answers its own ask-user finding.
