@@ -597,6 +597,10 @@ A green baseline is what makes a later failure attributable to your work; withou
 When the gate you chose selects nothing, run the project's documented nonempty gate instead or record that no executable baseline exists; never call a zero-selection result green evidence.
 If the baseline is already red, treat that as inherited breakage: append \`blocked: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
 If the gate runs long enough that you would otherwise sit silent, append one \`working:\` line first so supervision does not read the wait as a wedged pane.
+When the project's test gate serves the working tree (for example a Vite dev server started by Playwright's \`webServer\`), "baseline before first edit" is a hard ordering constraint, not a nicety: edits made while the gate is running feed half-finished code into later specs and produce a red suite that looks exactly like inherited breakage.
+If that window was missed, stop editing, commit or stash the work, and re-measure from a clean tree or a detached base commit (\`git checkout <base-sha> -- <paths>\` or a clean worktree) rather than trusting a mid-edit run.
+To place base-revision sources for a temporary measurement, use \`git checkout <base-sha> -- <paths>\` (or a second worktree), not \`git stash push -- <paths>\`.
+On a clean tree \`stash push\` is a silent no-op; a later \`stash pop\` reporting "No stash entries found" is too late - the measurement may already have run against the branch under test.
 
 # Rules
 $RULE1

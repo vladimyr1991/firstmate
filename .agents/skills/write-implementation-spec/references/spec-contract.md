@@ -4,8 +4,9 @@
 
 1. Formatting rules
 2. Required template
-3. Acceptance-criteria rules
-4. Type-specific minimums
+3. Escalation rules for section 16
+4. Acceptance-criteria rules
+5. Type-specific minimums
 
 ## Formatting rules
 
@@ -126,6 +127,16 @@
 - Completion report must include: <changed files, commands/results, screenshots/examples, deviations>
 - Stop and escalate if: <conditions that invalidate the spec or require a product decision>
 ```
+
+## Escalation rules for section 16
+
+Write section 16's `Stop and escalate if` conditions against cause, not against an affected-file list alone.
+
+- Amend and report a deviation when a test goes red for a reason the spec's body already mandates, for example a removed component that other specs still count.
+- Escalate when the failure is unexplained, product-level, or requires changing a surface the spec forbids.
+- If an affected-file list is used, it must be exhaustive for every assertion the mandated deletes and edits will break, or it must say explicitly that the list is non-exhaustive and these cause rules prevail.
+- If implementing an approved removal or simplification unmasks a pre-existing latent defect - a masking condition hid it and the approved change removes the mask - repairing that defect enough to prevent a user-visible regression of the approved outcome is in scope.
+  Escalate for product choice when the repair would re-introduce the removed clutter, relax a user-facing guard, or expand into unrelated surfaces, not merely because the failing file was absent from the affected-file list in section 11.
 
 ## Acceptance-criteria rules
 

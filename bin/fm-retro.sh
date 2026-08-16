@@ -94,11 +94,23 @@
 # status-fold contract; this script adds no second parser.
 #
 # Two facts are proxies and say so in the record rather than pretending to be
-# exact. `commits` is counted against the first resolvable default-branch ref and
-# publishes that ref as `commit_base`, so a project that ships from a branch the
-# default ref lags behind reads as a large count with a visible reason instead of
-# a wrong number. `elapsed_seconds` spans `dispatch_source` to `landing_source`,
-# both named in the record, because no dispatch timestamp is recorded anywhere.
+# exact. `commits` is counted against the task's ship base: the base recorded as
+# `base=<ref-or-sha>` in state/<id>.meta when it is present and resolvable in the
+# worktree, and otherwise the first resolvable default-branch ref. Either way the
+# ref actually used is published as `commit_base`, so a project that ships from a
+# branch the default ref lags behind reads as a large count with a visible reason
+# instead of a wrong number. Recording `base=origin/develop` for such a project is
+# what turns that proxy into the real number: without it a feature branch cut from
+# develop counts every develop commit the default ref has not caught up with.
+# `elapsed_seconds` spans `dispatch_source` to `landing_source`, both named in the
+# record, because no dispatch timestamp is recorded anywhere.
+#
+# `evaluation_rounds` counts both layouts an evaluation round actually lands in:
+# data/<id>/evaluation-*.md, the path .agents/skills/frontend-evaluator/SKILL.md
+# documents, and data/eval-<id>-r*/report.md, which is where the same round ends
+# up whenever it was dispatched as its own task `eval-<id>-r<N>` and wrote the
+# ordinary per-task report. Counting only the first read a task with two real
+# rounds as zero.
 #
 # `complete` is the semantic attestation, mirroring fm-decision-hold.sh complete.
 # `--none` is an explicit "this task taught nothing durable", so silence is never
@@ -453,11 +465,16 @@ status_facts() {  # <status-file> -> "lines needs blocked resolved paused keys"
   printf '%s %s %s %s %s %s' "$lines" "$needs" "$blocked" "$resolved" "$paused" "${keys:-none}"
 }
 
-# Commits on the task branch that the default branch does not already contain.
+# Commits on the task branch that the ship base does not already contain.
 # Read-only and best effort: an absent worktree, an unresolvable base, or any git
 # failure yields `unknown` rather than a wrong number or a failed collect.
-branch_facts() {  # <worktree> <task-id> -> "branch base commits"
-  local wt=$1 id=$2 branch base candidate count
+#
+# The recorded base wins when it resolves, because only the record knows that a
+# project ships from a branch the default ref lags behind; a recorded base that
+# does not resolve in this worktree falls back to the default-ref scan rather
+# than failing the collect, and `commit_base` still names whichever ref was used.
+branch_facts() {  # <worktree> <task-id> <recorded-base> -> "branch base commits"
+  local wt=$1 id=$2 recorded=${3:-} branch base candidate count
   if [ -z "$wt" ] || [ ! -d "$wt" ] || ! git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
     printf 'unknown unknown unknown'
     return 0
@@ -469,12 +486,17 @@ branch_facts() {  # <worktree> <task-id> -> "branch base commits"
     [ -n "$branch" ] || branch=unknown
   fi
   base=''
-  for candidate in origin/HEAD origin/main origin/master main master; do
-    if git -C "$wt" rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
-      base=$candidate
-      break
-    fi
-  done
+  if [ -n "$recorded" ] \
+    && git -C "$wt" rev-parse --verify --quiet "$recorded" >/dev/null 2>&1; then
+    base=$recorded
+  else
+    for candidate in origin/HEAD origin/main origin/master main master; do
+      if git -C "$wt" rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
+        base=$candidate
+        break
+      fi
+    done
+  fi
   if [ -z "$base" ] || [ "$branch" = unknown ]; then
     printf '%s %s unknown' "$branch" "${base:-unknown}"
     return 0
@@ -524,13 +546,17 @@ EOF
   else
     open_count=unknown
   fi
-  for value in "$DATA/$id"/evaluation-*.md; do
+  # Both layouts an evaluation round lands in: the documented per-origin-task
+  # file, and the per-task report of a round dispatched as its own eval-<id>-r<N>
+  # task. Counting only the first recorded a task with two real rounds as zero -
+  # the self-flattering direction the durable-record invariant exists to rule out.
+  for value in "$DATA/$id"/evaluation-*.md "$DATA"/eval-"$id"-r*/report.md; do
     [ -e "$value" ] || continue
     eval_count=$((eval_count + 1))
   done
 
   read -r branch base commits <<EOF
-$(branch_facts "$(meta_value "$meta" worktree)" "$id")
+$(branch_facts "$(meta_value "$meta" worktree)" "$id" "$(meta_value "$meta" base)")
 EOF
 
   for value in "$DATA/$id/brief.md" "$meta"; do
