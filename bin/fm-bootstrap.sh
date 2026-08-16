@@ -89,6 +89,11 @@
 #          is purely additive.
 #        fm-bootstrap.sh install <tool>...
 #          Install the named tools (only ones the captain approved).
+#          Pure installation: it runs none of the detect lines or sweeps above
+#          and never resolves a backend, so its output is one
+#          "installing <tool>: <command>" line per tool plus whatever the
+#          installer itself prints, or a single "error: ..." line for an
+#          unknown or manual-only tool.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
