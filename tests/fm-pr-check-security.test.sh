@@ -641,6 +641,37 @@ SH
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
 }
 
+# The hand-recorded ship base the retro pass reads is the one meta key no script
+# writes, so where a human puts it is guidance rather than something the writer
+# enforces. This pins what that guidance has to say: past the pr= line every key
+# outside the identity whitelist is tampering, so the base belongs above it.
+test_recorded_ship_base_parses_only_above_pr_metadata() {
+  local dir head=0123456789abcdef0123456789abcdef01234567
+  dir=$(make_case recorded-ship-base-placement)
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    "window=firstmate:fm-task-a" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "base=origin/develop" \
+    "pr=https://github.com/o/r/pull/9" \
+    "pr_head=$head"
+  fm_pr_metadata_identity_parse "$dir/home/state/task-a.meta" \
+    || fail "a ship base recorded above pr= was refused by the PR identity check"
+  [ "$FM_PR_META_NUMBER" = 9 ] \
+    || fail "the documented layout did not yield the recorded PR: $FM_PR_META_NUMBER"
+
+  fm_write_meta "$dir/home/state/task-b.meta" \
+    "window=firstmate:fm-task-b" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "pr=https://github.com/o/r/pull/9" \
+    "pr_head=$head" \
+    "base=origin/develop"
+  ! fm_pr_metadata_identity_parse "$dir/home/state/task-b.meta" \
+    || fail "a ship base appended after pr= passed the PR identity check"
+  pass "a recorded ship base parses through the PR identity check only above the pr= line"
+}
+
 run_watcher_bounded() {
   local home=$1 fakebin=$2 check_interval=${FM_TEST_CHECK_INTERVAL:-0} watch_root=${FM_TEST_WATCH_ROOT:-$ROOT}
   shift 2
@@ -3358,6 +3389,7 @@ test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
+test_recorded_ship_base_parses_only_above_pr_metadata
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_atomic_interruption_leaves_no_partial_artifact

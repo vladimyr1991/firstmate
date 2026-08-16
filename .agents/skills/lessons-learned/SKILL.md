@@ -92,7 +92,7 @@ A preference noticed during live work goes to the task record or the captain-pre
 
 1. Confirm landing.
 2. Run the script's `collect` command while the task's volatile records still exist.
-   When the project ships from a branch its default ref lags behind, record that ship base as `base=<ref>` in `state/<id>.meta` first, or the collected `commits` count measures the branch against the wrong base; the collected `commit_base` always names the ref that was used.
+   When the project ships from a branch its default ref lags behind, record that ship base as `base=<ref>` in `state/<id>.meta` first - above the `pr=` line and any `x_*` lines, since the PR metadata identity check reads an unexpected line after `pr=` as tampering - or the collected `commits` count measures the branch against the wrong base; the collected `commit_base` always names the ref that was used.
 3. Read the collected facts, then answer every draft prompt above from the work itself.
 4. Order an independent cross-vendor audit when the facts show real struggle.
 5. Route each surviving lesson through the decision tree, choosing improve over create.
