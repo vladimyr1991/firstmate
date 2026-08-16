@@ -598,12 +598,11 @@ When the gate you chose selects nothing, run the project's documented nonempty g
 If the baseline is already red, treat that as inherited breakage: append \`blocked: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
 If the gate runs long enough that you would otherwise sit silent, append one \`working:\` line first so supervision does not read the wait as a wedged pane.
 When the project's test gate serves the working tree (for example a Vite dev server started by Playwright's \`webServer\`), "baseline before first edit" is a hard ordering constraint, not a nicety: edits made while the gate is running feed half-finished code into later specs and produce a red suite that looks exactly like inherited breakage.
-If that window was missed, stop editing, commit or stash the work, and re-measure from a clean tree or a detached base commit (\`git checkout <base-sha> -- <paths>\` or a clean worktree) rather than trusting a mid-edit run.
-To place base-revision sources for a temporary measurement, use \`git checkout <base-sha> -- <paths>\` (or a second worktree), not \`git stash push -- <paths>\`.
-On a clean tree \`stash push\` is a silent no-op; a later \`stash pop\` reporting "No stash entries found" is too late - the measurement may already have run against the branch under test.
-\`git checkout <base-sha> -- <paths>\` also stages what it wrote and resurrects every file your work deleted, so restore those paths with \`git restore --source=HEAD --staged --worktree -- <paths>\` the moment the measurement is done and before you resume editing.
-\`git checkout HEAD -- <paths>\` is not enough there: it leaves a resurrected deletion staged and on disk, so your next \`git add -A\` commits base-revision files - including the components an approved removal was meant to delete - over your own mandated edits.
-When you only need to read the base revision, \`git show <base-sha>:<path>\` written to a scratch file outside the tracked paths is the alternative that needs no restore at all.
+If that window was missed, stop editing, commit or stash the work, and re-measure from a clean tree rather than trusting a mid-edit run.
+To measure against the base revision, read it read-only with \`git show <base-sha>:<path> > /tmp/<scratch-file>\` and compare against that, or run the measurement in a second, clean worktree; prefer both because they leave the branch's working tree exactly as it is and need no restore at all.
+Do not reach for \`git stash push -- <paths>\` here: on a clean tree it is a silent no-op, and a later \`git stash pop\` reporting "No stash entries found" comes too late, after the measurement may already have run against the branch under test.
+\`git checkout <base-sha> -- <paths>\` is the fallback when neither fits, and it mutates the working tree and the index: it stages what it wrote, resurrects every file your work deleted, and does not remove the files your work added under those paths, so what you then measure is base sources plus your own new files rather than a true base revision.
+Using it therefore costs a full restore before you resume - \`git restore --source=HEAD --staged --worktree -- <paths>\` for the tracked content, plus deleting any untracked file the measurement left behind - and skipping that lets your next \`git add -A\` commit base-revision files, including the components an approved removal was meant to delete, over your own mandated edits.
 
 # Rules
 $RULE1
