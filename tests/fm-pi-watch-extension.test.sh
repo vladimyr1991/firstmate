@@ -781,7 +781,7 @@ const lock = `${process.env.FM_HOME}/state/.lock`;
 // bodies, so an unquoted or unbalanced quote character here makes the whole file
 // unparsable on macOS stock bash. It does skip double-quoted regions, so an
 // apostrophe inside a double-quoted JS string is safe, as in the console.error
-// text near the end of this file.)
+// text later in this file.)
 writeFileSync(lock, `pid=${process.pid} harness=claude session=prior-session\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
