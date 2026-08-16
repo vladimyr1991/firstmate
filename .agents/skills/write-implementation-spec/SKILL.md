@@ -102,6 +102,10 @@ Make the specification executable:
 - define what must not change;
 - specify evidence the implementer must return: changed files, test results, screenshots, API examples, migrations, or logs as appropriate.
 
+When the specification prescribes a test seam - a fixture, environment flag, media emulation, or hook - verify it against the project's own testing documentation and a one-line measurement on the dispatch base.
+Prefer project-proven seams over framework documentation.
+If the project documents that a Playwright fixture does not reach the page, prescribe the working form, not the non-working framework-default form: for a project whose config force-feeds the fixture form's effect, that is `page.emulateMedia({ reducedMotion: 'reduce' })` called explicitly before `goto` rather than the bare `test.use({ ... })` fixture.
+
 Never invent repository facts. Use `To be discovered by implementer` only for low-impact local details and define how discovery must be performed. A `READY` spec must contain no `TBD`, `TODO`, undecided alternatives, or unanswered product questions.
 
 ### 6. Apply the readiness gate

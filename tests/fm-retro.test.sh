@@ -22,6 +22,11 @@
 #   (n) the same holds for the attestation block across a re-complete
 #   (o) an unterminated block is refused by every command, writers and gate alike
 #   (p) a headless block is refused too, never read as "no facts yet" nor twinned
+#   (q) sibling eval-<id>-r<N>/report.md rounds counted without absorbing a
+#       neighbouring task's rounds, commits measured against the ship base
+#       recorded in meta rather than a lagging default ref, recorded_base telling
+#       an unresolvable recorded base apart from none recorded at all, and a base
+#       containing whitespace surviving the fact tuple intact
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -57,8 +62,8 @@ run_retro_expect_failure() {  # <home> <expected-fragment> <args>...
 }
 
 # Read one key from the facts block of a task's retro record.
-fact() {  # <home> <key>
-  sed -n "s/^$2=//p" "$1/data/task-r1/retro.md" | tail -1
+fact() {  # <home> <key> [task-id]
+  sed -n "s/^$2=//p" "$1/data/${3:-task-r1}/retro.md" | tail -1
 }
 
 # Backdate a file's mtime by <seconds>. GNU touch takes an epoch directly; the
@@ -629,6 +634,112 @@ test_attestation_block_removed_entirely_is_refused() {
   pass "an attestation block removed entirely is refused by complete and by verify"
 }
 
+# The two counters a real landed task proved wrong: its browser evaluation
+# reports lived in the sibling per-round directories, so the round count read 0,
+# and its branch was cut from a develop branch the default ref lagged far behind,
+# so the commit count read every unrelated develop commit as this task's work.
+test_collect_counts_sibling_eval_rounds_and_a_recorded_ship_base() {
+  local home git_id default_count neighbour=task
+  home=$(make_home ship-base)
+  git_id=(-c user.email=t@t -c user.name=t)
+  fm_git_init_commit "$home/project"
+  git -C "$home/project" branch -M main
+  # develop ships ahead of the default ref by commits this task never wrote.
+  git -C "$home/project" checkout -q -b develop
+  git -C "$home/project" "${git_id[@]}" commit -q --allow-empty -m "develop one"
+  git -C "$home/project" "${git_id[@]}" commit -q --allow-empty -m "develop two"
+  git -C "$home/project" "${git_id[@]}" commit -q --allow-empty -m "develop three"
+  git -C "$home/project" checkout -q main
+  git -C "$home/project" worktree add -q -b fm/task-r1 "$home/wt" develop
+  git -C "$home/wt" "${git_id[@]}" commit -q --allow-empty -m one
+  git -C "$home/wt" "${git_id[@]}" commit -q --allow-empty -m two
+  printf 'done: landed\n' > "$home/state/task-r1.status"
+  # The layout the browser evaluation gate actually writes: sibling directories
+  # under data/, not data/<id>/evaluation-*.md.
+  mkdir -p "$home/data/eval-task-r1-r1" "$home/data/eval-task-r1-r2"
+  printf 'FAIL\n' > "$home/data/eval-task-r1-r1/report.md"
+  printf 'PASS\n' > "$home/data/eval-task-r1-r2/report.md"
+  # The neighbouring task `task`, whose own rounds are eval-task-r1 and
+  # eval-task-r2. The absorption runs one way: an unanchored eval-task-r* also
+  # opens task-r1's two rounds, while eval-task-r1-r* never reaches this task's.
+  # So task-r1's own count is unmoved by the anchor; the neighbour's is the one
+  # that reads 4, and the assertion after the base cases is what pins it.
+  printf 'done: landed\n' > "$home/state/$neighbour.status"
+  mkdir -p "$home/data/eval-$neighbour-r1" "$home/data/eval-$neighbour-r2"
+  printf 'FAIL\n' > "$home/data/eval-$neighbour-r1/report.md"
+  printf 'PASS\n' > "$home/data/eval-$neighbour-r2/report.md"
+
+  # Without a recorded base the count is the visible proxy against the default
+  # ref, and it is inflated by develop's three unrelated commits.
+  fm_write_meta "$home/state/task-r1.meta" \
+    "worktree=$home/wt" "project=$home/project" "kind=ship" "mode=no-mistakes"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed without a recorded base"
+  [ "$(fact "$home" evaluation_rounds)" = 2 ] \
+    || fail "sibling eval-<id>-r*/report.md rounds miscounted: $(fact "$home" evaluation_rounds)"
+  [ "$(fact "$home" recorded_base)" = none ] \
+    || fail "a meta that records no base must read none: $(fact "$home" recorded_base)"
+  [ "$(fact "$home" commit_base)" = main ] \
+    || fail "without a recorded base the default ref must be named: $(fact "$home" commit_base)"
+  default_count=$(fact "$home" commits)
+  [ "$default_count" = 5 ] \
+    || fail "the default-ref proxy should count develop's commits too, got $default_count"
+
+  # With the ship base recorded, the count is the task's own work and the record
+  # names the ref it measured against.
+  rm -rf "$home/data/task-r1/retro.md"
+  fm_write_meta "$home/state/task-r1.meta" \
+    "worktree=$home/wt" "project=$home/project" "kind=ship" "mode=no-mistakes" \
+    "base=develop"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed with a recorded base"
+  [ "$(fact "$home" recorded_base)" = develop ] \
+    || fail "the recorded base must be published verbatim: $(fact "$home" recorded_base)"
+  [ "$(fact "$home" commit_base)" = develop ] \
+    || fail "the recorded ship base must be published: $(fact "$home" commit_base)"
+  [ "$(fact "$home" commits)" = 2 ] \
+    || fail "commits against the recorded ship base wrong: $(fact "$home" commits)"
+
+  # A recorded base that does not resolve here degrades to the visible proxy
+  # rather than failing the collect or recording a wrong number silently.
+  rm -rf "$home/data/task-r1/retro.md"
+  fm_write_meta "$home/state/task-r1.meta" \
+    "worktree=$home/wt" "project=$home/project" "kind=ship" "mode=no-mistakes" \
+    "base=origin/nowhere"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed on an unresolvable base"
+  [ "$(fact "$home" commit_base)" = main ] \
+    || fail "an unresolvable recorded base must fall back and say so: $(fact "$home" commit_base)"
+  [ "$(fact "$home" commits)" = "$default_count" ] \
+    || fail "the fallback count must match the default-ref proxy: $(fact "$home" commits)"
+  # The whole point of the separate key: the fallback above is indistinguishable
+  # from "no base was ever recorded" on commit_base alone.
+  [ "$(fact "$home" recorded_base)" = origin/nowhere ] \
+    || fail "an unresolvable recorded base must still be published: $(fact "$home" recorded_base)"
+
+  # Git resolves revisions that contain whitespace, so a recorded base can be
+  # both usable and unsplittable on spaces. `:/develop one` names develop's first
+  # commit, leaving develop two, develop three, and this branch's own two.
+  rm -rf "$home/data/task-r1/retro.md"
+  fm_write_meta "$home/state/task-r1.meta" \
+    "worktree=$home/wt" "project=$home/project" "kind=ship" "mode=no-mistakes" \
+    "base=:/develop one"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed on a whitespace-bearing base"
+  [ "$(fact "$home" commit_base)" = ":/develop one" ] \
+    || fail "a base containing whitespace was truncated: $(fact "$home" commit_base)"
+  [ "$(fact "$home" commits)" = 4 ] \
+    || fail "commits against a whitespace-bearing base wrong: $(fact "$home" commits)"
+  [ "$(fact "$home" recorded_base)" = ":/develop one" ] \
+    || fail "the raw recorded base must survive verbatim: $(fact "$home" recorded_base)"
+
+  # The regression guard for the anchoring fix: only the shorter id can absorb
+  # its -r<N> sibling's rounds, so this count - not task-r1's above - is the one
+  # that reads 4 against an unanchored glob.
+  run_retro "$home" collect "$neighbour" >/dev/null || fail "collect failed for the neighbour"
+  [ "$(fact "$home" evaluation_rounds "$neighbour")" = 2 ] \
+    || fail "the neighbour absorbed task-r1's rounds: $(fact "$home" evaluation_rounds "$neighbour")"
+  [ "$(fact "$home" recorded_base "$neighbour")" = unknown ] \
+    || fail "an absent meta must read unknown, not none: $(fact "$home" recorded_base "$neighbour")"
+  pass "collect counts sibling evaluation rounds and measures commits against the recorded ship base"
+}
+
 test_collect_refuses_an_unknown_task() {
   local home
   home=$(make_home unknown-task)
@@ -638,6 +749,7 @@ test_collect_refuses_an_unknown_task() {
 
 test_collect_counts_status_signals
 test_collect_counts_rounds_commits_and_elapsed
+test_collect_counts_sibling_eval_rounds_and_a_recorded_ship_base
 test_collect_records_unknown_rather_than_guessing
 test_collect_and_complete_are_idempotent
 test_verify_refuses_before_complete

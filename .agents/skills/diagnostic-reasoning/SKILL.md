@@ -18,6 +18,7 @@ Firstmate applies it when briefing delegated investigation and evaluating the re
 ## Establish the observed behavior
 
 Start from the end user's experience rather than an internal error string or an implementation hypothesis.
+A failing automated test's own diagnostic message is the author's model of how the check could fail, not evidence of how it did fail: treat that string as a hypothesis to disconfirm, and measure the live boxes, states, and chrome the assertion did not name before hunting the mechanism the message asserts.
 Require an end-to-end reproduction aligned with the real user path whenever it is feasible and safe.
 If a faithful reproduction is not feasible, record the exact limitation and use the closest representative path without presenting it as equivalent evidence.
 Capture the expected behavior, observed behavior, setup, inputs, and repeatability before assigning a cause.

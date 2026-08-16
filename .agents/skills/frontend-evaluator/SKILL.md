@@ -102,7 +102,7 @@ Report anything that is merely an opinion separately and mark it non-blocking. T
 
 ## Findings
 
-Write `data/<task-id>/evaluation-<round>.md`, and keep it specific enough to act on without re-deriving anything:
+Write `data/<task-id>/evaluation-<round>.md` - `<task-id>` being the id of the task you are running as, which for a round dispatched under the `eval-<origin-task-id>-r<N>` contract below is that round's own id and never the origin task's, so a round writes into exactly one directory and never two - and keep it specific enough to act on without re-deriving anything:
 
 - The verdict: `pass` or `fail`.
 - One entry per finding: what was interacted with, what was expected, what actually happened, which criterion it violates, and the screenshot path.
@@ -116,6 +116,9 @@ The file is the handoff. Close with a status line pointing at it so the parent i
 ## The loop
 
 Evaluate -> relay findings to the generator -> generator fixes, re-runs `/simplify` and the test gate -> evaluate again.
+
+Dispatch each round as its own task named `eval-<origin-task-id>-r<N>`, N starting at 1, so its report lands at `data/eval-<origin-task-id>-r<N>/report.md`.
+That naming is a contract rather than a habit: `bin/fm-retro.sh` counts a task's evaluation rounds by matching it, and a round dispatched under any other id is counted as none.
 
 **Three rounds maximum.** If the verdict is still `fail` after the third, stop and report to the captain with what remains and why it did not converge, per `AGENTS.md` section 9. Do not keep spawning rounds; a defect that survives three targeted attempts needs a human decision, not a fourth attempt.
 
