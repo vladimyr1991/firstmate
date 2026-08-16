@@ -117,6 +117,9 @@ The file is the handoff. Close with a status line pointing at it so the parent i
 
 Evaluate -> relay findings to the generator -> generator fixes, re-runs `/simplify` and the test gate -> evaluate again.
 
+Dispatch each round as its own task named `eval-<origin-task-id>-r<N>`, N starting at 1, so its report lands at `data/eval-<origin-task-id>-r<N>/report.md`.
+That naming is a contract rather than a habit: `bin/fm-retro.sh` counts a task's evaluation rounds by matching it, and a round dispatched under any other id is counted as none.
+
 **Three rounds maximum.** If the verdict is still `fail` after the third, stop and report to the captain with what remains and why it did not converge, per `AGENTS.md` section 9. Do not keep spawning rounds; a defect that survives three targeted attempts needs a human decision, not a fourth attempt.
 
 A `fail` verdict blocks landing. Work does not merge onward while an unresolved blocking finding stands.

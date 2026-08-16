@@ -659,8 +659,10 @@ test_collect_counts_sibling_eval_rounds_and_a_recorded_ship_base() {
   printf 'FAIL\n' > "$home/data/eval-task-r1-r1/report.md"
   printf 'PASS\n' > "$home/data/eval-task-r1-r2/report.md"
   # The neighbouring task `task`, whose own rounds are eval-task-r1 and
-  # eval-task-r2: an unanchored eval-<id>-r* prefix would read task-r1's two
-  # rounds as this task's, and this task's two as task-r1's.
+  # eval-task-r2. The absorption runs one way: an unanchored eval-task-r* also
+  # opens task-r1's two rounds, while eval-task-r1-r* never reaches this task's.
+  # So task-r1's own count is unmoved by the anchor; the neighbour's is the one
+  # that reads 4, and the assertion after the base cases is what pins it.
   printf 'done: landed\n' > "$home/state/$neighbour.status"
   mkdir -p "$home/data/eval-$neighbour-r1" "$home/data/eval-$neighbour-r2"
   printf 'FAIL\n' > "$home/data/eval-$neighbour-r1/report.md"
@@ -711,7 +713,9 @@ test_collect_counts_sibling_eval_rounds_and_a_recorded_ship_base() {
   [ "$(fact "$home" recorded_base)" = origin/nowhere ] \
     || fail "an unresolvable recorded base must still be published: $(fact "$home" recorded_base)"
 
-  # The neighbour counts only its own rounds too - the collision runs both ways.
+  # The regression guard for the anchoring fix: only the shorter id can absorb
+  # its -r<N> sibling's rounds, so this count - not task-r1's above - is the one
+  # that reads 4 against an unanchored glob.
   run_retro "$home" collect "$neighbour" >/dev/null || fail "collect failed for the neighbour"
   [ "$(fact "$home" evaluation_rounds "$neighbour")" = 2 ] \
     || fail "the neighbour absorbed task-r1's rounds: $(fact "$home" evaluation_rounds "$neighbour")"
