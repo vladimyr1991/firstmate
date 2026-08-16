@@ -24,8 +24,9 @@
 #   (p) a headless block is refused too, never read as "no facts yet" nor twinned
 #   (q) sibling eval-<id>-r<N>/report.md rounds counted without absorbing a
 #       neighbouring task's rounds, commits measured against the ship base
-#       recorded in meta rather than a lagging default ref, and recorded_base
-#       telling an unresolvable recorded base apart from none recorded at all
+#       recorded in meta rather than a lagging default ref, recorded_base telling
+#       an unresolvable recorded base apart from none recorded at all, and a base
+#       containing whitespace surviving the fact tuple intact
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -712,6 +713,21 @@ test_collect_counts_sibling_eval_rounds_and_a_recorded_ship_base() {
   # from "no base was ever recorded" on commit_base alone.
   [ "$(fact "$home" recorded_base)" = origin/nowhere ] \
     || fail "an unresolvable recorded base must still be published: $(fact "$home" recorded_base)"
+
+  # Git resolves revisions that contain whitespace, so a recorded base can be
+  # both usable and unsplittable on spaces. `:/develop one` names develop's first
+  # commit, leaving develop two, develop three, and this branch's own two.
+  rm -rf "$home/data/task-r1/retro.md"
+  fm_write_meta "$home/state/task-r1.meta" \
+    "worktree=$home/wt" "project=$home/project" "kind=ship" "mode=no-mistakes" \
+    "base=:/develop one"
+  run_retro "$home" collect task-r1 >/dev/null || fail "collect failed on a whitespace-bearing base"
+  [ "$(fact "$home" commit_base)" = ":/develop one" ] \
+    || fail "a base containing whitespace was truncated: $(fact "$home" commit_base)"
+  [ "$(fact "$home" commits)" = 4 ] \
+    || fail "commits against a whitespace-bearing base wrong: $(fact "$home" commits)"
+  [ "$(fact "$home" recorded_base)" = ":/develop one" ] \
+    || fail "the raw recorded base must survive verbatim: $(fact "$home" recorded_base)"
 
   # The regression guard for the anchoring fix: only the shorter id can absorb
   # its -r<N> sibling's rounds, so this count - not task-r1's above - is the one

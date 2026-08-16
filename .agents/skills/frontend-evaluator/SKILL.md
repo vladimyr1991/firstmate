@@ -102,7 +102,7 @@ Report anything that is merely an opinion separately and mark it non-blocking. T
 
 ## Findings
 
-Write `data/<task-id>/evaluation-<round>.md`, and keep it specific enough to act on without re-deriving anything:
+Write `data/<task-id>/evaluation-<round>.md` - `<task-id>` being the id of the task you are running as, which for a round dispatched under the `eval-<origin-task-id>-r<N>` contract below is that round's own id and never the origin task's, so a round writes into exactly one directory and never two - and keep it specific enough to act on without re-deriving anything:
 
 - The verdict: `pass` or `fail`.
 - One entry per finding: what was interacted with, what was expected, what actually happened, which criterion it violates, and the screenshot path.

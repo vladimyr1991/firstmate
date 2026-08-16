@@ -479,7 +479,13 @@ status_facts() {  # <status-file> -> "lines needs blocked resolved paused keys"
 # project ships from a branch the default ref lags behind; a recorded base that
 # does not resolve in this worktree falls back to the default-ref scan rather
 # than failing the collect, and `commit_base` still names whichever ref was used.
-branch_facts() {  # <worktree> <task-id> <recorded-base> -> "branch base commits"
+#
+# The base is the one field that can carry whitespace, because git resolves
+# revisions like `HEAD@{1 day ago}` and the recorded value is published verbatim.
+# It is therefore returned LAST, where the caller's `read` takes it as the whole
+# remainder; a branch name and a commit count cannot contain a space, so no other
+# order is splittable.
+branch_facts() {  # <worktree> <task-id> <recorded-base> -> "branch commits base"
   local wt=$1 id=$2 recorded=${3:-} branch base candidate count
   if [ -z "$wt" ] || [ ! -d "$wt" ] || ! git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
     printf 'unknown unknown unknown'
@@ -504,14 +510,14 @@ branch_facts() {  # <worktree> <task-id> <recorded-base> -> "branch base commits
     done
   fi
   if [ -z "$base" ] || [ "$branch" = unknown ]; then
-    printf '%s %s unknown' "$branch" "${base:-unknown}"
+    printf '%s unknown %s' "$branch" "${base:-unknown}"
     return 0
   fi
   count=$(git -C "$wt" rev-list --count "$branch" --not "$base" 2>/dev/null) || count=''
   case "$count" in
     ''|*[!0-9]*) count=unknown ;;
   esac
-  printf '%s %s %s' "$branch" "$base" "$count"
+  printf '%s %s %s' "$branch" "$count" "$base"
 }
 
 command_collect() {
@@ -585,7 +591,7 @@ EOF
     recorded_base=unknown
   fi
 
-  read -r branch base commits <<EOF
+  read -r branch commits base <<EOF
 $(branch_facts "$(meta_value "$meta" worktree)" "$id" "$raw_base")
 EOF
 
