@@ -777,9 +777,11 @@ const lock = `${process.env.FM_HOME}/state/.lock`;
 // The typed record form (bin/fm-session-lock-lib.sh): a home last acquired by a
 // harness that publishes a session id keeps that record until the current
 // session acquires the lock itself, so the adapter must still find its own pid
-// in that record. (Keep apostrophes out of this heredoc: bash 3.2 scans the
-// enclosing $(...) without skipping heredoc bodies, so a lone quote character
-// here makes the whole file unparsable on macOS stock bash.)
+// in that record. (Bash 3.2 scans the enclosing $(...) without skipping heredoc
+// bodies, so an unquoted or unbalanced quote character here makes the whole file
+// unparsable on macOS stock bash. It does skip double-quoted regions, so an
+// apostrophe inside a double-quoted JS string is safe, as in the console.error
+// text near the end of this file.)
 writeFileSync(lock, `pid=${process.pid} harness=claude session=prior-session\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
