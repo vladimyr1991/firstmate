@@ -642,7 +642,7 @@ test_spawn_backend_precedence_over_inherited_config() {
   pass "B5b spawn: FM_BACKEND wins over inherited config/backend"
 }
 
-test_spawn_explicit_backend_precedence_over_env_and_inherited_config() {
+test_spawn_explicit_backend_refused_when_contradicts_config_backend() {
   local w sm launchlog out status
   w="$TMP_ROOT/spawn-backend-flag-precedence"
   sm="$w/sm"
@@ -668,7 +668,38 @@ test_spawn_explicit_backend_precedence_over_env_and_inherited_config() {
     "the refusal must say to report the broken backend rather than route around it"
   [ ! -f "$w/home/state/sm.meta" ] || fail "a refused secondmate spawn must not leave task state behind"
   [ ! -e "$sm/config/backend" ] || fail "a refused secondmate spawn must not push inherited config"
+  # The harm the veto exists to prevent is an agent actually running on the
+  # wrong backend, so prove the refusal landed before any launch command was
+  # sent, not merely before meta was written.
+  [ ! -s "$launchlog" ] || fail \
+    "a refused secondmate spawn must not launch an agent"$'\n'"$(cat "$launchlog")"
   pass "B5c spawn: --backend cannot contradict primary config/backend (FM_BACKEND remains the one-off override)"
+}
+
+# The veto above only fires when config/backend is SET. With no captain's pin to
+# contradict, --backend is still the strongest signal and must beat FM_BACKEND
+# (bin/fm-spawn.sh: BACKEND_SET short-circuits fm_backend_name, which would
+# otherwise return FM_BACKEND). Without this case the refusal test cannot tell
+# the two apart - it fires identically whichever of the two won resolution.
+test_spawn_explicit_backend_wins_over_env_without_config_backend() {
+  local w sm meta launchlog out status
+  w="$TMP_ROOT/spawn-backend-flag-over-env"
+  sm="$w/sm"
+  launchlog="$w/launch.log"
+  mkdir -p "$w/home/config"
+  [ ! -e "$w/home/config/backend" ] || fail "flag-over-env fixture must leave config/backend unset"
+  make_seeded_home "$sm" sm
+
+  out=$(FM_BACKEND=zellij spawn_secondmate_capture \
+    "$w" sm "$sm" "$launchlog" --backend tmux 2>&1); status=$?
+  expect_code 0 "$status" \
+    "--backend tmux should be accepted when no config/backend pins a backend"$'\n'"$out"
+
+  meta="$w/home/state/sm.meta"
+  [ "$(meta_field "$meta" backend)" = tmux ] \
+    || fail "--backend tmux did not beat FM_BACKEND=zellij (got backend='$(meta_field "$meta" backend)')"
+  [ -s "$launchlog" ] || fail "the accepted spawn should have launched an agent on tmux"
+  pass "B5d spawn: --backend wins over FM_BACKEND when no config/backend is set"
 }
 
 # A bare "<harness>" secondmate-harness file (today's format) must launch with
@@ -2344,7 +2375,8 @@ test_spawn_bare_backward_compat
 test_spawn_explicit_harness_wins
 test_spawn_unverified_secondmate_harness_refused
 test_spawn_backend_precedence_over_inherited_config
-test_spawn_explicit_backend_precedence_over_env_and_inherited_config
+test_spawn_explicit_backend_refused_when_contradicts_config_backend
+test_spawn_explicit_backend_wins_over_env_without_config_backend
 test_spawn_bare_harness_no_model_effort_flag
 test_spawn_secondmate_harness_model_token
 test_spawn_secondmate_harness_model_and_effort_tokens
