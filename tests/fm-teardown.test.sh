@@ -2090,6 +2090,100 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
   pass "herdr projection teardown retains every record when post-close presence is unknown"
 }
 
+# --- per-task hook artifact removal ----------------------------------------
+#
+# fm-spawn writes a per-task, git-excluded harness hook into the task worktree
+# (bin/fm-spawn.sh: .claude/settings.local.json for claude, .opencode/plugins/
+# fm-busy-state.js for opencode, .fm-grok-turnend and .fm-kimi-turnend for the
+# grok/kimi token pointers). Each carries the task's id and busy-state gen, so a
+# copy left behind in a pooled worktree can fire events for a dead task. Teardown
+# must delete every one of them, and `treehouse return` does NOT cover for it:
+# it leaves git-excluded untracked files in place. These tests pin both the
+# behavior on the common path and the completeness of every removal list, which
+# is what let .opencode/plugins/fm-busy-state.js drift out of the default path.
+# The completeness invariant itself lives in bin/fm-teardown-hook-list-check.sh
+# so it is enforceable outside the suite; the tests below drive that executable
+# rather than inspecting fm-teardown.sh's source here.
+
+# Seed every per-task hook artifact fm-spawn can write, git-excluded exactly as
+# fm-spawn excludes them. Args: case_dir
+seed_task_hook_artifacts() {
+  local case_dir=$1 exclude
+  mkdir -p "$case_dir/wt/.claude" "$case_dir/wt/.opencode/plugins"
+  printf 'stale claude hook\n' > "$case_dir/wt/.claude/settings.local.json"
+  printf 'stale opencode plugin\n' > "$case_dir/wt/.opencode/plugins/fm-busy-state.js"
+  printf 'stale legacy opencode plugin\n' > "$case_dir/wt/.opencode/plugins/fm-turn-end.js"
+  printf 'token=stale-grok\n' > "$case_dir/wt/.fm-grok-turnend"
+  printf 'token=stale-kimi\n' > "$case_dir/wt/.fm-kimi-turnend"
+  exclude=$(git -C "$case_dir/wt" rev-parse --git-path info/exclude)
+  printf '%s\n' '.claude/' '.opencode/' '.fm-grok-turnend' '.fm-kimi-turnend' >> "$exclude"
+}
+
+test_default_path_removes_every_task_hook_artifact() {
+  local case_dir rc f
+  case_dir=$(make_case hook-artifacts-default)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "fix the thing"
+  add_fork_with_pushed_branch "$case_dir"
+  seed_task_hook_artifacts "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "hook-artifacts-default: landed local-only ship task should tear down"
+  for f in .claude/settings.local.json .opencode/plugins/fm-busy-state.js \
+    .opencode/plugins/fm-turn-end.js .fm-grok-turnend .fm-kimi-turnend; do
+    assert_absent "$case_dir/wt/$f" \
+      "hook-artifacts-default: teardown left $f in the worktree, so a pooled reuse can fire signals for the dead task"
+  done
+  pass "default-path teardown removes every per-task harness hook artifact from the worktree"
+}
+
+test_every_teardown_hook_removal_list_is_complete() {
+  local out
+  # Each hook artifact name must appear in EVERY hook-removal list in
+  # bin/fm-teardown.sh (the top-level default and orca paths, and the
+  # secondmate-child sweep's default and orca branches). Equal occurrence
+  # counts across all five names is the cheap invariant that catches a new
+  # artifact wired into one path and forgotten in another - the exact drift
+  # that stranded .opencode/plugins/fm-busy-state.js on the default path.
+  # bin/fm-teardown-hook-list-check.sh owns that invariant; this drives it.
+  out=$("$ROOT/bin/fm-teardown-hook-list-check.sh") \
+    || fail "hook-removal-lists: $out"
+  assert_contains "$out" "fm-teardown-hook-list-check: ok lists=4" \
+    "check did not report the removal lists it inspected"
+  assert_contains "$out" ".opencode/plugins/fm-busy-state.js=4" \
+    "check did not report the per-artifact count that caught the original drift"
+  pass "every per-task hook artifact appears in all four of fm-teardown.sh's removal lists"
+}
+
+test_hook_removal_list_guard_catches_a_one_sided_change() {
+  local case_dir drifted out rc
+  # The guard is only worth having if it fails on the drift it exists to catch.
+  # Drop a single artifact from a single removal list in a COPY of the script
+  # and confirm the check refuses, naming the counts.
+  case_dir=$(mktemp -d "$TMP_ROOT/hook-list-drift.XXXXXX")
+  drifted="$case_dir/fm-teardown.sh"
+  # Delete only the first busy-state entry, leaving the other three lists intact.
+  awk '/"\$child_wt\/\.opencode\/plugins\/fm-busy-state\.js"/ && !seen { seen = 1; next } { print }' \
+    "$ROOT/bin/fm-teardown.sh" > "$drifted"
+
+  set +e
+  out=$("$ROOT/bin/fm-teardown-hook-list-check.sh" --script "$drifted" 2>&1)
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "hook-removal-lists: guard passed a script missing an artifact from one list"
+  assert_contains "$out" \
+    "hook-removal-lists: every hook artifact must be removed by all four removal lists" \
+    "guard did not explain that every removal list must name every artifact"
+  assert_contains "$out" ".opencode/plugins/fm-busy-state.js=3" \
+    "guard did not print the per-name counts that locate the omission"
+  pass "the hook removal list guard fails when one artifact is dropped from one list"
+}
+
 test_landed_ship_without_retro_refuses
 test_landed_ship_with_retro_allows
 test_landed_ship_with_a_damaged_retro_record_refuses
@@ -2137,3 +2231,6 @@ test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds
 test_persistent_index_lock_exhausts_retries_and_refuses_loudly
 test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error
+test_default_path_removes_every_task_hook_artifact
+test_every_teardown_hook_removal_list_is_complete
+test_hook_removal_list_guard_catches_a_one_sided_change
