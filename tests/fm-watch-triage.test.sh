@@ -191,6 +191,22 @@ test_classifier_primitives() {
     && fail "FM_CAPTAIN_RE override bypassed paused: suppression"
   FM_CAPTAIN_RE='custom-verb:' status_is_captain_relevant "custom-verb: x" \
     || fail "nonterminal suppression weakened custom bare-line behavior"
+  # A home that SETS FM_CAPTAIN_RE skips the verb-aware shortcut, so the shipped
+  # default must match keyed status lines through the regex path alone.
+  for kv in 'done' 'needs-decision' 'blocked' 'failed'; do
+    FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" \
+      status_is_captain_relevant "$kv [key=api-shape]: x" \
+      || fail "explicitly set default regex missed keyed $kv line"
+    FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" \
+      status_is_captain_relevant "$kv: x" \
+      || fail "explicitly set default regex missed unkeyed $kv line"
+  done
+  FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" \
+    status_is_captain_relevant "working [key=api-shape]: still going" \
+    && fail "keyed working line became captain-relevant under the default regex"
+  FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" \
+    status_is_captain_relevant "paused [key=api-shape]: waiting on CI" \
+    && fail "keyed paused line became captain-relevant under the default regex"
   printf 'needs-decision: should docs mention [key=prose]?\nneeds-decision [key=q1]: real choice\nresolved: docs still mention [key=q1]\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
   open=$(status_open_decisions "$state/keys.status")
   printf '%s' "$open" | grep -F $'q1\t' >/dev/null \

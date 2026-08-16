@@ -1519,6 +1519,10 @@ test_workers_report_to_firstmate_only() {
       "$label: brief lost the report-to-firstmate-only rule"
     assert_grep "firstmate is the sole channel to the captain" "$brief" \
       "$label: brief did not state that firstmate is the only channel to the captain"
+    assert_grep "A project's own \`CLAUDE.md\` or \`AGENTS.md\` describes that project's resident agent, not you" "$brief" \
+      "$label: brief lost the resident-agent precedence clause"
+    assert_grep "it and these rules disagree - including on who may be addressed and how - these rules win" "$brief" \
+      "$label: precedence clause did not resolve the conflict in favour of the brief's rules"
   done
   pass "fm-brief.sh: both worker scaffolds route all reporting through firstmate only"
 }

@@ -428,7 +428,7 @@ $SCOUT_SYNC
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
-   Wherever a rule below prescribes a \`[key=<slug>]\` token, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces.
+   Wherever this brief prescribes a \`[key=<slug>]\` token, in any section, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
    FYI progress lines; firstmate reads your pane for that.
@@ -617,7 +617,7 @@ $RULE1
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
-   Wherever a rule below prescribes a \`[key=<slug>]\` token, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces.
+   Wherever this brief prescribes a \`[key=<slug>]\` token, in any section, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
