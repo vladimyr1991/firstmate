@@ -381,7 +381,7 @@ test_sync_base_guards_a_scout_investigation_base() {
     "scout Setup lost the base-drift check against origin/develop"
   assert_grep 'git checkout --detach origin/develop' "$brief" \
     "scout Setup never tells the worker to move onto the remote base when it is stale"
-  assert_grep 'blocked: pooled base diverged from origin/develop' "$brief" \
+  assert_grep 'blocked [key=base-divergence]: pooled base diverged from origin/develop' "$brief" \
     "scout Setup lost the diverged-base stop"
   assert_no_grep 'git checkout -b fm/brief-sync-scout' "$brief" \
     "scout Setup told a report-only task to cut a delivery branch"
@@ -631,7 +631,7 @@ test_sync_base_divergence_stop_spares_only_the_default_branch() {
     || fail "a base sharing no history with the remote read as compatible instead of blocking: $out"
 
   # And the brief still carries the stop the checks feed.
-  assert_grep 'blocked: pooled base diverged from origin/develop' "$brief" \
+  assert_grep 'blocked [key=base-divergence]: pooled base diverged from origin/develop' "$brief" \
     "the generated Setup lost the diverged-base stop"
   pass "fm-brief.sh: the divergence stop spares the remote's default branch and blocks everything else off the sync base"
 }
@@ -1472,13 +1472,33 @@ test_pause_examples_name_pipeline_and_ci_waits() {
       "$label: pause examples omitted a CI run"
     assert_grep "an upstream release, a rate-limit reset" "$brief" \
       "$label: pause examples lost their original external waits"
-    assert_grep 'needs-decision [key=<slug>]' "$brief" \
-      "$label: brief did not open an escalation with the keyed needs-decision form"
-    assert_grep 'blocked [key=<slug>]' "$brief" \
-      "$label: brief did not open a blocker with the keyed blocked form"
-    assert_grep 'resolved [key=<slug>]' "$brief" \
-      "$label: brief did not close a keyed escalation or blocker with the same key"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'the slug may use only letters, digits, `.`, `_`, and `-`, never spaces' "$brief" \
+      "$label: status-reporting block did not state the key slug charset"
+    assert_grep 'needs-decision [key=<slug>]: {summary of options}' "$brief" \
+      "$label: the escalation rule did not open with the keyed needs-decision form"
+    assert_grep 'blocked [key=<slug>]: {why}' "$brief" \
+      "$label: the repeated-obstacle rule did not open with the keyed blocked form"
+    assert_grep 'blocked [key=<slug>]: {the daemon error}' "$brief" \
+      "$label: the daemon-error rule did not open with the keyed blocked form"
+    assert_grep 'resolved [key=<slug>]: {how it was decided or unblocked}' "$brief" \
+      "$label: the close instruction did not reuse the opener's key"
+    # Every opener a worker copies must be closeable by that keyed `resolved`, so
+    # no unkeyed `blocked:`/`needs-decision:` template may survive in the brief.
+    assert_no_grep 'append `blocked: ' "$brief" \
+      "$label: brief still prescribes an unkeyed blocked template"
+    assert_no_grep 'append `needs-decision: ' "$brief" \
+      "$label: brief still prescribes an unkeyed needs-decision template"
   done
+
+  # Ship-only openers, each pinned to its own rule so reverting one still fails.
+  brief="$home/data/brief-pause-s1/brief.md"
+  assert_grep 'needs-decision [key=<slug>]: {what is missing and what you propose}' "$brief" \
+    "ship brief: the cannot-finish-honestly rule lost its keyed escalation form"
+  assert_grep 'blocked [key=primary-checkout]: launched in primary checkout' "$brief" \
+    "ship brief: the isolation stop lost its keyed blocked form"
+  assert_grep 'blocked [key=<slug>]: {the failing gate and what it printed}' "$brief" \
+    "ship brief: the red-baseline stop lost its keyed blocked form"
   pass "fm-brief.sh: both scaffolds name the pipeline-gate and CI waits and prescribe keyed status forms"
 }
 
@@ -1527,6 +1547,8 @@ test_staging_autonomy_generates_the_landing_contract() {
     "staging-autonomy brief did not state the git-flow landing sequence"
   assert_grep "watch CI to a final result" "$brief" \
     "staging-autonomy brief did not require watching CI to a final result"
+  assert_grep "blocked [key=<slug>]: {the failing run}" "$brief" \
+    "staging-autonomy brief did not stop on red CI with the keyed blocked form"
   assert_no_grep "fast-forward this worktree's own local \`develop\`" "$brief" \
     "staging-autonomy brief retained an impossible local-develop synchronization instruction"
   assert_grep "done [key=staging]: staging=<sha> ci=<run-id> result=green" "$brief" \

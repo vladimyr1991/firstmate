@@ -78,6 +78,7 @@ Briefs for tasks that touch firstmate's own tracked material should tell the cre
 `bin/fm-brief.sh`'s `REPO` argument is a caller-supplied string with no reliable signal that it names firstmate's own repo, unlike a project registered in `data/projects.md`, so there is no clean point inside the scaffold to detect this case automatically.
 Firstmate adds this skill's load instruction to firstmate-repo briefs by hand instead.
 Firstmate-repo briefs also carry two standing facts the crewmate cannot look up: this repo's root `CLAUDE.md` is firstmate's job description and the brief's own rules win over it; and this repo has never run a CI check, so the CI-cannot-run exception is the expected terminal path - apply it as soon as the pipeline reports no configured checks rather than waiting on the poll.
+The workflows under `.github/workflows/` are real but have never executed: `vladimyr1991/firstmate` is a fork of `kunchenguid/firstmate` on which GitHub Actions has never been enabled, so its total run count is zero.
 Where the specification and `firstmate-coding-guidelines` disagree, the guidelines win and the conflict is a `needs-decision`, not a judgement call.
 `CONTRIBUTING.md`'s "Development" section carries the same instruction as a durable reminder.
 
