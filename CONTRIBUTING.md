@@ -46,7 +46,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   Each starts with a usage header comment; keep it accurate when you change behavior.
   Test scripts and helpers in `tests/` are plain bash too.
   Every file `bin/fm-lint.sh --list-files` names must also parse under stock macOS Bash 3.2 (`/bin/bash -n <file>`), which the `macos-stock-bash` CI job enforces across that whole list.
-  The usual trap is a here-document nested inside `$(...)`: Bash 3.2 scans the command substitution without skipping heredoc bodies, so an unbalanced `'` in there - an apostrophe in a comment or other unquoted text is enough - makes the entire file unparsable while newer Bash accepts it.
+  The usual trap is a here-document nested inside `$(...)`: Bash 3.2 scans the command substitution without skipping heredoc bodies, so an unbalanced `'` in there - an apostrophe in an embedded-language comment or other unquoted text is enough - makes the entire file unparsable while newer Bash accepts it.
   That scan does skip double-quoted regions, so the same apostrophe inside a double-quoted string stays safe.
   `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, and pinned shellcheck version), and both CI and the no-mistakes pre-push gate run it, so local and CI can never diverge.
   It pins one exact shellcheck version and refuses to run under any other; print it with `bin/fm-lint.sh --required-version` and install that build locally.
