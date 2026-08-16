@@ -155,7 +155,7 @@ test_scan_captain_relevant_statuses_classifier() {
 }
 
 test_classifier_primitives() {
-  local dir state open activity
+  local dir state open activity ws
   dir=$(make_case classify-primitives); state="$dir/state"
   printf 'working: a\n\ndone: b\n\n' > "$state/x.status"
   [ "$(last_status_line "$state/x.status")" = "done: b" ] || fail "last_status_line did not return the last non-blank line"
@@ -207,6 +207,27 @@ test_classifier_primitives() {
   FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" \
     status_is_captain_relevant "paused [key=api-shape]: waiting on CI" \
     && fail "keyed paused line became captain-relevant under the default regex"
+  # status_line_verb and _fm_decision_key tolerate any spacing before the key
+  # token, so a line the fold records as open must not fall out of the published
+  # regex over spacing alone - and irregular spacing must not promote a
+  # nonterminal verb either.
+  for ws in 'blocked  [key=api-shape]: two spaces' 'blocked[key=api-shape]: no space' \
+    "blocked$(printf '\t')[key=api-shape]: tab"; do
+    printf '%s\n' "$ws" > "$state/ws.status"
+    printf '%s' "$(status_open_decisions "$state/ws.status")" | grep -F $'api-shape\t' >/dev/null \
+      || fail "irregular key spacing was not recorded as an open decision: $ws"
+    FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" status_is_captain_relevant "$ws" \
+      || fail "explicitly set default regex missed an irregularly spaced keyed line: $ws"
+  done
+  FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" \
+    status_is_captain_relevant "working  [key=api-shape]: still going" \
+    && fail "irregularly spaced keyed working line became captain-relevant"
+  FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" \
+    status_is_captain_relevant "paused[key=api-shape]: waiting on CI" \
+    && fail "irregularly spaced keyed paused line became captain-relevant"
+  FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" \
+    status_is_captain_relevant "working: rebased onto merged #76" \
+    && fail "ordinary progress prose became captain-relevant under the default regex"
   printf 'needs-decision: should docs mention [key=prose]?\nneeds-decision [key=q1]: real choice\nresolved: docs still mention [key=q1]\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
   open=$(status_open_decisions "$state/keys.status")
   printf '%s' "$open" | grep -F $'q1\t' >/dev/null \

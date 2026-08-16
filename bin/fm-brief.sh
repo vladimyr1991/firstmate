@@ -428,7 +428,7 @@ $SCOUT_SYNC
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
-   Wherever this brief prescribes a \`[key=<slug>]\` token, in any section, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces.
+   Wherever this brief prescribes a \`[key=<slug>]\` token, in any section, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces, and anything else drops the whole line so the escalation never reaches firstmate.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
    FYI progress lines; firstmate reads your pane for that.
@@ -437,16 +437,16 @@ $SCOUT_SYNC
    run to finish, an upstream release, a rate-limit reset): firstmate then leaves your idle pane
    alone and rechecks it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
-5. If you hit the same obstacle twice, append \`blocked [key=<slug>]: {why}\` and stop; firstmate will help.
+5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
-   append \`needs-decision [key=<slug>]: {summary of options}\` - the \`[key=...]\` token sits
+   append \`needs-decision [key=product-choice]: {summary of options}\` - the \`[key=...]\` token sits
    between the verb and the colon, never after it, or the fold silently files it under \`default\` -
    and stop. Firstmate will reply with the decision. When firstmate replies or a blocker clears and
-   you resume, append \`resolved [key=<slug>]: {how it was decided or unblocked}\` with the same
+   you resume, append \`resolved [key=product-choice]: {how it was decided or unblocked}\` with the same
    key so the decision or blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked [key=<slug>]: {the daemon error}\` and stop; only firstmate manages the daemon.
+   daemon error, append \`blocked [key=daemon-error]: {the daemon error}\` and stop; only firstmate manages the daemon.
 8. Report status and findings to firstmate only. Never address "the captain" or "you" (the human)
    anywhere in your output or your report; firstmate is the sole channel to the captain.
    A project's own \`CLAUDE.md\` or \`AGENTS.md\` describes that project's resident agent, not you: where
@@ -502,7 +502,7 @@ Run the project's own test gate first and land only genuinely clean work; never 
 If this task touched the UI, stop before merging anything and append \`blocked [key=evaluation]: test gate green, UI touched, awaiting browser evaluation before merge\`, then wait.
 Only firstmate can spawn the independent browser evaluator, so that key stays open until firstmate answers \`resolved [key=evaluation]:\` and releases you to land.
 To land: merge \`fm/$ID\` -> \`develop\` -> \`staging\`, push both branches, and watch CI to a final result.
-If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked [key=<slug>]: {the failing run}\` and stop.
+If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked [key=staging-ci-red]: {the failing run}\` and stop.
 Close with the keyed line, never free prose:
    \`done [key=staging]: staging=<sha> ci=<run-id> result=green\`
 Tagging or releasing \`main\` is never yours: it needs the captain's current explicit word every time, obtained through firstmate (rule 6).
@@ -601,7 +601,7 @@ $SETUP_STEPS
 **Establish a test baseline before your first edit.** Run the project's own test gate the way its \`AGENTS.md\` or \`README.md\` documents it, before you change anything.
 A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited, and a gate run that selects zero tests is a no-op rather than a baseline.
 When the gate you chose selects nothing, run the project's documented nonempty gate instead or record that no executable baseline exists; never call a zero-selection result green evidence.
-If the baseline is already red, treat that as inherited breakage: append \`blocked [key=<slug>]: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
+If the baseline is already red, treat that as inherited breakage: append \`blocked [key=red-baseline]: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
 If the gate runs long enough that you would otherwise sit silent, append one \`working:\` line first so supervision does not read the wait as a wedged pane.
 When the project's test gate serves the working tree (for example a Vite dev server started by Playwright's \`webServer\`), "baseline before first edit" is a hard ordering constraint, not a nicety: edits made while the gate is running feed half-finished code into later specs and produce a red suite that looks exactly like inherited breakage.
 If that window was missed, stop editing, commit or stash the work, and re-measure from a clean tree rather than trusting a mid-edit run.
@@ -617,7 +617,7 @@ $RULE1
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
-   Wherever this brief prescribes a \`[key=<slug>]\` token, in any section, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces.
+   Wherever this brief prescribes a \`[key=<slug>]\` token, in any section, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces, and anything else drops the whole line so the escalation never reaches firstmate.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
@@ -629,23 +629,23 @@ $RULE1
    run to finish, an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves
    your idle pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
-5. If you hit the same obstacle twice, append \`blocked [key=<slug>]: {why}\` and stop; firstmate will help.
+5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
-   append \`needs-decision [key=<slug>]: {summary of options}\` - the \`[key=...]\` token sits
+   append \`needs-decision [key=product-choice]: {summary of options}\` - the \`[key=...]\` token sits
    between the verb and the colon, never after it, or the fold silently files it under \`default\` -
    and stop. Firstmate will apply the configured authority and reply with the decision. When
    firstmate replies or a blocker clears and you resume, append
-   \`resolved [key=<slug>]: {how it was decided or unblocked}\` with the same key so the decision or
+   \`resolved [key=product-choice]: {how it was decided or unblocked}\` with the same key so the decision or
    blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked [key=<slug>]: {the daemon error}\` and stop; only firstmate manages the daemon.
+   daemon error, append \`blocked [key=daemon-error]: {the daemon error}\` and stop; only firstmate manages the daemon.
 8. Implement what the task asks for, completely. Leave behind no placeholder or unimplemented code:
    no handler that accepts input and does nothing, no control wired to nothing, no branch returning a
    fixed value that stands in for real work, no "wire this up later" comment. Code that compiles and
    renders is not evidence that it works - an element a user can click and get nothing from is not done.
    If the task turns out larger than it looked and you cannot finish it honestly, append
-   \`needs-decision [key=<slug>]: {what is missing and what you propose}\` and stop; never quietly ship a reduced version.
+   \`needs-decision [key=scope-overrun]: {what is missing and what you propose}\` and stop; never quietly ship a reduced version.
 9. Report status and findings to firstmate only. Never address "the captain" or "you" (the human)
    anywhere in your output; firstmate is the sole channel to the captain.
    A project's own \`CLAUDE.md\` or \`AGENTS.md\` describes that project's resident agent, not you: where
