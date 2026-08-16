@@ -775,8 +775,11 @@ const pi = {
 };
 const lock = `${process.env.FM_HOME}/state/.lock`;
 // The typed record form (bin/fm-session-lock-lib.sh): a home last acquired by a
-// harness that publishes a session id keeps that record until this session's
-// own acquisition rewrites it, so the adapter must still find its own pid in it.
+// harness that publishes a session id keeps that record until the current
+// session acquires the lock itself, so the adapter must still find its own pid
+// in that record. (Keep apostrophes out of this heredoc: bash 3.2 scans the
+// enclosing $(...) without skipping heredoc bodies, so a lone quote character
+// here makes the whole file unparsable on macOS stock bash.)
 writeFileSync(lock, `pid=${process.pid} harness=claude session=prior-session\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
