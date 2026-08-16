@@ -57,6 +57,17 @@ mkdir -p "$FAKE_NONDARWIN_BIN"
 printf '#!/bin/sh\necho Linux\n' > "$FAKE_NONDARWIN_BIN/uname"
 chmod +x "$FAKE_NONDARWIN_BIN/uname"
 
+# Presence-only herdr stub for base-default assertions. fm_backend_name treats
+# "herdr installed" as command -v herdr, not as a working server. Portable CI
+# (and any machine without a real herdr) must not flip those cases onto the
+# announced tmux fallback - that fallback is covered separately with a PATH
+# that deliberately excludes every herdr binary. A zero-arg exit-0 stub is
+# enough: production never runs herdr for presence alone.
+FAKE_HERDR_BIN="$TMP_ROOT/fake-herdr-bin"
+mkdir -p "$FAKE_HERDR_BIN"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE_HERDR_BIN/herdr"
+chmod +x "$FAKE_HERDR_BIN/herdr"
+
 # make_cmux_fallback_fakebin: PATH fakes for the DETECTING side of the cmux
 # fallback - uname pinned to Darwin, lsappinfo echoing $FM_FAKE_LSAPPINFO_OUT
 # (empty output mirrors the real lsappinfo's app-not-running behavior: prints
@@ -192,12 +203,16 @@ test_backend_name_precedence() {
   # FM_BACKEND_CONFIG_DIR directly.
   # The base default is herdr, not tmux: the fleet runs on herdr, so a home with
   # nothing configured lands there rather than on the reference backend.
-  [ "$(unset TMUX HERDR_ENV CMUX_WORKSPACE_ID __CFBundleIdentifier; PATH="$FAKE_NONDARWIN_BIN:$PATH" FM_BACKEND='' FM_BACKEND_CONFIG_DIR="$cfg" fm_backend_name)" = herdr ] \
+  # FAKE_HERDR_BIN (not ambient PATH) proves herdr presence: portable CI has no
+  # real herdr, and a developer machine with herdr elsewhere must not be the
+  # only place this case is green.
+  [ "$(unset TMUX HERDR_ENV CMUX_WORKSPACE_ID __CFBundleIdentifier; PATH="$FAKE_HERDR_BIN:$FAKE_NONDARWIN_BIN:/usr/bin:/bin" FM_BACKEND='' FM_BACKEND_CONFIG_DIR="$cfg" fm_backend_name)" = herdr ] \
     || fail "fm_backend_name should default to herdr with no env/config/detection markers"
 
   # ...unless herdr is not installed at all: a home that cannot spawn is worse
   # than one on the reference backend. Unlike the per-spawn reroute fm-spawn.sh
-  # now refuses, this substitution announces itself.
+  # now refuses, this substitution announces itself. PATH is deliberately free
+  # of any herdr binary (including FAKE_HERDR_BIN and ambient installs).
   nohbin="$TMP_ROOT/no-herdr-path"; mkdir -p "$nohbin"
   noherdr=$(unset TMUX HERDR_ENV CMUX_WORKSPACE_ID __CFBundleIdentifier; PATH="$FAKE_NONDARWIN_BIN:$nohbin:/usr/bin:/bin" FM_BACKEND='' FM_BACKEND_CONFIG_DIR="$cfg" fm_backend_name 2>"$TMP_ROOT/no-herdr.err")
   [ "$noherdr" = tmux ] \
@@ -428,8 +443,10 @@ test_backend_name_autodetect_notice() {
   errfile="$dir/err.txt"
 
   : > "$errfile"
-  out=$(unset TMUX HERDR_ENV CMUX_WORKSPACE_ID __CFBundleIdentifier; PATH="$FAKE_NONDARWIN_BIN:$PATH" FM_BACKEND='' FM_BACKEND_CONFIG_DIR="$cfg" fm_backend_name 2>"$errfile")
-  # herdr is the base default now; with it installed this stays as silent as the
+  # Stubbed herdr presence (FAKE_HERDR_BIN), not ambient install: portable CI
+  # has no herdr, and the no-herdr fallback is asserted separately above.
+  out=$(unset TMUX HERDR_ENV CMUX_WORKSPACE_ID __CFBundleIdentifier; PATH="$FAKE_HERDR_BIN:$FAKE_NONDARWIN_BIN:/usr/bin:/bin" FM_BACKEND='' FM_BACKEND_CONFIG_DIR="$cfg" fm_backend_name 2>"$errfile")
+  # herdr is the base default now; with it present this stays as silent as the
   # old tmux default was - silence is what makes the announced no-herdr fallback
   # in test_backend_name_precedence meaningful.
   [ "$out" = herdr ] || fail "fm_backend_name should default to herdr with no detection markers, got '$out'"

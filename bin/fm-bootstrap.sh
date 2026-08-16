@@ -513,6 +513,27 @@ manual_install_url() {
   esac
 }
 
+# install is pure tool installation and must not resolve a backend first:
+# fm_backend_name can print a NOTICE (herdr-absent tmux fallback, or loud
+# auto-detect of herdr/cmux) on stderr, which would pollute the install
+# subcommand's output and make `install herdr`'s exact manual-guidance line
+# unmatchable on a portable host without herdr. Exit here before that work.
+if [ "${1:-}" = "install" ]; then
+  shift
+  [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
+  for t in "$@"; do
+    if ! cmd=$(install_cmd "$t"); then
+      instructions=$(manual_install_url "$t") || { echo "error: unknown tool $t" >&2; exit 1; }
+      echo "error: $t requires manual installation (instructions: $instructions)" >&2
+      exit 1
+    fi
+    cmd=${cmd%%  #*}
+    echo "installing $t: $cmd"
+    eval "$cmd"
+  done
+  exit 0
+fi
+
 missing_tool_diagnostic() {
   local tool=$1 instructions
   if instructions=$(manual_install_url "$tool"); then
@@ -856,22 +877,6 @@ startup_memory_budget_setup() {
     echo "STARTUP_MEMORY_BUDGET: invalid config/$FM_STARTUP_MEMORY_BUDGET_FILE - $FM_STARTUP_MEMORY_BUDGET_ERROR"
   fi
 }
-
-if [ "${1:-}" = "install" ]; then
-  shift
-  [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
-  for t in "$@"; do
-    if ! cmd=$(install_cmd "$t"); then
-      instructions=$(manual_install_url "$t") || { echo "error: unknown tool $t" >&2; exit 1; }
-      echo "error: $t requires manual installation (instructions: $instructions)" >&2
-      exit 1
-    fi
-    cmd=${cmd%%  #*}
-    echo "installing $t: $cmd"
-    eval "$cmd"
-  done
-  exit 0
-fi
 
 # This is the first mutating sweep at a locked session boundary. It pauses an
 # identity-matched watcher, holds its lock, and neutralizes legacy PR checks

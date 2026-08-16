@@ -625,6 +625,8 @@ test_spawn_backend_precedence_over_inherited_config() {
   printf 'herdr\n' > "$w/home/config/backend"
   make_seeded_home "$sm" sm
 
+  # FM_BACKEND is the documented one-off operator override: it beats an
+  # inherited config/backend without being a silent per-task reroute.
   out=$(FM_BACKEND=tmux spawn_secondmate_capture \
     "$w" sm "$sm" "$launchlog" 2>&1); status=$?
   expect_code 0 "$status" \
@@ -633,13 +635,15 @@ test_spawn_backend_precedence_over_inherited_config() {
   meta="$w/home/state/sm.meta"
   [ "$(cat "$sm/config/backend")" = herdr ] \
     || fail "backend precedence fixture did not inherit config/backend=herdr"
-  assert_no_grep '^backend=' "$meta" \
-    "FM_BACKEND=tmux did not beat inherited config/backend=herdr"
+  # Every meta names its backend (tmux included); an absent line used to hide
+  # reroutes. Prove the env override won with a positive backend=tmux line.
+  [ "$(meta_field "$meta" backend)" = tmux ] \
+    || fail "FM_BACKEND=tmux did not beat inherited config/backend=herdr (got backend='$(meta_field "$meta" backend)')"
   pass "B5b spawn: FM_BACKEND wins over inherited config/backend"
 }
 
 test_spawn_explicit_backend_precedence_over_env_and_inherited_config() {
-  local w sm meta launchlog out status
+  local w sm launchlog out status
   w="$TMP_ROOT/spawn-backend-flag-precedence"
   sm="$w/sm"
   launchlog="$w/launch.log"
@@ -647,17 +651,24 @@ test_spawn_explicit_backend_precedence_over_env_and_inherited_config() {
   printf 'herdr\n' > "$w/home/config/backend"
   make_seeded_home "$sm" sm
 
+  # Product contract (bin/fm-spawn.sh, 2026-08-05): config/backend is the
+  # captain's pin, not a default to route around. An explicit --backend that
+  # contradicts it is refused so a task cannot become invisible on another
+  # backend. FM_BACKEND remains the one-off override (B5b); --backend may only
+  # agree with a set config/backend. tests/fm-backend.test.sh owns the same
+  # veto for ordinary crew spawns. Refusal is before inheritance, so the
+  # secondmate home still has no config/ (make_seeded_home leaves it absent).
   out=$(FM_BACKEND=zellij spawn_secondmate_capture \
     "$w" sm "$sm" "$launchlog" --backend tmux 2>&1); status=$?
-  expect_code 0 "$status" \
-    "explicit --backend tmux should beat FM_BACKEND=zellij and inherited config/backend=herdr"$'\n'"$out"
-
-  meta="$w/home/state/sm.meta"
-  [ "$(cat "$sm/config/backend")" = herdr ] \
-    || fail "explicit backend precedence fixture did not inherit config/backend=herdr"
-  assert_no_grep '^backend=' "$meta" \
-    "explicit --backend tmux did not beat FM_BACKEND=zellij and inherited config/backend=herdr"
-  pass "B5c spawn: explicit --backend wins over FM_BACKEND and inherited config/backend"
+  [ "$status" -ne 0 ] || fail \
+    "--backend tmux must be refused when primary config/backend says herdr"$'\n'"$out"
+  assert_contains "$out" "contradicts config/backend (herdr)" \
+    "the refusal must name the configured backend it would have overridden"
+  assert_contains "$out" "REPORT that" \
+    "the refusal must say to report the broken backend rather than route around it"
+  [ ! -f "$w/home/state/sm.meta" ] || fail "a refused secondmate spawn must not leave task state behind"
+  [ ! -e "$sm/config/backend" ] || fail "a refused secondmate spawn must not push inherited config"
+  pass "B5c spawn: --backend cannot contradict primary config/backend (FM_BACKEND remains the one-off override)"
 }
 
 # A bare "<harness>" secondmate-harness file (today's format) must launch with
