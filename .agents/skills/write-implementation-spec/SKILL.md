@@ -119,7 +119,9 @@ Mark `READY` only when all statements below are true:
 - acceptance criteria can pass or fail without subjective interpretation;
 - verification can be run or manually reproduced;
 - dependencies, risks, rollout, and required approvals are recorded;
-- no unresolved choice can cause meaningful rework.
+- no unresolved choice can cause meaningful rework;
+- A specification that makes a component READ a new record must name the component that WRITES it, or state explicitly that the record is recorded by hand and by whom.
+  If it is recorded by hand into a file another component parses, the spec must also name every existing parser of that file and say what the new key's position and format must satisfy - a hand-edited key is a change to that file's contract, not an addition beside it.
 
 Otherwise mark `BLOCKED`, name each blocker, identify its owner, and ask the minimum next questions.
 
