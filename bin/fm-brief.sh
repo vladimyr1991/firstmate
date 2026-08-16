@@ -601,6 +601,8 @@ When the project's test gate serves the working tree (for example a Vite dev ser
 If that window was missed, stop editing, commit or stash the work, and re-measure from a clean tree or a detached base commit (\`git checkout <base-sha> -- <paths>\` or a clean worktree) rather than trusting a mid-edit run.
 To place base-revision sources for a temporary measurement, use \`git checkout <base-sha> -- <paths>\` (or a second worktree), not \`git stash push -- <paths>\`.
 On a clean tree \`stash push\` is a silent no-op; a later \`stash pop\` reporting "No stash entries found" is too late - the measurement may already have run against the branch under test.
+\`git checkout <base-sha> -- <paths>\` also stages what it wrote, so restore those paths with \`git checkout HEAD -- <paths>\` the moment the measurement is done and before you resume editing; skip that and your next \`git add -A\` commits base-revision files over your own mandated edits.
+When you only need to read the base revision, \`git show <base-sha>:<path>\` written to a scratch file outside the tracked paths is the alternative that needs no restore at all.
 
 # Rules
 $RULE1
