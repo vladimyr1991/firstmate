@@ -42,6 +42,12 @@ FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 # verb-aware: a nonterminal working: or paused: line never becomes captain-relevant
 # merely because its prose contains one of those tokens (for example
 # "working: rebased onto merged #76").
+#
+# The optional "[key=<slug>]" group matches the keyed status forms the briefs
+# prescribe ("blocked [key=base-divergence]: ..."). The verb-aware path noted
+# above already recognizes those lines, but it is skipped whenever FM_CAPTAIN_RE is
+# set at all - so without the group a home that copies this default verbatim into
+# its own FM_CAPTAIN_RE would silently stop surfacing every keyed escalation.
 FM_CLASSIFY_CAPTAIN_RE_DEFAULT='(done|needs-decision|blocked|failed)( \[key=[^]]+\])?:|PR ready|checks green|ready in branch|merged'
 
 # The deliberate-external-wait verb. A crew (or firstmate steering it) appends
