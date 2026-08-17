@@ -167,23 +167,32 @@ test_links_exposure_on_json_and_summary() {
 }
 
 test_cross_home_shape_and_disclosure() {
-  local observer parent sibling gone out rc fakebin
-  local parent_real observer_real sibling_real gone_real
+  local observer parent sibling sibling2 gone out rc fakebin
+  local parent_real observer_real sibling_real sibling2_real gone_real
   observer=$(make_readable_home observer-ch)
   parent=$(make_readable_home parent-ch)
   sibling=$(make_readable_home sibling-ch)
+  sibling2=$(make_readable_home sibling2-ch)
   gone=$(make_readable_home gone-ch)
   parent_real=$(cd "$parent" && pwd -P)
   observer_real=$(cd "$observer" && pwd -P)
   sibling_real=$(cd "$sibling" && pwd -P)
+  sibling2_real=$(cd "$sibling2" && pwd -P)
   gone_real=$(cd "$gone" && pwd -P)
   write_task_meta "$parent" p-task \
     "notion_page=https://www.notion.so/parent-card"
   write_task_meta "$sibling" s-task \
     "notion_page_archived=https://www.notion.so/archived-card"
-  # Registry: sibling (readable), gone (will be removed), observer (must be skipped)
+  write_task_meta "$sibling" s-live \
+    "notion_page=https://www.notion.so/sibling-card"
+  # Two readable siblings, so one run completes more than one nested read and
+  # each home's summary has to stay bound to the home it came from.
+  write_task_meta "$sibling2" s2-task \
+    "notion_page=https://www.notion.so/sibling2-card"
+  # Registry: two readable siblings, gone (will be removed), observer (must be skipped)
   cat > "$parent/data/secondmates.md" <<EOF
 - sibling - Sibling scope (home: $sibling_real; scope: sibling domain work; projects: ; added 2026-08-01)
+- sibling2 - Second sibling scope (home: $sibling2_real; scope: other domain work; projects: ; added 2026-08-01)
 - gone - Gone scope (home: $gone_real; scope: missing home work; projects: ; added 2026-08-01)
 - observer - Observer scope (home: $observer_real; scope: self skip; projects: ; added 2026-08-01)
 EOF
@@ -200,7 +209,8 @@ EOF
   ); rc=$?
   [ "$rc" -eq 0 ] || fail "cross-home with readable parent should exit 0, got $rc: $out"
 
-  printf '%s' "$out" | jq -e --arg parent "$parent_real" --arg observer "$observer_real" '
+  printf '%s' "$out" | jq -e --arg parent "$parent_real" --arg observer "$observer_real" \
+    --arg sibling "$sibling_real" --arg sibling2 "$sibling2_real" '
     .schema == "fm-cross-home-fleet.v1"
     and .parent_home == $parent
     and .observer_home == $observer
@@ -209,16 +219,33 @@ EOF
     and (.homes | map(select(.id=="observer")) | length) == 0
     and (.homes[] | select(.role=="parent") | .available) == true
     and (.homes[] | select(.id=="sibling") | .available) == true
+    and (.homes[] | select(.id=="sibling2") | .available) == true
     and (.homes[] | select(.id=="gone") | .available) == false
     and (.unavailable | map(select(.id=="gone")) | length) == 1
     and (.unavailable[] | select(.id=="gone") | .reason) != null
     and .counts.unavailable >= 1
+    and .counts.available == 3
     and ([.homes[] | select(.role=="parent") | .summary.endpoints[]?
          | select(.links.notion_page == "https://www.notion.so/parent-card")] | length) == 1
     and ([.homes[] | select(.id=="sibling") | .summary.endpoints[]?
          | select(.links.notion_page_archived == "https://www.notion.so/archived-card")] | length) == 1
     and ([.homes[] | select(.id=="sibling") | .summary.endpoints[]?
          | select(.links.notion_page == "https://www.notion.so/archived-card")] | length) == 0
+    # Each completed read stays bound to its own home: the summary names the
+    # home it came from, and neither sibling carries the link held by the other.
+    and (.homes[] | select(.id=="sibling") | .summary.home) == $sibling
+    and (.homes[] | select(.id=="sibling2") | .summary.home) == $sibling2
+    and (.homes[] | select(.id=="sibling") | .home) == $sibling
+    and (.homes[] | select(.id=="sibling2") | .home) == $sibling2
+    and ([.homes[] | select(.id=="sibling") | .summary.endpoints[]?
+         | select(.links.notion_page == "https://www.notion.so/sibling-card")] | length) == 1
+    and ([.homes[] | select(.id=="sibling2") | .summary.endpoints[]?
+         | select(.links.notion_page == "https://www.notion.so/sibling2-card")] | length) == 1
+    and ([.homes[] | select(.id=="sibling") | .summary.endpoints[]?
+         | select(.links.notion_page == "https://www.notion.so/sibling2-card")] | length) == 0
+    and ([.homes[] | select(.id=="sibling2") | .summary.endpoints[]?
+         | select(.links.notion_page == "https://www.notion.so/sibling-card")] | length) == 0
+    and ((.homes | map(select(.available) | .home) | unique | length) == 3)
   ' >/dev/null || fail "cross-home shape wrong: $out"
 
   pass "AC-5/AC-7: --cross-home shape, skip-self, unavailable disclosure, links"
