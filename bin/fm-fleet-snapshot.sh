@@ -83,6 +83,10 @@ FM_SNAPSHOT_SECONDMATE_TIMEOUT=${FM_SNAPSHOT_SECONDMATE_TIMEOUT:-8}
 # secondmate-summary default of 8s (see Evidence E-1 ~8.8s), so the
 # observer-facing cross-home path uses a higher default.
 FM_SNAPSHOT_CROSS_HOME_TIMEOUT=${FM_SNAPSHOT_CROSS_HOME_TIMEOUT:-30}
+# Aggregate bound on one --cross-home cycle. The per-home timeout alone leaves
+# the observer blocked for timeout x homes when several homes are wedged, so the
+# whole serial read also has a deadline; 0 lifts it.
+FM_SNAPSHOT_CROSS_HOME_DEADLINE=${FM_SNAPSHOT_CROSS_HOME_DEADLINE:-120}
 FM_SNAPSHOT_SECONDMATE_MAX_BYTES=${FM_SNAPSHOT_SECONDMATE_MAX_BYTES:-262144}
 FM_SNAPSHOT_SECONDMATE_CHILDREN=${FM_SNAPSHOT_SECONDMATE_CHILDREN:-20}
 FM_SNAPSHOT_SECONDMATE_QUEUED=${FM_SNAPSHOT_SECONDMATE_QUEUED:-20}
@@ -109,6 +113,12 @@ validate_positive_bound() {  # <name> <value>
 case "$FM_SNAPSHOT_SECONDMATES" in
   ''|*[!0-9]*)
     echo "fm-fleet-snapshot: FM_SNAPSHOT_SECONDMATES must be a non-negative integer" >&2
+    exit 2
+    ;;
+esac
+case "$FM_SNAPSHOT_CROSS_HOME_DEADLINE" in
+  ''|*[!0-9]*)
+    echo "fm-fleet-snapshot: FM_SNAPSHOT_CROSS_HOME_DEADLINE must be a non-negative integer" >&2
     exit 2
     ;;
 esac
@@ -171,11 +181,18 @@ home plus every registered secondmate home except the active FM_HOME. Each home
 is bounded by FM_SNAPSHOT_CROSS_HOME_TIMEOUT (default 30) and
 FM_SNAPSHOT_SECONDMATE_MAX_BYTES; every failure is disclosed in unavailable[].
 Exit 0 when the parent was read, 1 when the parent itself is unavailable, 2 on
-usage or validation error.
+usage or validation error. The parent's registry is only enumerated once the
+parent passes validate_readable_home: a refused parent reports
+registry.available false with reason "parent home unavailable" and no siblings,
+because a home the gate refused cannot authorize reads of the homes it lists.
 
 Cross-home reads use FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the count
 bound on homes actually read), FM_SNAPSHOT_SECONDMATE_TIMEOUT (nested secondmate
-aggregation), FM_SNAPSHOT_CROSS_HOME_TIMEOUT (--cross-home per-home bound), and
+aggregation), FM_SNAPSHOT_CROSS_HOME_TIMEOUT (--cross-home per-home bound),
+FM_SNAPSHOT_CROSS_HOME_DEADLINE (default 120, 0 lifts it: an aggregate wall-clock
+bound on the whole serial read, since the per-home timeout alone allows
+timeout x homes; homes still unread when it trips are disclosed unavailable with
+reason "cross-home read deadline reached" and set truncated), and
 FM_SNAPSHOT_SECONDMATE_MAX_BYTES. How much of the parent registry --cross-home
 reads at all, and how many records it emits, are bounded separately by the
 FM_SNAPSHOT_REGISTRY_* window below; a roster larger than that window is
@@ -1455,15 +1472,19 @@ cross_home_fleet_json() {  # <parent-home-path>
   local parent=$1
   local abs_observer abs_parent=""
   local homes_lines="" homes_json seen_homes="" seen_ids=""
-  local truncated=0
+  local truncated=0 reg_truncated=0
   local reg_present=0 reg_available=1 reg_complete=1 reg_reason=
-  local reg_file reg_mode line id home home_resolved parsed
+  local reg_file='' reg_mode='' line id home home_resolved parsed parent_gated=1
   local record_count=0 emitted=0 limit
   local lines_read=0 chars_read=0
+  local deadline_epoch=0 deadline_hit=0
   local exit_code=0
   local reg_present_json reg_available_json reg_complete_json truncated_json
 
   abs_observer=$(resolved_existing_dir "$FM_HOME" 2>/dev/null || printf '%s' "$FM_HOME")
+  if [ "$FM_SNAPSHOT_CROSS_HOME_DEADLINE" -gt 0 ]; then
+    deadline_epoch=$(( $(date +%s) + FM_SNAPSHOT_CROSS_HOME_DEADLINE ))
+  fi
 
   # Parent home first. Call read_home_summary in this shell (not a command
   # substitution) so CH_SUMMARY / CH_HOME / CH_REASON survive for the registry
@@ -1472,15 +1493,32 @@ cross_home_fleet_json() {  # <parent-home-path>
     abs_parent=$CH_HOME
     cross_home_record_available parent main "$abs_parent" "$CH_SUMMARY"
   else
-    abs_parent=${CH_HOME:-$parent}
     exit_code=1
+    if [ -n "$CH_HOME" ]; then
+      # The gate passed and the nested run failed: still a validated home whose
+      # registry this observer is cleared to read.
+      abs_parent=$CH_HOME
+    else
+      parent_gated=0
+      abs_parent=$(resolved_existing_dir "$parent" 2>/dev/null || printf '%s' "$parent")
+    fi
     cross_home_record_unavailable parent main "$abs_parent" \
       "${CH_REASON:-structured home snapshot failed}"
   fi
 
-  reg_file="${abs_parent}/data/secondmates.md"
-  reg_mode=$(file_mode_octal "$reg_file")
-  if [ ! -f "$reg_file" ]; then
+  if [ "$parent_gated" -eq 1 ]; then
+    reg_file="${abs_parent}/data/secondmates.md"
+    reg_mode=$(file_mode_octal "$reg_file")
+  fi
+  if [ "$parent_gated" -eq 0 ]; then
+    # validate_readable_home refused the parent, so its registry is not a list
+    # this observer may enumerate from: reading it would reach siblings through
+    # a home the gate never authorized.
+    reg_present=0
+    reg_available=0
+    reg_complete=0
+    reg_reason="parent home unavailable"
+  elif [ ! -f "$reg_file" ]; then
     reg_present=0
   elif [ -z "$reg_mode" ] || [ $((8#$reg_mode & 0444)) -eq 0 ] \
     || ! { exec 3< "$reg_file"; } 2>/dev/null; then
@@ -1505,6 +1543,7 @@ cross_home_fleet_json() {  # <parent-home-path>
       if [ "$lines_read" -gt "$FM_SNAPSHOT_REGISTRY_LINES" ] \
         || [ "$chars_read" -gt "$FM_SNAPSHOT_REGISTRY_BYTES" ]; then
         truncated=1
+        reg_truncated=1
         reg_reason="registered secondmate table exceeded the read window"
         break
       fi
@@ -1543,6 +1582,7 @@ cross_home_fleet_json() {  # <parent-home-path>
       # roster is incomplete and says so rather than growing without limit.
       if [ "$emitted" -ge "$FM_SNAPSHOT_REGISTRY_RECORDS" ]; then
         truncated=1
+        reg_truncated=1
         reg_reason="registered secondmate table exceeded the record window"
         break
       fi
@@ -1558,6 +1598,7 @@ cross_home_fleet_json() {  # <parent-home-path>
       # Record-count bound: drop with disclosed reason, never silent.
       if [ "$limit" -gt 0 ] && [ "$record_count" -ge "$limit" ]; then
         truncated=1
+        reg_truncated=1
         cross_home_record_unavailable secondmate "$id" "$home" "record limit"
         continue
       fi
@@ -1587,6 +1628,20 @@ cross_home_fleet_json() {  # <parent-home-path>
           ;;
       esac
 
+      # Aggregate deadline: one wedged home must not spend the whole cycle's
+      # budget, and once the cycle is out of time the rest of the roster is
+      # disclosed unread rather than silently dropped or waited on.
+      if [ "$deadline_hit" -eq 0 ] && [ "$deadline_epoch" -gt 0 ] \
+        && [ "$(date +%s)" -ge "$deadline_epoch" ]; then
+        deadline_hit=1
+      fi
+      if [ "$deadline_hit" -eq 1 ]; then
+        truncated=1
+        cross_home_record_unavailable secondmate "$id" "$home_resolved" \
+          "cross-home read deadline reached"
+        continue
+      fi
+
       if read_home_summary "$home"; then
         home_resolved=$CH_HOME
         case " $seen_homes " in
@@ -1603,9 +1658,10 @@ cross_home_fleet_json() {  # <parent-home-path>
       fi
     done <&3
     exec 3<&-
-    # A truncated roster is an incomplete registry read, same as the bounded
-    # registry reader reports for record_limit.
-    if [ "$truncated" -eq 1 ]; then
+    # Only a bound that cut the registry read short makes the registry itself
+    # incomplete; a deadline that stopped the home reads leaves the roster
+    # complete and is disclosed per home and in the top-level truncated flag.
+    if [ "$reg_truncated" -eq 1 ]; then
       reg_complete=0
       [ -n "$reg_reason" ] || reg_reason="record limit"
     fi

@@ -486,10 +486,92 @@ test_cross_home_registry_window_bounds_emission() {
   pass "SNAP-2: an oversized parent registry bounds emitted records and discloses the window"
 }
 
+# The gate that authorizes the parent home also authorizes its registry: a
+# refused parent must not become a route to the homes it lists.
+test_cross_home_refused_parent_enumerates_nothing() {
+  local observer sibling out rc fakebin observer_real sibling_real
+  observer=$(make_readable_home observer-gate)
+  sibling=$(make_readable_home sibling-gate)
+  observer_real=$(cd "$observer" && pwd -P)
+  sibling_real=$(cd "$sibling" && pwd -P)
+  write_task_meta "$sibling" s-task \
+    "notion_page=https://www.notion.so/gate-card"
+  cat > "$observer/data/secondmates.md" <<EOF
+- sibling - Sibling (home: $sibling_real; scope: sibling work; projects: ; added 2026-08-01)
+EOF
+  fakebin=$(make_fakebin "$TMP_ROOT/fakebin-gate")
+  # The active FM_HOME is refused by validate_readable_home.
+  out=$(
+    PATH="$fakebin:$PATH" \
+      FM_HOME="$observer_real" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$observer/state" FM_DATA_OVERRIDE="$observer/data" \
+      FM_CONFIG_OVERRIDE="$observer/config" FM_PROJECTS_OVERRIDE="$observer/projects" \
+      FM_SNAPSHOT_CROSS_HOME_TIMEOUT=20 \
+      "$SNAPSHOT" --cross-home "$observer_real" 2>/dev/null
+  ); rc=$?
+  [ "$rc" -eq 1 ] || fail "refused parent should exit 1, got $rc: $out"
+  printf '%s' "$out" | jq -e '
+    (.homes | length) == 1
+    and .homes[0].role == "parent"
+    and .homes[0].available == false
+    and .registry.available == false
+    and .registry.complete == false
+    and .registry.reason == "parent home unavailable"
+    and ([.homes[] | select(.role == "secondmate")] | length) == 0
+    and ([.. | strings | select(test("gate-card"))] | length) == 0
+  ' >/dev/null || fail "refused parent still enumerated its registry: $out"
+  pass "SNAP-2: a parent the gate refused enumerates no siblings"
+}
+
+# The per-home timeout alone lets a wedged fleet block the observer for
+# timeout x homes, so the whole serial read has an aggregate deadline.
+test_cross_home_aggregate_deadline_discloses_unread_homes() {
+  local observer parent out rc fakebin parent_real observer_real i t home
+  observer=$(make_readable_home observer-deadline)
+  parent=$(make_readable_home parent-deadline)
+  parent_real=$(cd "$parent" && pwd -P)
+  observer_real=$(cd "$observer" && pwd -P)
+  : > "$parent/data/secondmates.md"
+  # Each home carries enough live tasks that one read costs far more than the
+  # 1s deadline divided by the roster size, so the trip does not race the clock.
+  for i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16; do
+    home=$(make_readable_home "mate-deadline-$i")
+    for t in 1 2 3 4; do
+      write_task_meta "$home" "t$t"
+    done
+    printf -- '- mate%s - Mate %s (home: %s; scope: bulk; projects: ; added 2026-08-01)\n' \
+      "$i" "$i" "$(cd "$home" && pwd -P)" >> "$parent/data/secondmates.md"
+  done
+  fakebin=$(make_fakebin "$TMP_ROOT/fakebin-deadline")
+  out=$(
+    PATH="$fakebin:$PATH" \
+      FM_HOME="$observer_real" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$observer/state" FM_DATA_OVERRIDE="$observer/data" \
+      FM_CONFIG_OVERRIDE="$observer/config" FM_PROJECTS_OVERRIDE="$observer/projects" \
+      FM_SNAPSHOT_CROSS_HOME_TIMEOUT=20 FM_SNAPSHOT_SECONDMATES=0 \
+      FM_SNAPSHOT_CROSS_HOME_DEADLINE=1 \
+      "$SNAPSHOT" --cross-home "$parent_real"
+  ); rc=$?
+  [ "$rc" -eq 0 ] || fail "deadline-bounded cross-home should exit 0, got $rc: $out"
+  printf '%s' "$out" | jq -e '
+    ([.homes[] | select(.reason == "cross-home read deadline reached")] | length) >= 1
+    and all(.homes[] | select(.reason == "cross-home read deadline reached");
+            .available == false and .summary == null)
+    and ([.unavailable[] | select(.reason == "cross-home read deadline reached")] | length)
+        == ([.homes[] | select(.reason == "cross-home read deadline reached")] | length)
+    and .truncated == true
+    and .registry.complete == true
+    and (.homes | length) == 17
+  ' >/dev/null || fail "aggregate deadline disclosure wrong: $out"
+  pass "NFR: --cross-home stops at the aggregate deadline and discloses every unread home"
+}
+
 test_home_summary_reads_non_secondmate_home
 test_home_summary_refuses_unsafe_targets
 test_home_summary_refuses_over_byte_limit_without_output
 test_cross_home_registry_window_bounds_emission
+test_cross_home_refused_parent_enumerates_nothing
+test_cross_home_aggregate_deadline_discloses_unread_homes
 test_cross_home_unreadable_registry_is_disclosed
 test_cross_home_self_skip_precedes_record_limit
 test_links_exposure_on_json_and_summary
