@@ -429,9 +429,67 @@ test_home_summary_refuses_over_byte_limit_without_output() {
   pass "FR-2: --home-summary enforces the summary byte bound before writing stdout"
 }
 
+# A registry far larger than the fleet must bound what the snapshot emits, not
+# just how many homes it reads, and must say so instead of shortening silently.
+test_cross_home_registry_window_bounds_emission() {
+  local observer parent out rc fakebin parent_real observer_real i
+  observer=$(make_readable_home observer-window)
+  parent=$(make_readable_home parent-window)
+  parent_real=$(cd "$parent" && pwd -P)
+  observer_real=$(cd "$observer" && pwd -P)
+  : > "$parent/data/secondmates.md"
+  for i in 1 2 3 4 5 6 7 8; do
+    printf -- '- mate%s - Mate %s (home: %s/absent-%s; scope: bulk; projects: ; added 2026-08-01)\n' \
+      "$i" "$i" "$TMP_ROOT" "$i" >> "$parent/data/secondmates.md"
+  done
+  fakebin=$(make_fakebin "$TMP_ROOT/fakebin-window")
+
+  # Record window: at most parent + FM_SNAPSHOT_REGISTRY_RECORDS emitted homes.
+  out=$(
+    PATH="$fakebin:$PATH" \
+      FM_HOME="$observer_real" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$observer/state" FM_DATA_OVERRIDE="$observer/data" \
+      FM_CONFIG_OVERRIDE="$observer/config" FM_PROJECTS_OVERRIDE="$observer/projects" \
+      FM_SNAPSHOT_CROSS_HOME_TIMEOUT=20 FM_SNAPSHOT_SECONDMATES=0 \
+      FM_SNAPSHOT_REGISTRY_RECORDS=3 \
+      "$SNAPSHOT" --cross-home "$parent_real"
+  ); rc=$?
+  [ "$rc" -eq 0 ] || fail "windowed cross-home should exit 0, got $rc: $out"
+  printf '%s' "$out" | jq -e '
+    (.homes | length) == 4
+    and .truncated == true
+    and .registry.complete == false
+    and (.registry.reason | test("record window"))
+    and .counts.requested == (.homes | length)
+    and .counts.unavailable == (.unavailable | length)
+    and .counts.available == ([.homes[] | select(.available)] | length)
+  ' >/dev/null || fail "record window disclosure wrong: $out"
+
+  # Input window: a roster read past the line bound is equally incomplete.
+  out=$(
+    PATH="$fakebin:$PATH" \
+      FM_HOME="$observer_real" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$observer/state" FM_DATA_OVERRIDE="$observer/data" \
+      FM_CONFIG_OVERRIDE="$observer/config" FM_PROJECTS_OVERRIDE="$observer/projects" \
+      FM_SNAPSHOT_CROSS_HOME_TIMEOUT=20 FM_SNAPSHOT_SECONDMATES=0 \
+      FM_SNAPSHOT_REGISTRY_LINES=2 \
+      "$SNAPSHOT" --cross-home "$parent_real"
+  ); rc=$?
+  [ "$rc" -eq 0 ] || fail "line-windowed cross-home should exit 0, got $rc: $out"
+  printf '%s' "$out" | jq -e '
+    (.homes | length) == 3
+    and .truncated == true
+    and .registry.complete == false
+    and (.registry.reason | test("read window"))
+  ' >/dev/null || fail "read window disclosure wrong: $out"
+
+  pass "SNAP-2: an oversized parent registry bounds emitted records and discloses the window"
+}
+
 test_home_summary_reads_non_secondmate_home
 test_home_summary_refuses_unsafe_targets
 test_home_summary_refuses_over_byte_limit_without_output
+test_cross_home_registry_window_bounds_emission
 test_cross_home_unreadable_registry_is_disclosed
 test_cross_home_self_skip_precedes_record_limit
 test_links_exposure_on_json_and_summary
