@@ -1697,7 +1697,9 @@ cross_home_fleet_json() {  # <parent-home-path>
       },
       homes:$homes,
       counts:{requested:($homes | length),
-              available:($homes | length) - ($down | length),
+              # Parenthesized as a whole: the jq object-value grammar through
+              # 1.7 rejects a bare subtraction between two terms here.
+              available:(($homes | length) - ($down | length)),
               unavailable:($down | length)},
       unavailable:[$down[] | {id,home,reason}],
       truncated:$truncated
