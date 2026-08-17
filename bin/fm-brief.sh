@@ -87,6 +87,11 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Ship and scout briefs additionally key every blocked/needs-decision template
+# the crewmate copies, with the "[key=<slug>]" token between the verb and the
+# colon, so a second escalation cannot evict the first under the shared
+# "default" key (bin/fm-classify-lib.sh owns that fold); firstmate's answer must
+# close each one with the same key it was opened with.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
