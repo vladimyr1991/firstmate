@@ -121,6 +121,95 @@ validate_operational_dirs() {
   done
 }
 
+# Read-only cross-home gate for a firstmate home that is not necessarily a
+# seeded secondmate. Accepts the main home (no .fm-secondmate-home marker) and
+# any registered sibling; never grants write access and never discovers homes by
+# filesystem scan - callers pass an absolute path they already hold.
+#
+# Unlike validate_secondmate_home this deliberately does NOT reject a home that
+# is also a firstmate repo checkout: the main home is usually exactly that, and
+# the read path must be able to open it. Operational-dir checks below reuse the
+# same resolved_existing_dir / path_is_ancestor_of helpers without the
+# "cannot be inside the firstmate repo" rule that would false-positive there.
+validate_readable_home() {
+  local home=$1 abs_home abs_active_home name dir abs_dir
+  VALIDATED_HOME=""
+  VALIDATION_ERROR=""
+  case "$home" in
+    /*) ;;
+    *)
+      VALIDATION_ERROR="home path is not absolute"
+      return 1
+      ;;
+  esac
+  abs_home=$(resolved_existing_dir "$home") || {
+    VALIDATION_ERROR="not a directory"
+    return 1
+  }
+  if [ "$abs_home" = "/" ]; then
+    VALIDATION_ERROR="home cannot be the filesystem root"
+    return 1
+  fi
+  abs_active_home=$(resolved_existing_dir "$FM_HOME") || {
+    VALIDATION_ERROR="active firstmate home is not a directory"
+    return 1
+  }
+  if [ "$abs_home" = "$abs_active_home" ]; then
+    VALIDATION_ERROR="home cannot be the active firstmate home"
+    return 1
+  fi
+  if path_is_ancestor_of "$abs_active_home" "$abs_home" \
+    || path_is_ancestor_of "$abs_home" "$abs_active_home"; then
+    VALIDATION_ERROR="home overlaps the active firstmate home"
+    return 1
+  fi
+  if [ -L "$abs_home/AGENTS.md" ] || [ ! -f "$abs_home/AGENTS.md" ]; then
+    VALIDATION_ERROR="not a firstmate home (missing AGENTS.md)"
+    return 1
+  fi
+  # state/ and data/ must be real non-symlink directories (SNAP-3). config/ and
+  # projects/, when present, must resolve inside the target and never into the
+  # active home - same boundary validate_operational_dirs enforces for those
+  # two axes, without the firstmate-repo axis that would reject the main home.
+  for name in state data config projects; do
+    dir="$abs_home/$name"
+    if [ "$name" = state ] || [ "$name" = data ]; then
+      if [ -L "$dir" ]; then
+        VALIDATION_ERROR="secondmate $name directory must resolve inside the secondmate home"
+        return 1
+      fi
+      if [ ! -d "$dir" ]; then
+        VALIDATION_ERROR="secondmate $name path is not a directory"
+        return 1
+      fi
+    fi
+    if [ -L "$dir" ] && [ ! -e "$dir" ]; then
+      VALIDATION_ERROR="secondmate $name directory must resolve inside the secondmate home"
+      return 1
+    fi
+    if [ -d "$dir" ]; then
+      abs_dir=$(cd "$dir" && pwd -P) || {
+        VALIDATION_ERROR="secondmate $name directory cannot be resolved"
+        return 1
+      }
+    elif [ -e "$dir" ]; then
+      VALIDATION_ERROR="secondmate $name path is not a directory"
+      return 1
+    else
+      continue
+    fi
+    if ! path_is_ancestor_of "$abs_home" "$abs_dir"; then
+      VALIDATION_ERROR="secondmate $name directory must resolve inside the secondmate home"
+      return 1
+    fi
+    if [ "$abs_dir" = "$abs_active_home" ] || path_is_ancestor_of "$abs_active_home" "$abs_dir"; then
+      VALIDATION_ERROR="secondmate $name directory cannot be inside the active firstmate home"
+      return 1
+    fi
+  done
+  VALIDATED_HOME="$abs_home"
+}
+
 validate_secondmate_home() {
   local id=$1 home=$2 abs_home abs_active_home abs_root marker_id
   VALIDATED_HOME=""

@@ -437,6 +437,29 @@ test_interruption_before_and_after_raw_commit() {
   pass "interruptions restore before commitment and never replay after raw commitment"
 }
 
+# AC-6: a PM needs-decision status line wakes the parent watcher and lands as a
+# signal record keyed on pm.status (WAKE-1; no new escalation mechanism).
+test_pm_needs_decision_status_wakes_watcher() {
+  local dir state fakebin out drain_out status_file
+  dir=$(make_case pm-status)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  drain_out="$dir/drain.out"
+  status_file="$state/pm.status"
+  printf 'needs-decision [key=fleet-divergence-t1]: 1 divergence; see /tmp/doc.md\n' > "$status_file"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  wait_for_exit "$!" 40 || fail "watcher did not exit for pm needs-decision"
+  grep -q '^signal:' "$out" || fail "watcher did not print a signal: reason: $(cat "$out")"
+  grep -F "pm.status" "$out" >/dev/null || fail "signal reason did not name pm.status: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after pm signal failed"
+  # tab-separated: epoch, seq, kind, key, payload - third field signal, fourth pm.status
+  awk -F '\t' '$3 == "signal" && $4 == "pm.status" { found=1 } END { exit found ? 0 : 1 }' "$drain_out" \
+    || fail "drain missing signal/pm.status record: $(cat "$drain_out")"
+  pass "AC-6: pm needs-decision status wakes watcher and drains as signal/pm.status"
+}
+
 test_concurrent_append_and_drain
 test_signal_catchup_without_running_watcher
 test_stale_enqueue_before_suppressor
@@ -449,3 +472,4 @@ test_structural_signal_enrichment_preserves_raw_rows
 test_enrichment_caps_and_status_file_failures
 test_slow_annotation_does_not_block_append_and_deleted_file_fails_open
 test_interruption_before_and_after_raw_commit
+test_pm_needs_decision_status_wakes_watcher

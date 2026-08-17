@@ -832,6 +832,34 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
+test_secondmate_harness_drift_diagnostic() {
+  local home out count
+  home=$(mktemp -d "${TMPDIR:-/tmp}/fm-bootstrap-drift.XXXXXX")
+  mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects"
+  # Recorded launch used claude; current secondmate resolution is codex.
+  printf '%s\n' 'codex' > "$home/config/secondmate-harness"
+  printf '%s\n' 'tmux' > "$home/config/backend"
+  fm_write_meta "$home/state/pm.meta" \
+    "kind=secondmate" \
+    "harness=claude" \
+    "window=firstmate:fm-pm" \
+    "home=$home"
+  out=$(
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+      FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+      FM_CONFIG_OVERRIDE="$home/config" FM_PROJECTS_OVERRIDE="$home/projects" \
+      FM_BOOTSTRAP_DETECT_ONLY=1 \
+      bash "$ROOT/bin/fm-bootstrap.sh" 2>&1
+  ) || true
+  count=$(printf '%s\n' "$out" | grep -c "SECONDMATE_HARNESS_DRIFT: secondmate pm: recorded harness 'claude' but a respawn would resolve 'codex'" || true)
+  [ "$count" -eq 1 ] || fail "AC-14: expected exactly one drift line, got $count in: $out"
+  # Detect-only must not mutate meta.
+  grep -q '^harness=claude$' "$home/state/pm.meta" \
+    || fail "AC-14: detect-only drift check must not rewrite meta"
+  rm -rf "$home"
+  pass "AC-14: harness drift is reported, not silently accepted"
+}
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_quota_axi_min_version
@@ -853,3 +881,4 @@ test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation
+test_secondmate_harness_drift_diagnostic

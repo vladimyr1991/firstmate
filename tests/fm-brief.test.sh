@@ -1594,6 +1594,68 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+test_standing_duty_charter() {
+  local home brief status body without_flag with_flag
+  home=$(mktemp -d "$TMP_ROOT/standing.XXXXXX")
+  mkdir -p "$home/data" "$home/state"
+
+  # Without the flag, baseline charter must remain the default idle shape.
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Operate the board.' \
+    FM_SECONDMATE_SCOPE='board ops' \
+    "$ROOT/bin/fm-brief.sh" baseline --secondmate --no-projects >/dev/null 2>&1
+  without_flag=$(cat "$home/data/baseline/brief.md")
+  assert_contains "$without_flag" \
+    'Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.' \
+    "default charter lost the idle-by-default survey ban"
+
+  # AC-11: regenerating without the flag is byte-stable relative to itself
+  # (pre-change identity is covered by the preserved default text above).
+  rm -rf "$home/data/baseline"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Operate the board.' \
+    FM_SECONDMATE_SCOPE='board ops' \
+    "$ROOT/bin/fm-brief.sh" baseline --secondmate --no-projects >/dev/null 2>&1
+  with_flag=$(cat "$home/data/baseline/brief.md")
+  [ "$without_flag" = "$with_flag" ] || fail "AC-11: default charter without --standing-duty is not stable"
+
+  # Standing-duty charter (AC-12).
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Operate the board and correlate the fleet.' \
+    FM_SECONDMATE_SCOPE='board + fleet correlation' \
+    "$ROOT/bin/fm-brief.sh" pm --secondmate --standing-duty --no-projects >/dev/null 2>&1
+  brief="$home/data/pm/brief.md"
+  assert_present "$brief" "standing-duty charter was not scaffolded"
+  body=$(cat "$brief")
+  assert_contains "$body" \
+    'You have one standing duty, named in the Charter above, and you perform it on the schedule the Charter names.' \
+    "standing-duty charter missing CHARTER-1 initiative opener"
+  assert_contains "$body" \
+    'That standing duty is the complete list of work you may start on your own initiative.' \
+    "standing-duty charter missing CHARTER-1 complete-list line"
+  assert_contains "$body" \
+    'Everything else still comes from the main firstmate: you do not generate your own work, and outside that one named duty you never start a survey, an audit, or a "find improvements" sweep on your own initiative.' \
+    "standing-duty charter missing CHARTER-1 everything-else line"
+  assert_contains "$body" \
+    'Between runs of your standing duty, and whenever the main firstmate has routed you nothing, go idle and wait silently.' \
+    "standing-duty charter missing CHARTER-1 idle line"
+  assert_contains "$body" \
+    'An empty queue is a healthy resting state; it is never a cue to widen your standing duty or to invent work beside it.' \
+    "standing-duty charter missing CHARTER-1 empty-queue line"
+  assert_contains "$body" 'needs-decision' \
+    "standing-duty charter lost escalation vocabulary"
+  assert_contains "$body" 'finding document' \
+    "standing-duty charter lost FR-15 finding-document shape"
+  case "$body" in
+    *'Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.'*)
+      fail "standing-duty charter still contains the old absolute survey ban"
+      ;;
+  esac
+
+  # Flag refused without --secondmate.
+  status=0
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" badrepo somerepo --standing-duty --mode no-mistakes >/dev/null 2>&1 || status=$?
+  [ "$status" -ne 0 ] || fail "--standing-duty without --secondmate must fail"
+  pass "AC-11/AC-12: standing-duty charter replaces idle clauses and is refused off secondmate"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -1628,4 +1690,5 @@ test_pause_examples_name_pipeline_and_ci_waits
 test_workers_report_to_firstmate_only
 test_staging_autonomy_generates_the_landing_contract
 test_staging_autonomy_is_refused_where_it_does_not_apply
+test_standing_duty_charter
 test_scout_and_secondmate_scaffold

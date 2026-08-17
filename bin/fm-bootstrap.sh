@@ -640,12 +640,14 @@ x_mode_write_if_changed() {
 # Written because the shim was first created by hand: it worked in that one home
 # and would have been silently absent in every other, including a secondmate's.
 sprint_poll_setup() {
-  local conf shim body
+  local conf shim trust body reg_out
   conf="$CONFIG/sprint-poll.env"
   shim="$STATE/sprint-watch.check.sh"
+  trust="$STATE/sprint-watch.check-trust"
 
   if [ ! -f "$conf" ]; then
     x_mode_remove_artifact "$shim" >/dev/null 2>&1 || true
+    x_mode_remove_artifact "$trust" >/dev/null 2>&1 || true
     return 0
   fi
 
@@ -656,6 +658,19 @@ sprint_poll_setup() {
 # fm-bootstrap.sh; edit bin/fm-sprint-poll.sh instead.
 exec "'"$FM_ROOT"'/bin/fm-sprint-poll.sh"'
   x_mode_write_if_changed "$shim" "$body" 700 >/dev/null 2>&1 || return 0
+  # FR-7: a freshly written shim is refused unexecuted until bound through
+  # fm-check-register.sh. Register immediately; on failure remove the shim so
+  # the watcher does not emit a rejection every FM_CHECK_INTERVAL.
+  if ! reg_out=$(
+    FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" \
+      FM_STATE_OVERRIDE="$STATE" \
+      "$FM_ROOT/bin/fm-check-register.sh" sprint-watch 2>&1
+  ); then
+    echo "BOOTSTRAP: sprint-watch check registration failed: $(printf '%s' "$reg_out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    x_mode_remove_artifact "$shim" >/dev/null 2>&1 || true
+    x_mode_remove_artifact "$trust" >/dev/null 2>&1 || true
+    return 0
+  fi
   return 0
 }
 
@@ -937,6 +952,32 @@ if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] && [ -n "$crew" ] && [ "$crew" != 
   echo "BOOTSTRAP_INFO: crew harness override active: $crew"
 fi
 crew_dispatch_validate
+# FR-8: detect-only harness-drift diagnostic. A registered secondmate's meta
+# harness= is what the last launch recorded; a respawn re-resolves from
+# config/secondmate-harness via bin/fm-harness.sh. When they differ, surface it
+# so a board-needing secondmate is not silently relaunched board-blind.
+secondmate_harness_drift_check() {
+  local meta id recorded current
+  [ -d "$STATE" ] || return 0
+  current=$(
+    FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" \
+      FM_CONFIG_OVERRIDE="$CONFIG" \
+      "$FM_ROOT/bin/fm-harness.sh" secondmate 2>/dev/null || true
+  )
+  [ -n "$current" ] || return 0
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    grep -q '^kind=secondmate$' "$meta" 2>/dev/null || continue
+    id=$(basename "$meta" .meta)
+    recorded=$(fm_meta_get "$meta" harness)
+    [ -n "$recorded" ] || continue
+    if [ "$recorded" != "$current" ]; then
+      echo "SECONDMATE_HARNESS_DRIFT: secondmate $id: recorded harness '$recorded' but a respawn would resolve '$current'"
+    fi
+  done
+  return 0
+}
+secondmate_harness_drift_check
 if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
   && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
   echo "BOOTSTRAP_INFO: tasks-axi available"
