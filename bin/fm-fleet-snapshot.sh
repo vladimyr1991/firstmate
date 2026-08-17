@@ -161,6 +161,10 @@ projections. A captain hold is actionable only when every blocker is Done.
 --home-summary <path> emits the same fm-secondmate-home-summary.v1 projection for
 any firstmate home (including the main home, which has no .fm-secondmate-home
 marker). Gate is validate_readable_home; refusal exits 2 with one diagnostic.
+The read is bounded by FM_SNAPSHOT_CROSS_HOME_TIMEOUT and
+FM_SNAPSHOT_SECONDMATE_MAX_BYTES exactly as --cross-home bounds each home; a
+summary that trips either bound or fails validation exits 1 with nothing on
+stdout.
 
 --cross-home <parent-home-path> emits fm-cross-home-fleet.v1 covering the parent
 home plus every registered secondmate home except the active FM_HOME. Each home
@@ -1362,14 +1366,17 @@ scout_report_lines() {
 
 # Bound one home read for --home-summary / --cross-home. Reuses run_timed and
 # the secondmate-home-summary projection; gate is validate_readable_home only.
-# Prints the summary on stdout when available; sets CH_REASON on failure.
-# Exit: 0 available, 1 unavailable (reason in CH_REASON), 2 validation error.
+# Outputs are globals so no caller has to route the summary through stdout or a
+# temp file: CH_SUMMARY on success, CH_REASON on failure, CH_HOME either way.
+# Exit: 0 available, 1 unavailable (reason in CH_REASON).
 CH_REASON=
 CH_HOME=
+CH_SUMMARY=
 read_home_summary() {  # <absolute-home-path>
   local home=$1 summary summary_rc summary_bytes summary_reason
   CH_REASON=
   CH_HOME=
+  CH_SUMMARY=
   if ! validate_readable_home "$home"; then
     CH_REASON="invalid home: $VALIDATION_ERROR"
     return 1
@@ -1419,8 +1426,25 @@ read_home_summary() {  # <absolute-home-path>
   # Partial inventory invalidity is still a usable summary for correlation; only
   # structural/timeout failures become unavailable. Match secondmate_current_json
   # which keeps child_current_unavailable summaries as partial-structured.
-  printf '%s' "$summary"
+  CH_SUMMARY=$summary
   return 0
+}
+
+# One dropped home, disclosed in both places at once: homes[] keeps the fleet
+# roster complete and unavailable[] carries the same record for consumers that
+# only read the drop list. Operates on cross_home_fleet_json's accumulators, so
+# no emission site can update one list and forget the other or the counter.
+cross_home_record_unavailable() {  # <role> <id> <home-or-empty> <reason>
+  local role=$1 id=$2 home=$3 reason=$4
+  homes_json=$(jq -n --argjson homes "$homes_json" --arg role "$role" --arg id "$id" \
+    --arg home "$home" --arg reason "$reason" \
+    '($home | if . == "" then null else . end) as $h
+     | $homes + [{role:$role,id:$id,home:$h,available:false,reason:$reason,summary:null}]')
+  unavailable_json=$(jq -n --argjson u "$unavailable_json" --arg id "$id" \
+    --arg home "$home" --arg reason "$reason" \
+    '($home | if . == "" then null else . end) as $h
+     | $u + [{id:$id,home:$h,reason:$reason}]')
+  unavailable=$((unavailable + 1))
 }
 
 # fm-cross-home-fleet.v1: parent home + every registered secondmate except the
@@ -1431,46 +1455,43 @@ cross_home_fleet_json() {  # <parent-home-path>
   local homes_json='[]' unavailable_json='[]'
   local requested=0 available=0 unavailable=0 truncated=0
   local reg_present=0 reg_available=1 reg_complete=1 reg_reason=
-  local reg_file line id home home_resolved reason summary
+  local reg_file reg_mode line id home home_resolved reason
   local seen_homes="" seen_ids="" record_count=0 limit
   local exit_code=0
   local reg_present_json reg_available_json reg_complete_json truncated_json
-  local _ch_tmp summary
 
   abs_observer=$(resolved_existing_dir "$FM_HOME" 2>/dev/null || printf '%s' "$FM_HOME")
 
   # Parent home first. Call read_home_summary in this shell (not a command
-  # substitution) so CH_HOME / CH_REASON survive for registry path and disclosure.
+  # substitution) so CH_SUMMARY / CH_HOME / CH_REASON survive for the registry
+  # path and disclosure.
   requested=$((requested + 1))
-  _ch_tmp=$(mktemp "${TMPDIR:-/tmp}/fm-cross-home.XXXXXX") || {
-    echo "fm-fleet-snapshot: mktemp failed" >&2
-    return 1
-  }
-  if read_home_summary "$parent" >"$_ch_tmp"; then
-    summary=$(cat "$_ch_tmp")
+  if read_home_summary "$parent"; then
     abs_parent=$CH_HOME
     available=$((available + 1))
     seen_homes="$seen_homes $abs_parent"
     homes_json=$(jq -n --argjson homes "$homes_json" --arg home "$abs_parent" \
-      --argjson summary "$summary" \
+      --argjson summary "$CH_SUMMARY" \
       '$homes + [{role:"parent",id:"main",home:$home,available:true,reason:null,summary:$summary}]')
   else
-    reason=${CH_REASON:-"structured home snapshot failed"}
     abs_parent=${CH_HOME:-$parent}
-    unavailable=$((unavailable + 1))
     exit_code=1
-    homes_json=$(jq -n --argjson homes "$homes_json" --arg home "$abs_parent" \
-      --arg reason "$reason" \
-      '$homes + [{role:"parent",id:"main",home:$home,available:false,reason:$reason,summary:null}]')
-    unavailable_json=$(jq -n --argjson u "$unavailable_json" --arg home "$abs_parent" \
-      --arg reason "$reason" \
-      '$u + [{id:"main",home:$home,reason:$reason}]')
+    cross_home_record_unavailable parent main "$abs_parent" \
+      "${CH_REASON:-structured home snapshot failed}"
   fi
-  rm -f "$_ch_tmp"
 
   reg_file="${abs_parent}/data/secondmates.md"
+  reg_mode=$(file_mode_octal "$reg_file")
   if [ ! -f "$reg_file" ]; then
     reg_present=0
+  elif [ ! -r "$reg_file" ] || [ -z "$reg_mode" ] || [ $((8#$reg_mode & 0444)) -eq 0 ]; then
+    # test -f passes on a file this process cannot open, and the read loop below
+    # would then enumerate zero secondmates and read as an empty fleet. Disclose
+    # it unreadable the way registry_secondmates_json does instead.
+    reg_present=1
+    reg_available=0
+    reg_complete=0
+    reg_reason="registered secondmate table is unreadable"
   else
     reg_present=1
     limit=$FM_SNAPSHOT_SECONDMATES
@@ -1487,12 +1508,7 @@ cross_home_fleet_json() {  # <parent-home-path>
             id=$(printf '%s' "$line" | sed -n 's/^- \([^ ]*\).*/\1/p')
             [ -n "$id" ] || id="unknown"
             requested=$((requested + 1))
-            unavailable=$((unavailable + 1))
-            reason="registry entry has no home"
-            homes_json=$(jq -n --argjson homes "$homes_json" --arg id "$id" --arg reason "$reason" \
-              '$homes + [{role:"secondmate",id:$id,home:null,available:false,reason:$reason,summary:null}]')
-            unavailable_json=$(jq -n --argjson u "$unavailable_json" --arg id "$id" --arg reason "$reason" \
-              '$u + [{id:$id,home:null,reason:$reason}]')
+            cross_home_record_unavailable secondmate "$id" "" "registry entry has no home"
             ;;
         esac
         continue
@@ -1501,16 +1517,22 @@ cross_home_fleet_json() {  # <parent-home-path>
       home=$SECONDMATE_REGISTRY_HOME
       home=$(printf '%s' "$home" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
+      # Skip the observer's own home before any bound or disclosure accounting
+      # (SNAP-2 rule 2): the observer is not a fleet member, so it must neither
+      # consume a record-limit slot nor ever surface as an unavailable home.
+      if [ -n "$home" ]; then
+        home_resolved=$(resolved_existing_dir "$home" 2>/dev/null || printf '%s' "$home")
+        if [ -n "$abs_observer" ] && [ "$home_resolved" = "$abs_observer" ]; then
+          seen_ids="$seen_ids $id"
+          continue
+        fi
+      fi
+
       # Record-count bound: drop with disclosed reason, never silent.
       if [ "$limit" -gt 0 ] && [ "$record_count" -ge "$limit" ]; then
         truncated=1
         requested=$((requested + 1))
-        unavailable=$((unavailable + 1))
-        reason="record limit"
-        homes_json=$(jq -n --argjson homes "$homes_json" --arg id "$id" --arg home "$home" --arg reason "$reason" \
-          '$homes + [{role:"secondmate",id:$id,home:($home | if . == "" then null else . end),available:false,reason:$reason,summary:null}]')
-        unavailable_json=$(jq -n --argjson u "$unavailable_json" --arg id "$id" --arg home "$home" --arg reason "$reason" \
-          '$u + [{id:$id,home:($home | if . == "" then null else . end),reason:$reason}]')
+        cross_home_record_unavailable secondmate "$id" "$home" "record limit"
         continue
       fi
       record_count=$((record_count + 1))
@@ -1519,12 +1541,8 @@ cross_home_fleet_json() {  # <parent-home-path>
       case " $seen_ids " in
         *" $id "*)
           requested=$((requested + 1))
-          unavailable=$((unavailable + 1))
-          reason="duplicate secondmate id in registry"
-          homes_json=$(jq -n --argjson homes "$homes_json" --arg id "$id" --arg home "$home" --arg reason "$reason" \
-            '$homes + [{role:"secondmate",id:$id,home:($home | if . == "" then null else . end),available:false,reason:$reason,summary:null}]')
-          unavailable_json=$(jq -n --argjson u "$unavailable_json" --arg id "$id" --arg home "$home" --arg reason "$reason" \
-            '$u + [{id:$id,home:($home | if . == "" then null else . end),reason:$reason}]')
+          cross_home_record_unavailable secondmate "$id" "$home" \
+            "duplicate secondmate id in registry"
           continue
           ;;
       esac
@@ -1532,18 +1550,7 @@ cross_home_fleet_json() {  # <parent-home-path>
 
       if [ -z "$home" ]; then
         requested=$((requested + 1))
-        unavailable=$((unavailable + 1))
-        reason="no recorded secondmate home"
-        homes_json=$(jq -n --argjson homes "$homes_json" --arg id "$id" --arg reason "$reason" \
-          '$homes + [{role:"secondmate",id:$id,home:null,available:false,reason:$reason,summary:null}]')
-        unavailable_json=$(jq -n --argjson u "$unavailable_json" --arg id "$id" --arg reason "$reason" \
-          '$u + [{id:$id,home:null,reason:$reason}]')
-        continue
-      fi
-
-      # Skip the observer's own home without an unavailable record (SNAP-2 rule 2).
-      home_resolved=$(resolved_existing_dir "$home" 2>/dev/null || printf '%s' "$home")
-      if [ -n "$abs_observer" ] && [ "$home_resolved" = "$abs_observer" ]; then
+        cross_home_record_unavailable secondmate "$id" "" "no recorded secondmate home"
         continue
       fi
 
@@ -1551,51 +1558,37 @@ cross_home_fleet_json() {  # <parent-home-path>
       # Duplicate resolved route against already-seen homes (including parent).
       case " $seen_homes " in
         *" $home_resolved "*)
-          unavailable=$((unavailable + 1))
-          reason="invalid home: duplicate resolved home route"
-          homes_json=$(jq -n --argjson homes "$homes_json" --arg id "$id" --arg home "$home_resolved" --arg reason "$reason" \
-            '$homes + [{role:"secondmate",id:$id,home:$home,available:false,reason:$reason,summary:null}]')
-          unavailable_json=$(jq -n --argjson u "$unavailable_json" --arg id "$id" --arg home "$home_resolved" --arg reason "$reason" \
-            '$u + [{id:$id,home:$home,reason:$reason}]')
+          cross_home_record_unavailable secondmate "$id" "$home_resolved" \
+            "invalid home: duplicate resolved home route"
           continue
           ;;
       esac
 
-      _ch_tmp=$(mktemp "${TMPDIR:-/tmp}/fm-cross-home.XXXXXX") || {
-        echo "fm-fleet-snapshot: mktemp failed" >&2
-        return 1
-      }
-      if read_home_summary "$home" >"$_ch_tmp"; then
-        summary=$(cat "$_ch_tmp")
+      if read_home_summary "$home"; then
         home_resolved=$CH_HOME
         case " $seen_homes " in
           *" $home_resolved "*)
-            unavailable=$((unavailable + 1))
-            reason="invalid home: duplicate resolved home route"
-            homes_json=$(jq -n --argjson homes "$homes_json" --arg id "$id" --arg home "$home_resolved" --arg reason "$reason" \
-              '$homes + [{role:"secondmate",id:$id,home:$home,available:false,reason:$reason,summary:null}]')
-            unavailable_json=$(jq -n --argjson u "$unavailable_json" --arg id "$id" --arg home "$home_resolved" --arg reason "$reason" \
-              '$u + [{id:$id,home:$home,reason:$reason}]')
-            rm -f "$_ch_tmp"
+            cross_home_record_unavailable secondmate "$id" "$home_resolved" \
+              "invalid home: duplicate resolved home route"
             continue
             ;;
         esac
         seen_homes="$seen_homes $home_resolved"
         available=$((available + 1))
         homes_json=$(jq -n --argjson homes "$homes_json" --arg id "$id" --arg home "$home_resolved" \
-          --argjson summary "$summary" \
+          --argjson summary "$CH_SUMMARY" \
           '$homes + [{role:"secondmate",id:$id,home:$home,available:true,reason:null,summary:$summary}]')
       else
-        reason=${CH_REASON:-"structured home snapshot failed"}
-        home_resolved=${CH_HOME:-$home}
-        unavailable=$((unavailable + 1))
-        homes_json=$(jq -n --argjson homes "$homes_json" --arg id "$id" --arg home "$home_resolved" --arg reason "$reason" \
-          '$homes + [{role:"secondmate",id:$id,home:$home,available:false,reason:$reason,summary:null}]')
-        unavailable_json=$(jq -n --argjson u "$unavailable_json" --arg id "$id" --arg home "$home_resolved" --arg reason "$reason" \
-          '$u + [{id:$id,home:$home,reason:$reason}]')
+        cross_home_record_unavailable secondmate "$id" "${CH_HOME:-$home}" \
+          "${CH_REASON:-structured home snapshot failed}"
       fi
-      rm -f "$_ch_tmp"
     done < "$reg_file"
+    # A truncated roster is an incomplete registry read, same as the bounded
+    # registry reader reports for record_limit.
+    if [ "$truncated" -eq 1 ]; then
+      reg_complete=0
+      reg_reason="record limit"
+    fi
   fi
 
   reg_present_json=$(bool_json "$reg_present")
@@ -1644,27 +1637,15 @@ if [ "$OUTPUT_MODE" = home-summary ]; then
     exit 2
   fi
   target_home=$VALIDATED_HOME
-  # Re-exec under the target home so STATE/DATA/PROJECTS bind correctly without
-  # mutating this process's environment for any later work.
-  run_timed "$FM_SNAPSHOT_CROSS_HOME_TIMEOUT" env \
-    FM_ROOT_OVERRIDE="$FM_ROOT" \
-    FM_HOME="$target_home" \
-    FM_STATE_OVERRIDE="$target_home/state" \
-    FM_DATA_OVERRIDE="$target_home/data" \
-    FM_CONFIG_OVERRIDE="$target_home/config" \
-    FM_PROJECTS_OVERRIDE="$target_home/projects" \
-    FM_SNAPSHOT_NOW="$SNAPSHOT_NOW" \
-    FM_SNAPSHOT_NOW_EPOCH="$SNAPSHOT_EPOCH" \
-    FM_SNAPSHOT_SECONDMATE_CHILDREN="$FM_SNAPSHOT_SECONDMATE_CHILDREN" \
-    FM_SNAPSHOT_SECONDMATE_QUEUED="$FM_SNAPSHOT_SECONDMATE_QUEUED" \
-    FM_SNAPSHOT_SECONDMATE_DECISIONS="$FM_SNAPSHOT_SECONDMATE_DECISIONS" \
-    FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME="$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" \
-    "$SCRIPT_DIR/fm-fleet-snapshot.sh" --secondmate-home-summary
-  rc=$?
-  if [ "$rc" -ne 0 ]; then
-    echo "fm-fleet-snapshot: home summary failed" >&2
+  # Same bounded, schema-checked read --cross-home uses, so a truncated or
+  # timed-out nested run can never leak partial JSON onto stdout before the
+  # failure is known. read_home_summary re-runs the identical gate on the
+  # already-validated path, which only costs one more filesystem check.
+  if ! read_home_summary "$target_home"; then
+    echo "fm-fleet-snapshot: home summary failed: ${CH_REASON:-unknown reason}" >&2
     exit 1
   fi
+  printf '%s\n' "$CH_SUMMARY"
   exit 0
 fi
 

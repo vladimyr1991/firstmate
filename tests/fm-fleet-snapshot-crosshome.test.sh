@@ -325,8 +325,115 @@ test_absent_registry_is_parent_only() {
   pass "absent secondmates.md yields parent-only fleet"
 }
 
+# A registry file that exists but cannot be opened must not read as an empty
+# fleet: enumerating zero secondmates from an unreadable roster would make a
+# standing PM call every sibling-owned card orphaned.
+test_cross_home_unreadable_registry_is_disclosed() {
+  local observer parent sibling out rc fakebin parent_real observer_real sibling_real
+  if [ "$(id -u)" = 0 ]; then
+    pass "skip: root reads mode-000 files, unreadable-registry case not reproducible"
+    return 0
+  fi
+  observer=$(make_readable_home observer-regperm)
+  parent=$(make_readable_home parent-regperm)
+  sibling=$(make_readable_home sibling-regperm)
+  parent_real=$(cd "$parent" && pwd -P)
+  observer_real=$(cd "$observer" && pwd -P)
+  sibling_real=$(cd "$sibling" && pwd -P)
+  cat > "$parent/data/secondmates.md" <<EOF
+- sibling - Sibling (home: $sibling_real; scope: sibling work; projects: ; added 2026-08-01)
+EOF
+  chmod 000 "$parent/data/secondmates.md"
+  fakebin=$(make_fakebin "$TMP_ROOT/fakebin-regperm")
+  out=$(
+    PATH="$fakebin:$PATH" \
+      FM_HOME="$observer_real" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$observer/state" FM_DATA_OVERRIDE="$observer/data" \
+      FM_CONFIG_OVERRIDE="$observer/config" FM_PROJECTS_OVERRIDE="$observer/projects" \
+      FM_SNAPSHOT_CROSS_HOME_TIMEOUT=20 \
+      "$SNAPSHOT" --cross-home "$parent_real" 2>/dev/null
+  ); rc=$?
+  chmod 644 "$parent/data/secondmates.md"
+  [ "$rc" -eq 0 ] || fail "readable parent with unreadable registry should exit 0, got $rc: $out"
+  printf '%s' "$out" | jq -e '
+    .registry.present == true
+    and .registry.available == false
+    and .registry.complete == false
+    and (.registry.reason | type) == "string"
+    and (.homes | map(select(.id == "sibling")) | length) == 0
+  ' >/dev/null || fail "unreadable registry must not report an enumerated fleet: $out"
+  pass "SNAP-2: an unreadable secondmates.md is disclosed, not read as an empty fleet"
+}
+
+# The observer is not a fleet member, so its registry line must never consume a
+# record-limit slot nor surface as an unavailable home.
+test_cross_home_self_skip_precedes_record_limit() {
+  local observer parent sibling extra out rc fakebin
+  local parent_real observer_real sibling_real extra_real
+  observer=$(make_readable_home observer-limit)
+  parent=$(make_readable_home parent-limit)
+  sibling=$(make_readable_home sibling-limit)
+  extra=$(make_readable_home extra-limit)
+  parent_real=$(cd "$parent" && pwd -P)
+  observer_real=$(cd "$observer" && pwd -P)
+  sibling_real=$(cd "$sibling" && pwd -P)
+  extra_real=$(cd "$extra" && pwd -P)
+  cat > "$parent/data/secondmates.md" <<EOF
+- sibling - Sibling (home: $sibling_real; scope: sibling work; projects: ; added 2026-08-01)
+- observer - Observer (home: $observer_real; scope: self skip; projects: ; added 2026-08-01)
+- extra - Extra (home: $extra_real; scope: past the bound; projects: ; added 2026-08-01)
+EOF
+  fakebin=$(make_fakebin "$TMP_ROOT/fakebin-limit")
+  out=$(
+    PATH="$fakebin:$PATH" \
+      FM_HOME="$observer_real" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$observer/state" FM_DATA_OVERRIDE="$observer/data" \
+      FM_CONFIG_OVERRIDE="$observer/config" FM_PROJECTS_OVERRIDE="$observer/projects" \
+      FM_SNAPSHOT_CROSS_HOME_TIMEOUT=20 FM_SNAPSHOT_SECONDMATES=1 \
+      "$SNAPSHOT" --cross-home "$parent_real"
+  ); rc=$?
+  [ "$rc" -eq 0 ] || fail "bounded cross-home should exit 0, got $rc: $out"
+  printf '%s' "$out" | jq -e '
+    (.homes | map(select(.id == "observer")) | length) == 0
+    and (.unavailable | map(select(.id == "observer")) | length) == 0
+    and (.homes[] | select(.id == "sibling") | .available) == true
+    and (.homes[] | select(.id == "extra") | .available) == false
+    and (.unavailable[] | select(.id == "extra") | .reason) == "record limit"
+    and .truncated == true
+    and .registry.complete == false
+    and (.registry.reason | type) == "string"
+  ' >/dev/null || fail "self-skip/record-limit disclosure wrong: $out"
+  pass "SNAP-2: the observer is skipped before the record bound and truncation marks the registry incomplete"
+}
+
+# The bounded read applies to --home-summary too, so a summary the observer
+# refuses can never have already reached stdout.
+test_home_summary_refuses_over_byte_limit_without_output() {
+  local observer target out err rc fakebin
+  observer=$(make_readable_home observer-bytes)
+  target=$(make_readable_home target-bytes)
+  write_task_meta "$target" t1
+  fakebin=$(make_fakebin "$TMP_ROOT/fakebin-bytes")
+  out=$(
+    PATH="$fakebin:$PATH" \
+      FM_HOME="$observer" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$observer/state" FM_DATA_OVERRIDE="$observer/data" \
+      FM_CONFIG_OVERRIDE="$observer/config" FM_PROJECTS_OVERRIDE="$observer/projects" \
+      FM_SNAPSHOT_SECONDMATE_MAX_BYTES=32 \
+      "$SNAPSHOT" --home-summary "$target" 2>"$TMP_ROOT/bytes.err"
+  ); rc=$?
+  err=$(cat "$TMP_ROOT/bytes.err")
+  [ "$rc" -eq 1 ] || fail "over-limit home-summary should exit 1, got $rc: $out"
+  [ -z "$out" ] || fail "over-limit home-summary must print nothing on stdout: $out"
+  assert_contains "$err" "byte limit" "over-limit home-summary must name the reason"
+  pass "FR-2: --home-summary enforces the summary byte bound before writing stdout"
+}
+
 test_home_summary_reads_non_secondmate_home
 test_home_summary_refuses_unsafe_targets
+test_home_summary_refuses_over_byte_limit_without_output
+test_cross_home_unreadable_registry_is_disclosed
+test_cross_home_self_skip_precedes_record_limit
 test_links_exposure_on_json_and_summary
 test_cross_home_shape_and_disclosure
 test_cross_home_parent_unreadable_exits_1
