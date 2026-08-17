@@ -33,6 +33,10 @@
 # Adding a fifth removal list legitimately fails this check with the counts
 # printed. That is the intent, not brittleness: it forces whoever adds the list to
 # confirm it is complete and to update EXPECTED_LISTS here.
+#
+# Adding a new artifact to fm-spawn.sh is invisible here: the name list below is
+# maintained by hand and nothing ties it to what fm-spawn actually writes. Whoever
+# adds an artifact there adds it here too.
 set -eu
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

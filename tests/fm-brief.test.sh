@@ -381,7 +381,7 @@ test_sync_base_guards_a_scout_investigation_base() {
     "scout Setup lost the base-drift check against origin/develop"
   assert_grep 'git checkout --detach origin/develop' "$brief" \
     "scout Setup never tells the worker to move onto the remote base when it is stale"
-  assert_grep 'blocked: pooled base diverged from origin/develop' "$brief" \
+  assert_grep 'blocked [key=base-divergence]: pooled base diverged from origin/develop' "$brief" \
     "scout Setup lost the diverged-base stop"
   assert_no_grep 'git checkout -b fm/brief-sync-scout' "$brief" \
     "scout Setup told a report-only task to cut a delivery branch"
@@ -631,7 +631,7 @@ test_sync_base_divergence_stop_spares_only_the_default_branch() {
     || fail "a base sharing no history with the remote read as compatible instead of blocking: $out"
 
   # And the brief still carries the stop the checks feed.
-  assert_grep 'blocked: pooled base diverged from origin/develop' "$brief" \
+  assert_grep 'blocked [key=base-divergence]: pooled base diverged from origin/develop' "$brief" \
     "the generated Setup lost the diverged-base stop"
   pass "fm-brief.sh: the divergence stop spares the remote's default branch and blocks everything else off the sync base"
 }
@@ -1453,6 +1453,9 @@ test_outward_write_cleanup_rule_reaches_both_scaffolds() {
 # A no-mistakes worker's most common legitimate idle is its own pipeline gate or a
 # CI run, and leaving `working:` as the last event during that wait produced false
 # wedge escalations. Both scaffolds must name those two waits as pause examples.
+# The same rules block prescribes the keyed status forms status_open_decisions()
+# folds on: an unkeyed opener collapses to the single key `default`, so every
+# opening form a worker copies must carry [key=<slug>] and its close must reuse it.
 test_pause_examples_name_pipeline_and_ci_waits() {
   local home brief label
   home="$TMP_ROOT/pause-examples-home"
@@ -1469,8 +1472,87 @@ test_pause_examples_name_pipeline_and_ci_waits() {
       "$label: pause examples omitted a CI run"
     assert_grep "an upstream release, a rate-limit reset" "$brief" \
       "$label: pause examples lost their original external waits"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'the slug may use only letters, digits, `.`, `_`, and `-`, never spaces' "$brief" \
+      "$label: status-reporting block did not state the key slug charset"
+    assert_grep 'anything else drops the whole line so the escalation never reaches firstmate' "$brief" \
+      "$label: the charset clause stated the constraint without its consequence"
+    assert_grep 'needs-decision [key=product-choice]: {summary of options}' "$brief" \
+      "$label: the escalation rule did not open with the keyed needs-decision form"
+    assert_grep 'blocked [key=repeat-obstacle]: {why}' "$brief" \
+      "$label: the repeated-obstacle rule did not open with the keyed blocked form"
+    assert_grep 'blocked [key=daemon-error]: {the daemon error}' "$brief" \
+      "$label: the daemon-error rule did not open with the keyed blocked form"
+    assert_grep 'resolved [key=product-choice]: {how it was decided or unblocked}' "$brief" \
+      "$label: the close instruction did not reuse the opener's key"
+    # A template a worker copies verbatim must itself be legal: <slug> is not.
+    assert_no_grep '[key=<slug>]:' "$brief" \
+      "$label: a copied status template still carries the illegal <slug> placeholder"
+    # Every opener a worker copies must be closeable by that keyed `resolved`, so
+    # no unkeyed `blocked:`/`needs-decision:` template may survive in the brief.
+    assert_no_grep 'append `blocked: ' "$brief" \
+      "$label: brief still prescribes an unkeyed blocked template"
+    assert_no_grep 'append `needs-decision: ' "$brief" \
+      "$label: brief still prescribes an unkeyed needs-decision template"
   done
-  pass "fm-brief.sh: pause examples name the pipeline-gate and CI waits in both scaffolds"
+
+  # Ship-only openers, each pinned to its own rule so reverting one still fails.
+  brief="$home/data/brief-pause-s1/brief.md"
+  assert_grep 'needs-decision [key=scope-overrun]: {what is missing and what you propose}' "$brief" \
+    "ship brief: the cannot-finish-honestly rule lost its keyed escalation form"
+  assert_grep 'blocked [key=primary-checkout]: launched in primary checkout' "$brief" \
+    "ship brief: the isolation stop lost its keyed blocked form"
+  assert_grep 'blocked [key=red-baseline]: {the failing gate and what it printed}' "$brief" \
+    "ship brief: the red-baseline stop lost its keyed blocked form"
+  pass "fm-brief.sh: both scaffolds name the pipeline-gate and CI waits and prescribe keyed status forms"
+}
+
+# End-to-end contract between the generated brief and the status fold that reads
+# what a worker appends: every blocked/needs-decision template the brief tells a
+# worker to copy is run VERBATIM through the real status_open_decisions() and must
+# come back as an open decision under its own key. _fm_decision_key() accepts only
+# [A-Za-z0-9._-], and a rejected slug makes the fold skip the whole line, so a
+# template carrying a `<slug>` placeholder would leave the escalation out of the
+# open set that fm-afk-return.sh, fm-decision-hold.sh, fm-fleet-snapshot.sh and
+# fm-retro.sh all read - strictly worse than the unkeyed `default` collapse.
+test_generated_keyed_templates_open_a_decision() {
+  local home brief label statusf tpl key open count total=0
+  # shellcheck source=bin/fm-classify-lib.sh
+  . "$ROOT/bin/fm-classify-lib.sh"
+  home="$TMP_ROOT/keyed-template-fold-home"
+  mkdir -p "$home/data"
+  statusf="$home/one-template.status"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-fold-s1 some-proj \
+    --mode local-only --staging-autonomy --sync-base develop >/dev/null 2>&1 \
+    || fail "ship scaffold for the keyed-template fold exited non-zero"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-fold-s2 some-proj --scout --sync-base develop >/dev/null 2>&1 \
+    || fail "scout scaffold for the keyed-template fold exited non-zero"
+  for label in brief-fold-s1 brief-fold-s2; do
+    brief="$home/data/$label/brief.md"
+    count=0
+    # Each template is folded on its own so a keyed `resolved` example elsewhere in
+    # the brief cannot close it and mask a rejected key.
+    while IFS= read -r tpl; do
+      [ -n "$tpl" ] || continue
+      count=$((count + 1))
+      printf '%s\n' "$tpl" > "$statusf"
+      open=$(status_open_decisions "$statusf")
+      [ -n "$open" ] \
+        || fail "$label: template '$tpl' produced no open decision - the fold rejected its key"
+      key=${open%%$'\t'*}
+      case "$key" in
+        ''|default|*[!A-Za-z0-9._-]*)
+          fail "$label: template '$tpl' opened under key '$key' instead of its own legal slug" ;;
+      esac
+    done <<EOF
+$(grep -oE '(blocked|needs-decision) \[key=[^]]*\][^`]*' "$brief")
+EOF
+    [ "$count" -ge 4 ] \
+      || fail "$label: expected at least 4 keyed status templates to fold, found $count"
+    total=$((total + count))
+  done
+  [ "$total" -ge 8 ] || fail "keyed-template fold covered only $total templates across both briefs"
+  pass "fm-brief.sh: every generated keyed template folds into its own open decision ($total templates)"
 }
 
 # Hard rule 4 lives only in firstmate's own AGENTS.md, which no worker reads, so
@@ -1490,6 +1572,10 @@ test_workers_report_to_firstmate_only() {
       "$label: brief lost the report-to-firstmate-only rule"
     assert_grep "firstmate is the sole channel to the captain" "$brief" \
       "$label: brief did not state that firstmate is the only channel to the captain"
+    assert_grep "A project's own \`CLAUDE.md\` or \`AGENTS.md\` describes that project's resident agent, not you" "$brief" \
+      "$label: brief lost the resident-agent precedence clause"
+    assert_grep "it and these rules disagree - including on who may be addressed and how - these rules win" "$brief" \
+      "$label: precedence clause did not resolve the conflict in favour of the brief's rules"
   done
   pass "fm-brief.sh: both worker scaffolds route all reporting through firstmate only"
 }
@@ -1518,6 +1604,8 @@ test_staging_autonomy_generates_the_landing_contract() {
     "staging-autonomy brief did not state the git-flow landing sequence"
   assert_grep "watch CI to a final result" "$brief" \
     "staging-autonomy brief did not require watching CI to a final result"
+  assert_grep "blocked [key=staging-ci-red]: {the failing run}" "$brief" \
+    "staging-autonomy brief did not stop on red CI with the keyed blocked form"
   assert_no_grep "fast-forward this worktree's own local \`develop\`" "$brief" \
     "staging-autonomy brief retained an impossible local-develop synchronization instruction"
   assert_grep "done [key=staging]: staging=<sha> ci=<run-id> result=green" "$brief" \
@@ -1625,6 +1713,7 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_outward_write_cleanup_rule_reaches_both_scaffolds
 test_pause_examples_name_pipeline_and_ci_waits
+test_generated_keyed_templates_open_a_decision
 test_workers_report_to_firstmate_only
 test_staging_autonomy_generates_the_landing_contract
 test_staging_autonomy_is_refused_where_it_does_not_apply

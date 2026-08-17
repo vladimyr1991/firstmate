@@ -87,6 +87,11 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Ship and scout briefs additionally key every blocked/needs-decision template
+# the crewmate copies, with the "[key=<slug>]" token between the verb and the
+# colon, so a second escalation cannot evict the first under the shared
+# "default" key (bin/fm-classify-lib.sh owns that fold); firstmate's answer must
+# close each one with the same key it was opened with.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -267,7 +272,7 @@ $step. **First action: sync the base branch, $action.** This worktree comes from
    Before acting on any of those, rule out a genuinely divergent base with \`git log --oneline origin/$SYNC_BASE..HEAD --not \$(git rev-parse --verify --quiet "\$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || git rev-parse --verify --quiet origin/main || git rev-parse --verify --quiet origin/master)\`, which counts the commits HEAD holds that \`origin/$SYNC_BASE\` does not, minus those already on the remote's default branch.
    That trailing substitution is the default-branch fallback: it verifies whatever \`origin/HEAD\` names before using it, so a pool whose \`origin/HEAD\` is missing or left dangling by an upstream rename falls through to main, then master, and excludes nothing extra if none of them exist - a narrower check rather than a stopped task.
    If it prints nothing, this base is compatible: a default branch carrying a commit the sync base never took, such as a hotfix landed without a back-merge, is an ordinary lineage variant, and the remedy above is safe even though HEAD is not a direct ancestor of \`origin/$SYNC_BASE\`.
-   If it prints any commits, this base carries work that is on neither \`origin/$SYNC_BASE\` nor the remote's default branch - a previous task's leftover tip, local work that was never pushed, or a history unrelated to the remote's - and has diverged rather than merely fallen behind: append \`blocked: pooled base diverged from origin/$SYNC_BASE\` to the status file and stop.
+   If it prints any commits, this base carries work that is on neither \`origin/$SYNC_BASE\` nor the remote's default branch - a previous task's leftover tip, local work that was never pushed, or a history unrelated to the remote's - and has diverged rather than merely fallen behind: append \`blocked [key=base-divergence]: pooled base diverged from origin/$SYNC_BASE\` to the status file and stop.
    If that command itself errors, take the same stop rather than reading its empty output as compatible.
    This check is mandatory, not a judgement call: $consequence
 EOF
@@ -428,6 +433,7 @@ $SCOUT_SYNC
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
+   Wherever this brief prescribes a \`[key=<slug>]\` token, in any section, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces, and anything else drops the whole line so the escalation never reaches firstmate.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
    FYI progress lines; firstmate reads your pane for that.
@@ -436,15 +442,20 @@ $SCOUT_SYNC
    run to finish, an upstream release, a rate-limit reset): firstmate then leaves your idle pane
    alone and rechecks it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
-5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
-   append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
-   When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+   append \`needs-decision [key=product-choice]: {summary of options}\` - the \`[key=...]\` token sits
+   between the verb and the colon, never after it, or the fold silently files it under \`default\` -
+   and stop. Firstmate will reply with the decision. When firstmate replies or a blocker clears and
+   you resume, append \`resolved [key=product-choice]: {how it was decided or unblocked}\` with the same
+   key so the decision or blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+   daemon error, append \`blocked [key=daemon-error]: {the daemon error}\` and stop; only firstmate manages the daemon.
 8. Report status and findings to firstmate only. Never address "the captain" or "you" (the human)
    anywhere in your output or your report; firstmate is the sole channel to the captain.
+   A project's own \`CLAUDE.md\` or \`AGENTS.md\` describes that project's resident agent, not you: where
+   it and these rules disagree - including on who may be addressed and how - these rules win.
 9. A test or probe that writes into a real outward-facing surface must delete what it wrote: capture
    the evidence first, then delete, then re-probe to confirm it is gone. A consumed id is fine;
    visible text left behind is not. That cleanup belongs in the test's own teardown, including the
@@ -496,7 +507,7 @@ Run the project's own test gate first and land only genuinely clean work; never 
 If this task touched the UI, stop before merging anything and append \`blocked [key=evaluation]: test gate green, UI touched, awaiting browser evaluation before merge\`, then wait.
 Only firstmate can spawn the independent browser evaluator, so that key stays open until firstmate answers \`resolved [key=evaluation]:\` and releases you to land.
 To land: merge \`fm/$ID\` -> \`develop\` -> \`staging\`, push both branches, and watch CI to a final result.
-If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked: {the failing run}\` and stop.
+If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked [key=staging-ci-red]: {the failing run}\` and stop.
 Close with the keyed line, never free prose:
    \`done [key=staging]: staging=<sha> ci=<run-id> result=green\`
 Tagging or releasing \`main\` is never yours: it needs the captain's current explicit word every time, obtained through firstmate (rule 6).
@@ -588,14 +599,14 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 
 **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
-If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked [key=primary-checkout]: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 $SETUP_STEPS
 
 **Establish a test baseline before your first edit.** Run the project's own test gate the way its \`AGENTS.md\` or \`README.md\` documents it, before you change anything.
 A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited, and a gate run that selects zero tests is a no-op rather than a baseline.
 When the gate you chose selects nothing, run the project's documented nonempty gate instead or record that no executable baseline exists; never call a zero-selection result green evidence.
-If the baseline is already red, treat that as inherited breakage: append \`blocked: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
+If the baseline is already red, treat that as inherited breakage: append \`blocked [key=red-baseline]: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
 If the gate runs long enough that you would otherwise sit silent, append one \`working:\` line first so supervision does not read the wait as a wedged pane.
 When the project's test gate serves the working tree (for example a Vite dev server started by Playwright's \`webServer\`), "baseline before first edit" is a hard ordering constraint, not a nicety: edits made while the gate is running feed half-finished code into later specs and produce a red suite that looks exactly like inherited breakage.
 If that window was missed, stop editing, commit or stash the work, and re-measure from a clean tree rather than trusting a mid-edit run.
@@ -611,6 +622,7 @@ $RULE1
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
+   Wherever this brief prescribes a \`[key=<slug>]\` token, in any section, the slug may use only letters, digits, \`.\`, \`_\`, and \`-\`, never spaces, and anything else drops the whole line so the escalation never reaches firstmate.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
@@ -622,21 +634,27 @@ $RULE1
    run to finish, an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves
    your idle pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
-5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
-   append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
-   When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
+   append \`needs-decision [key=product-choice]: {summary of options}\` - the \`[key=...]\` token sits
+   between the verb and the colon, never after it, or the fold silently files it under \`default\` -
+   and stop. Firstmate will apply the configured authority and reply with the decision. When
+   firstmate replies or a blocker clears and you resume, append
+   \`resolved [key=product-choice]: {how it was decided or unblocked}\` with the same key so the decision or
+   blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+   daemon error, append \`blocked [key=daemon-error]: {the daemon error}\` and stop; only firstmate manages the daemon.
 8. Implement what the task asks for, completely. Leave behind no placeholder or unimplemented code:
    no handler that accepts input and does nothing, no control wired to nothing, no branch returning a
    fixed value that stands in for real work, no "wire this up later" comment. Code that compiles and
    renders is not evidence that it works - an element a user can click and get nothing from is not done.
    If the task turns out larger than it looked and you cannot finish it honestly, append
-   \`needs-decision: {what is missing and what you propose}\` and stop; never quietly ship a reduced version.
+   \`needs-decision [key=scope-overrun]: {what is missing and what you propose}\` and stop; never quietly ship a reduced version.
 9. Report status and findings to firstmate only. Never address "the captain" or "you" (the human)
    anywhere in your output; firstmate is the sole channel to the captain.
+   A project's own \`CLAUDE.md\` or \`AGENTS.md\` describes that project's resident agent, not you: where
+   it and these rules disagree - including on who may be addressed and how - these rules win.
 10. A test that writes into a real outward-facing surface must delete what it wrote: capture the
     evidence first, then delete, then re-probe to confirm it is gone. A consumed id is fine; visible
     text left behind is not. That cleanup belongs in the test's own teardown, including the failure
