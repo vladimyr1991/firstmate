@@ -121,6 +121,7 @@ test_bootstrap_line() {
   assert_contains "$out" "checkout main" "bootstrap TANGLE line lacked the restore remediation"
   out=$(FM_ROOT_OVERRIDE="$repo" FM_HOME="$repo" FM_BOOTSTRAP_DETECT_ONLY=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null | grep '^TANGLE:' || true)
   assert_contains "$out" "fm/tangle-bb2" "detect-only bootstrap did not report the tangled branch"
+  assert_contains "$out" "$repo" "detect-only bootstrap did not name the stranded checkout"
   assert_contains "$out" "read-only session must leave restore work" "detect-only bootstrap did not explain restore ownership"
   assert_not_contains "$out" "checkout main" "detect-only bootstrap printed a state-changing restore command"
   pass "fm-bootstrap: TANGLE problem line fires only for a feature branch and suppresses repair commands in detect-only mode"
@@ -289,6 +290,82 @@ test_override_and_path_local_contracts() {
   out=$(FM_ROOT_OVERRIDE="$notgit" FM_HOME="$repo" "$ROOT/bin/fm-guard.sh" 2>&1)
   assert_not_contains "$out" "WORKTREE TANGLE" "a non-git FM_ROOT_OVERRIDE no longer suppresses the tangle check"
   pass "operating-checkout resolution: FM_ROOT_OVERRIDE still wins and the path-local classifier is unchanged"
+}
+
+# A BARE-repository-backed layout has no operating primary checkout at all: the
+# first porcelain record is the bare repo itself and every other record is a
+# linked worktree. A bare repo's HEAD is routinely a named branch that is not
+# the default, and `git rev-parse --is-inside-work-tree` prints `false` while
+# still exiting 0 there, so both the resolver and the path-local classifier must
+# reject it on the printed value. Otherwise a crewmate on its mandated fm/<id>
+# branch is told a bare directory is stranded, with a repair command that cannot
+# run - the same false fire on correct work the resolver exists to stop.
+test_bare_backed_layout_stays_silent() {
+  local src bare ship scratch out
+  src=$(make_repo "$TMP_ROOT/bare-src")
+  bare="$TMP_ROOT/bare-repo.git"
+  ship="$TMP_ROOT/bare-ship"
+  scratch="$TMP_ROOT/bare-scratch"
+  mkdir -p "$scratch"
+  git clone -q --bare "$src" "$bare"
+  git -C "$bare" branch -q develop main
+  git -C "$bare" symbolic-ref HEAD refs/heads/develop
+  git -C "$bare" worktree add -q -b fm/ship-bare "$ship" >/dev/null 2>&1
+  install_bin "$ship"
+
+  # The bare repo still has a resolvable default branch, so nothing but the
+  # work-tree check keeps the classifier off it.
+  out=$(fm_default_branch "$bare" || true)
+  [ "$out" = main ] || fail "fixture is not exercising the bare case: default branch resolved to '$out'"
+  out=$(fm_primary_tangle_branch "$bare" || true)
+  [ -z "$out" ] || fail "path-local classifier called a bare repository tangled: '$out'"
+
+  out=$(fm_tangle_checkout "$ship" "" 0 || true)
+  [ -z "$out" ] || fail "resolver picked a bare repository as the operating checkout: '$out'"
+  out=$(fm_tangle_checkout "$ship" "$bare" 0 || true)
+  [ -z "$out" ] || fail "a bare FM_HOME was accepted as the operating checkout: '$out'"
+
+  out=$(run_guard_from "$ship" "$scratch")
+  assert_not_contains "$out" "WORKTREE TANGLE" "guard alarmed on a bare-backed layout with no primary checkout"
+  out=$(run_bootstrap_from "$ship" "$scratch" | grep '^TANGLE:' || true)
+  [ -z "$out" ] || fail "bootstrap emitted a TANGLE line for a bare-backed layout: $out"
+  pass "operating-checkout resolution: a bare-backed repo layout resolves to no checkout and stays silent"
+}
+
+# FM_HOME is a directory input like any other, so a RELATIVE one must resolve
+# the same CDPATH-immune way fm-spawn.sh and fm-brief.sh resolve theirs: against
+# the caller's own working directory, never through a CDPATH entry that happens
+# to hold a same-named directory. Getting that wrong points the alarm at some
+# other repo's checkout.
+test_relative_fm_home_resolution() {
+  local repo home ship decoy scratch home_path out
+  repo=$(make_repo "$TMP_ROOT/rel-repo")
+  home="$TMP_ROOT/rel-home"
+  ship="$TMP_ROOT/rel-ship"
+  decoy="$TMP_ROOT/rel-decoy"
+  scratch="$TMP_ROOT/rel-scratch"
+  mkdir -p "$scratch" "$decoy"
+  git -C "$repo" worktree add -q -b fm/secondmate-rel "$home" >/dev/null 2>&1
+  git -C "$repo" worktree add -q -b fm/ship-rel "$ship" >/dev/null 2>&1
+  install_bin "$ship"
+  home_path=$(real_path "$home")
+  # A same-named decoy home, stranded on its own distinct branch, reachable only
+  # through CDPATH.
+  make_repo "$decoy/rel-home" >/dev/null
+  git -C "$decoy/rel-home" checkout -q -B fm/decoy-home
+
+  out=$(cd "$TMP_ROOT" && CDPATH="$decoy" fm_tangle_checkout "$ship" rel-home 0 || true)
+  [ "$out" = "$home_path" ] || fail "relative FM_HOME resolved to '$out', expected '$home_path'"
+
+  out=$(cd "$TMP_ROOT" && env -u FM_ROOT_OVERRIDE FM_HOME=rel-home CDPATH="$decoy" \
+    FM_STATE_OVERRIDE="$scratch/state" FM_CONFIG_OVERRIDE="$scratch/config" \
+    "$ship/bin/fm-guard.sh" 2>&1)
+  assert_contains "$out" "WORKTREE TANGLE" "guard missed a stranded home named by a relative FM_HOME"
+  assert_contains "$out" "fm/secondmate-rel" "guard did not name the branch of the relative FM_HOME's home"
+  assert_contains "$out" "$home_path" "guard did not name the relative FM_HOME's resolved path"
+  assert_not_contains "$out" "fm/decoy-home" "guard resolved a relative FM_HOME through CDPATH"
+  assert_not_contains "$out" "fm/ship-rel" "guard named the caller's own worktree instead of the home"
+  pass "operating-checkout resolution: a relative FM_HOME resolves against the caller's cwd, immune to CDPATH"
 }
 
 # --- GUARD 1a: brief isolation assertion ------------------------------------
@@ -480,6 +557,8 @@ test_isolated_worktree_is_healthy
 test_primary_tangle_from_linked_worktree
 test_secondmate_home_tangle
 test_override_and_path_local_contracts
+test_bare_backed_layout_stays_silent
+test_relative_fm_home_resolution
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
 test_spawn_tmux_window_construction

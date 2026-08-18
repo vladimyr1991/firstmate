@@ -18,10 +18,14 @@
 #                        session keeps watching its own leased home), else the
 #                        repo's main worktree when the script itself is running
 #                        from a linked worktree (the ordinary crewmate case),
-#                        else the script-relative root.
+#                        else the script-relative root. A bare repository is
+#                        never an operating checkout, so a bare-backed layout -
+#                        where every work tree is a linked worktree - resolves
+#                        to nothing and stays silent.
 #   fm_primary_tangle_branch  classifies THAT one path: a NAMED, non-default
 #                        branch is the tangle; the default branch, a detached
-#                        HEAD, and a non-git directory are healthy.
+#                        HEAD, a bare repository, and a non-git directory are
+#                        healthy.
 #
 # The classifier is deliberately path-local, so a disposable worktree sitting on
 # the fm/<id> branch its brief mandates is never itself the subject: resolution,
@@ -47,10 +51,32 @@ fm_default_branch() {
   return 1
 }
 
+# Return 0 only when <dir> is inside a real WORK TREE. `git rev-parse
+# --is-inside-work-tree` prints `false` and still exits 0 inside a bare
+# repository, so the exit status alone would accept a bare repo as a checkout;
+# the printed value is the only reliable answer.
+fm_tangle_work_tree() {
+  local dir=$1 answer
+  answer=$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null) || return 1
+  [ "$answer" = true ]
+}
+
+# Absolute physical path of <path>, resolved against the caller's working
+# directory when it is relative. CDPATH is cleared so a stray CDPATH entry
+# cannot redirect the resolution. Echoes the path, or returns 1 when it does
+# not resolve to an existing directory.
+fm_tangle_abs_dir() {
+  local path=$1
+  case "$path" in
+    /*) printf '%s\n' "$path"; return 0 ;;
+  esac
+  (CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || return 1
+}
+
 # If the git checkout at <root> is tangled - on a NAMED branch that is not its
 # default branch - echo the offending branch name and return 0. For every healthy
-# state (not a git work tree, detached HEAD, or already on the default branch)
-# echo nothing and return 1.
+# state (not a git work tree, a bare repository, detached HEAD, or already on the
+# default branch) echo nothing and return 1.
 #
 # This is a PATH-LOCAL classifier and nothing more: it answers "is this one
 # directory on a named non-default branch", with no opinion about whether that
@@ -60,7 +86,7 @@ fm_default_branch() {
 # crewmate on its mandated fm/<id> branch reads as a tangle.
 fm_primary_tangle_branch() {
   local root=$1 cur default
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  fm_tangle_work_tree "$root" || return 1
   cur=$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   [ -n "$cur" ] || return 1
   default=$(fm_default_branch "$root") || return 1
@@ -77,7 +103,7 @@ fm_tangle_git_dir() {
   local dir=$1 kind=$2 raw
   raw=$(git -C "$dir" rev-parse "$kind" 2>/dev/null) || return 1
   [ -n "$raw" ] || return 1
-  (cd "$dir" && cd "$raw" && pwd -P) 2>/dev/null || return 1
+  (CDPATH='' cd -- "$dir" && CDPATH='' cd -- "$raw" && pwd -P) 2>/dev/null || return 1
 }
 
 # Return 0 when the work tree at <dir> is a LINKED worktree rather than the
@@ -95,11 +121,23 @@ fm_tangle_linked_worktree() {
 # Echo the main worktree path of the repo containing <dir>. Git documents that
 # `git worktree list --porcelain` lists the main worktree first. Returns 1 when
 # git cannot answer, which callers treat as "no target" rather than as a tangle.
+#
+# When the repo is backed by a BARE repository the first record is that bare
+# repo (a `bare` line in its porcelain block) and every other record is a linked
+# worktree, so the repo has no operating primary checkout at all. Returning 1
+# there keeps the caller silent; picking a linked worktree instead would recreate
+# the false fire on a crewmate doing exactly what its brief mandates.
 fm_tangle_main_worktree() {
-  local dir=$1 line
-  line=$(git -C "$dir" worktree list --porcelain 2>/dev/null | grep -m1 '^worktree ') || return 1
-  [ -n "$line" ] || return 1
-  printf '%s\n' "${line#worktree }"
+  local dir=$1 line path=
+  while IFS= read -r line; do
+    [ -n "$line" ] || break
+    case $line in
+      bare) return 1 ;;
+      'worktree '*) path=${line#worktree } ;;
+    esac
+  done < <(git -C "$dir" worktree list --porcelain 2>/dev/null)
+  [ -n "$path" ] || return 1
+  printf '%s\n' "$path"
 }
 
 # Resolve the operating-home checkout the tangle classifier should judge.
@@ -110,19 +148,29 @@ fm_tangle_main_worktree() {
 # Echoes one path and returns 0, or echoes nothing and returns 1 when no
 # checkout can be resolved. A resolution failure must stay silent at the call
 # site: missing a genuine tangle is preferable to alarming on correct work.
+#
+# A relative FM_HOME is absolutized against the caller's working directory
+# first, the same CDPATH-immune way fm-spawn.sh and fm-brief.sh resolve
+# directory input, so the branch depends on the intended home and never on a
+# same-named directory that happens to sit under the caller's cwd. An FM_HOME
+# that does not resolve to a work tree falls through to script-relative
+# resolution rather than claiming a target.
 fm_tangle_checkout() {
-  local script_root=$1 env_home=$2 overridden=$3 top
+  local script_root=$1 env_home=$2 overridden=$3 top home_abs=
   if [ "$overridden" = 1 ]; then
     printf '%s\n' "$script_root"
     return 0
   fi
-  if [ -n "$env_home" ] && git -C "$env_home" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    top=$(git -C "$env_home" rev-parse --show-toplevel 2>/dev/null) || return 1
+  if [ -n "$env_home" ]; then
+    home_abs=$(fm_tangle_abs_dir "$env_home") || home_abs=
+  fi
+  if [ -n "$home_abs" ] && fm_tangle_work_tree "$home_abs"; then
+    top=$(git -C "$home_abs" rev-parse --show-toplevel 2>/dev/null) || return 1
     [ -n "$top" ] || return 1
     printf '%s\n' "$top"
     return 0
   fi
-  git -C "$script_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  fm_tangle_work_tree "$script_root" || return 1
   if fm_tangle_linked_worktree "$script_root"; then
     fm_tangle_main_worktree "$script_root" || return 1
     return 0

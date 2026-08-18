@@ -959,7 +959,7 @@ fi
 if [ -n "$tangle_branch" ]; then
   tangle_default=$(fm_default_branch "$tangle_checkout" 2>/dev/null || echo main)
   if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ]; then
-    echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock"
+    echo "TANGLE: $tangle_checkout is on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock"
   else
     echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $tangle_checkout checkout $tangle_default, then re-validate the branch in a proper worktree"
   fi
