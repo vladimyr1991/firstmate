@@ -13,6 +13,8 @@ Claude's `.claude/settings.json` Stop `asyncRewake` hook (`bin/fm-claude-stop-au
 The hook fires on every Stop, and an eligible primary with supervision need admits one home-scoped owner that foregrounds `bin/fm-watch-arm.sh` inside the hook-owned process tree.
 A recorded session-lock owner whose pid fails the shared `fm_harness_pid_alive` predicate is reclaimed through `bin/fm-lock.sh` before auto-arm state changes, while a live owner, absent lock, or malformed lock keeps the competing hook inert.
 Ownership itself follows the record contract in [`turnend-guard.md`](turnend-guard.md#home-lock-record-and-session-identity), so the hook keeps arming its own home across a background migration and the Stop payload's `session_id` is accepted when the environment publishes none.
+Surviving that migration takes a durable identity, which a home still holding a legacy bare-pid record does not have: its ownership rests on ancestry alone, and a migrated session leaves the recorded pid alive but outside its own tree.
+The hook therefore delegates one in-place backfill of that identity to `bin/fm-lock.sh upgrade` first, on each firing that finds a legacy record it owns, and discards the outcome so no backfill can change that firing's arm, epoch, banner, or exit code.
 The stale-owner claim occurs only after the existing AFK and supervision-need gates pass.
 After each non-actionable arm close, the hook rechecks the identity-matched watcher lock and fresh beacon before retrying a bounded number of times.
 A cycle-end failure is benign when that live-watcher predicate is true, and the hook suppresses the arm output and continues silently.

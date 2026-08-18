@@ -77,6 +77,22 @@ run_autoarm() {
   return "$rc"
 }
 
+# Run the hook as a child of a fake harness that first records its own bare pid
+# as the home's session lock: the legacy-record shape a home keeps until
+# something backfills a durable identity into it. $2 is the raw Stop payload, so
+# a case can publish a session id or deliberately withhold one. The firing
+# process's own pid is left in state/recorded-pid for the caller to assert on.
+run_autoarm_legacy_record() {  # <dir> <payload>
+  local dir=$1 payload=$2 rc=0
+  printf '%s\n' "$payload" \
+    | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+        printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+        printf "%s\n" "$$" > "$FM_HOME/state/recorded-pid"
+        "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+      ' 2>&1 || rc=$?
+  return "$rc"
+}
+
 # Arm fixture variants, installed per test as <dir>/bin/fm-watch-arm.sh.
 write_arm_fixture() {
   local dir=$1 kind=$2
@@ -314,6 +330,108 @@ test_payload_session_id_owns_a_home_whose_pid_left_the_ancestry() {
   assert_present "$dir/state/arm-ran" "the recorded session did not arm its own home"
   [ "$(epoch_outcome "$dir")" = rewake ] || fail "background-migrated session did not record a claim, got: $(epoch_outcome "$dir")"
   pass "auto-arm: the Stop payload's session id keeps the auto-arm alive across a changed process tree"
+}
+
+# --- legacy-record identity backfill ------------------------------------------
+
+test_owned_legacy_record_is_upgraded_in_place() {
+  local dir out status lock_after recorded_pid
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-upgrade")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  out=$(run_autoarm_legacy_record "$dir" '{"session_id":"session-upgrade"}' 2>/dev/null); status=$?
+  lock_after=$(cat "$dir/state/.lock")
+  recorded_pid=$(cat "$dir/state/recorded-pid")
+  expect_code 2 "$status" "the owning session must still arm the very firing that backfills its record"
+  assert_present "$dir/state/arm-ran" "the backfill suppressed this firing's arm"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "the backfilling firing recorded no claim, got: $(epoch_outcome "$dir")"
+  [ "$lock_after" = "pid=$recorded_pid harness=claude session=session-upgrade" ] \
+    || fail "the legacy record was not backfilled in place, expected pid $recorded_pid: $lock_after"
+  pass "auto-arm: an owned legacy record is backfilled with this session's durable identity"
+}
+
+test_backfilled_home_still_arms_after_its_pid_leaves_the_ancestry() {
+  local dir host out status lock_phase1 recorded_pid host_alive i
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-rehost")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  # Phase 1: the session fires its own Stop from INSIDE its own process tree
+  # while the home still holds a legacy record, and then stays alive - the shape
+  # a Claude host has when it later re-hosts the session beneath it. The
+  # trailing no-op keeps it a harness process instead of letting bash exec the
+  # sleep into a non-harness one.
+  FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+      printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+      printf "%s\n" "$$" > "$FM_HOME/state/recorded-pid"
+      printf "%s\n" "{\"session_id\":\"session-rehost\"}" \
+        | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>&1
+      : > "$FM_HOME/state/phase1-done"
+      sleep 60; :
+    ' >/dev/null 2>&1 &
+  host=$!
+  i=0
+  while [ "$i" -lt 400 ] && [ ! -e "$dir/state/phase1-done" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  recorded_pid=$(cat "$dir/state/recorded-pid" 2>/dev/null || true)
+  lock_phase1=$(cat "$dir/state/.lock" 2>/dev/null || true)
+  # Phase 2: the same session's Stop now fires from a process tree that does NOT
+  # contain the recorded pid, which is still alive. Ancestry can no longer prove
+  # anything here; only the identity phase 1 backfilled can.
+  rm -f "$dir/state/arm-ran" "$dir/state/.claude-autoarm-epoch"
+  out=$(printf '%s\n' '{"session_id":"session-rehost"}' \
+    | FM_HOME="$dir" bash "$dir/bin/fm-claude-stop-autoarm.sh" 2>&1); status=$?
+  host_alive=no
+  kill -0 "$host" 2>/dev/null && host_alive=yes
+  kill "$host" 2>/dev/null || true
+  wait "$host" 2>/dev/null || true
+  [ -n "$recorded_pid" ] || fail "the phase 1 session never recorded its pid"
+  [ "$host_alive" = yes ] \
+    || fail "the recorded pid died before phase 2, so this case never tested a re-host"
+  [ "$lock_phase1" = "pid=$recorded_pid harness=claude session=session-rehost" ] \
+    || fail "phase 1 did not backfill the record it owned: $lock_phase1"
+  expect_code 2 "$status" "a backfilled home must keep arming after its recorded pid leaves the ancestry"
+  assert_present "$dir/state/arm-ran" "the re-hosted session did not arm its own home"
+  [ "$(epoch_outcome "$dir")" = rewake ] \
+    || fail "the re-hosted session recorded no claim, got: $(epoch_outcome "$dir")"
+  pass "auto-arm: a backfilled legacy record keeps the auto-arm alive across a re-hosted process tree"
+}
+
+test_legacy_record_without_a_resolvable_id_is_left_untouched() {
+  local dir out status lock_after recorded_pid
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-no-id")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  # No session_id in the payload and, per tests/lib.sh, none in the environment:
+  # there is no durable identity to backfill, so the record must survive exactly.
+  out=$(run_autoarm_legacy_record "$dir" '{"stop_hook_active":false}' 2>/dev/null); status=$?
+  lock_after=$(cat "$dir/state/.lock")
+  recorded_pid=$(cat "$dir/state/recorded-pid")
+  expect_code 2 "$status" "a home with no resolvable session id must arm exactly as it did before"
+  assert_present "$dir/state/arm-ran" "an unresolvable identity suppressed the arm"
+  [ "$lock_after" = "$recorded_pid" ] \
+    || fail "a legacy record with no resolvable session id was rewritten: $lock_after"
+  pass "auto-arm: a legacy record with no resolvable session id is left exactly as it was"
+}
+
+test_upgrade_refuses_a_record_this_session_does_not_own() {
+  local dir other out status lock_after
+  dir=$(make_primary_dir "$TMP_ROOT/upgrade-refusal")
+  # A live foreign harness owns the record. The hook itself can never reach the
+  # upgrade in this state, so drive the mode directly to prove its own refusal.
+  "$FAKE_CLAUDE" -c 'sleep 60; :' >/dev/null 2>&1 &
+  other=$!
+  printf '%s\n' "$other" > "$dir/state/.lock"
+  out=$(FM_HOME="$dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-lock.sh" upgrade sess-intruder' 2>&1); status=$?
+  lock_after=$(cat "$dir/state/.lock")
+  kill "$other" 2>/dev/null || true
+  wait "$other" 2>/dev/null || true
+  expect_code 1 "$status" "upgrade must refuse a record this session does not own"
+  assert_contains "$out" "does not own" "the refusal must say on stderr why it refused"
+  [ "$lock_after" = "$other" ] \
+    || fail "a refused upgrade rewrote another live session's record: $lock_after"
+  pass "fm-lock: upgrade refuses, and writes nothing, when the record is not this session's"
 }
 
 test_inert_when_afk() {
@@ -655,6 +773,10 @@ test_stale_lock_reclaim_records_the_session_id
 test_inert_when_lock_held_by_other_harness
 test_inert_when_lock_records_a_different_live_session
 test_payload_session_id_owns_a_home_whose_pid_left_the_ancestry
+test_owned_legacy_record_is_upgraded_in_place
+test_backfilled_home_still_arms_after_its_pid_leaves_the_ancestry
+test_legacy_record_without_a_resolvable_id_is_left_untouched
+test_upgrade_refuses_a_record_this_session_does_not_own
 test_inert_when_afk
 test_stale_lock_recovery_preserves_afk_and_need_gates
 test_resolves_outermost_claude_pid_in_nested_bgspare_chain

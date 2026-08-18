@@ -8,9 +8,23 @@
 # identifying the session the moment its process tree is replaced (see
 # bin/fm-session-lock-lib.sh and docs/turnend-guard.md). Without a session id
 # the bare-integer legacy record is written and behavior is unchanged.
+# A home that acquired before it could publish an id keeps that legacy record
+# until something rewrites it, so the upgrade mode below lets the session that
+# already owns such a record backfill its durable id in place, while its
+# ancestry still proves ownership.
 # Usage: fm-lock.sh           acquire; exit 1 unless ownership is verified
 #        fm-lock.sh status    print holder, liveness, and session id when present;
 #                             always exits 0
+#        fm-lock.sh upgrade [<session-id>]
+#                             backfill this session's durable id into a legacy
+#                             record it already owns, keeping the recorded pid
+#                             verbatim; a no-op exit 0 unless the record is
+#                             legacy, owned, and an id and harness name both
+#                             resolve; exit 1 only when the record is not this
+#                             session's or the write cannot be verified.
+#                             The optional argument is a hook payload's own
+#                             session id, used only when the environment
+#                             publishes none
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,6 +69,57 @@ if [ "${1:-}" = "status" ]; then
   else
     echo "lock: stale ($(lock_holder_desc) dead or not a harness)"
   fi
+  exit 0
+fi
+
+# --- upgrade: backfill a durable session id into an owned legacy record -------
+# Ownership of a legacy record is decided by process ancestry, and ancestry is
+# not durable: a re-hosted session keeps a live recorded pid that is no longer
+# its ancestor, and every later reader then sees another live session's home.
+# This mode closes that window while the ancestry still proves ownership, and it
+# is deliberately the whole of the change: the record form it writes, and every
+# reader of it, already exist.
+if [ "${1:-}" = "upgrade" ]; then
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  UPGRADE_CLAIM="$STATE/.lock.acquire"
+  # Serialize against the acquisition path below, but NEVER wait for it: this
+  # runs inside a Stop hook. A concurrent acquisition publishes a typed record
+  # by itself, so skipping is always the right answer when the claim is held.
+  fm_lock_try_acquire "$UPGRADE_CLAIM" || exit 0
+  trap 'fm_lock_release "$UPGRADE_CLAIM"' EXIT
+  if ! fm_session_lock_owned_by_self "$STATE" "${2:-}"; then
+    echo "error: refusing to upgrade a lock record this session does not own" >&2
+    exit 1
+  fi
+  # Anything already typed is nothing to backfill, and an identity this process
+  # cannot resolve is left alone exactly like every other unresolvable identity
+  # in this contract: silently, with the record untouched.
+  [ "$FM_LOCK_FORM" = legacy ] || exit 0
+  up_harness=$(fm_harness_ancestry_name "$FM_LOCK_PID") || exit 0
+  up_session=$(fm_harness_session_id "$up_harness" "${2:-}") || exit 0
+  # The recorded pid is preserved VERBATIM and never re-resolved. Re-resolving it
+  # would call fm_harness_ancestry_pid, which returns the OUTERMOST pid of the
+  # contiguous harness run - for a session parented by a harness-named daemon
+  # that is the daemon, and the record would migrate off the session it names.
+  up_record="pid=$FM_LOCK_PID harness=$up_harness session=$up_session"
+  up_tmp="$LOCK.upgrade.$$"
+  if ! { printf '%s\n' "$up_record" > "$up_tmp"; } 2>/dev/null; then
+    rm -f "$up_tmp" 2>/dev/null || true
+    echo "error: cannot stage the upgraded session-lock record; leaving the existing record in place" >&2
+    exit 1
+  fi
+  if ! mv -f "$up_tmp" "$LOCK" 2>/dev/null; then
+    rm -f "$up_tmp" 2>/dev/null || true
+    echo "error: cannot publish the upgraded session-lock record; leaving the existing record in place" >&2
+    exit 1
+  fi
+  up_written=$(cat "$LOCK" 2>/dev/null) || up_written=''
+  if [ ! -f "$LOCK" ] || [ -L "$LOCK" ] || [ "$up_written" != "$up_record" ]; then
+    echo "error: upgraded session-lock record failed verification" >&2
+    exit 1
+  fi
+  echo "lock upgraded: $up_record"
   exit 0
 fi
 

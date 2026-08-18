@@ -44,7 +44,11 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 `bin/fm-session-lock-lib.sh` is the single owner of the `state/.lock` record contract that `bin/fm-lock.sh`, the Claude Stop auto-arm, the session-start nudge, the session-start digest's Pi loaded-marker check, and this guard all read.
 Two forms are accepted: the legacy bare-integer pid, and the typed single line `pid=<n> harness=<name> session=<id>` that the acquisition path writes whenever the harness publishes a durable session id.
 Claude Code is the only verified harness that publishes one, in `CLAUDE_CODE_SESSION_ID` for tool and hook shells and as `session_id` in its Stop payload; every other harness keeps writing and reading the legacy form with unchanged behavior.
-There is no migration step and no backfill: a home mid-upgrade holds a legacy record until its next successful acquisition.
+There is no migration step, and a home that acquired before it could publish an id holds a legacy record until something rewrites it.
+`bin/fm-lock.sh upgrade [<session-id>]` is that backfill, and it is the only path other than acquisition that writes the record.
+It rewrites a legacy record in place to the typed form, and only when the calling session already owns that record, the record is still legacy, and both a harness name for the recorded pid and a durable session id for this process resolve; any other state is a silent no-op, and a record this session does not own is refused with a diagnostic and exit 1.
+The recorded pid is carried over verbatim and never re-resolved, because `fm_harness_ancestry_pid` returns the outermost pid of the contiguous harness run - for a session parented by a harness-named daemon that is the daemon, so re-resolving would migrate the record off the session it names.
+The Claude Stop auto-arm calls it once per firing on a legacy record, after its ownership, away-mode, and supervision-need gates and before its single-flight claim, and discards the outcome; that placement is what keeps an idle or away home byte-for-byte inert and keeps the backfill inside the window where ancestry still proves ownership.
 The three non-shell primary adapters that cannot source that library - `.pi/extensions/fm-primary-turnend-guard.ts`, `.pi/extensions/fm-primary-pi-watch.ts`, and `.opencode/plugins/fm-primary-watch-arm.js` - read the pid out of either form and then keep their own unchanged ancestry test, because a home that switches from Claude to Pi or OpenCode holds the typed record until its next acquisition and would otherwise read its own home as foreign and lose watcher continuity.
 Any future record form has to be taught to every reader that cannot source the library, in the same change that introduces it.
 
@@ -59,6 +63,11 @@ Session-id separation is enforced when ownership is read, but the acquisition pa
 Refusing on a typed-record id mismatch regardless of pid would be worse: it would lock a session out of its own home after an ordinary `/clear`, where a new session id meets a still-live recorded pid, which is the same live-but-stale-owner outage this contract exists to end, on a routine daily operation.
 The session-start nudge makes that residual actively prompted rather than merely reachable: in the pooled shape the sibling session mismatches on the recorded session id, is told to run session start, and the pid-equality rule above then lets it take the record.
 The residual is tolerable because every session is already instructed to run session start, watcher health keys on `state/.watch.lock` rather than `state/.lock` so an existing watcher survives the rewrite, and the displaced session no longer blocks forever - it takes the bounded and loud read-only allow described below.
+
+The backfill narrows that shape deliberately, and the narrowing is the intended one-session-per-home semantics rather than a new restriction.
+While a pooled home still holds a legacy record, every session descending from the shared host process reads it as its own, because the shared pid is a genuine ancestor of all of them.
+Once one of them upgrades the record, only the session it names reads that home as its own and each sibling takes the read-only non-owner path instead.
+That is not a lockout: the displaced sibling is told to run session start, and the pid-equality rule above then lets its acquisition take the record, exactly as it does after an ordinary `/clear`.
 
 ## Reaching a bounded outcome without the auto-arm
 

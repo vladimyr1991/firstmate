@@ -428,15 +428,24 @@ SH
 # launcher exits immediately, so the tree is reparented to init and the ancestry
 # walk terminates inside the fixture. Returns once the hook has recorded its exit
 # code.
-run_fixture_tree() {  # <dir> <session-bin> [<daemon-bin>]
-  local dir=$1 session_bin=$2 daemon_bin=${3:-} i
-  if [ -n "$daemon_bin" ]; then
-    FM_HOME="$dir" FM_SESSION_BIN="$session_bin" FM_FIXTURE_ORPHAN_HERE=0 \
-      bash -c '"$0" "$1" &' "$daemon_bin" "$dir/daemon.sh"
-  else
-    FM_HOME="$dir" FM_FIXTURE_ORPHAN_HERE=1 \
-      bash -c '"$0" "$1" &' "$session_bin" "$dir/session.sh"
-  fi
+run_fixture_tree() {  # <dir> <session-bin> [<daemon-bin>] [<session-id>]
+  local dir=$1 session_bin=$2 daemon_bin=${3:-} session_id=${4:-} i
+  # tests/lib.sh clears the ambient CLAUDE_CODE_SESSION_ID for the whole suite,
+  # so a case that needs the durable-identity path publishes its own id here.
+  # The export is confined to the launching subshell and never reaches the next
+  # case, exactly like the unit layer's lib_eval.
+  (
+    if [ -n "$session_id" ]; then
+      export CLAUDE_CODE_SESSION_ID="$session_id"
+    fi
+    if [ -n "$daemon_bin" ]; then
+      FM_HOME="$dir" FM_SESSION_BIN="$session_bin" FM_FIXTURE_ORPHAN_HERE=0 \
+        bash -c '"$0" "$1" &' "$daemon_bin" "$dir/daemon.sh"
+    else
+      FM_HOME="$dir" FM_FIXTURE_ORPHAN_HERE=1 \
+        bash -c '"$0" "$1" &' "$session_bin" "$dir/session.sh"
+    fi
+  )
   i=0
   while [ "$i" -lt 400 ] && [ ! -s "$dir/state/hook.rc" ]; do
     sleep 0.05
@@ -494,6 +503,27 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   expect_code 2 "$(hook_rc "$dir")" "a version-named session under a daemon must claim its home and rewake"
   [ -e "$dir/state/arm-ran" ] || fail "supervision never armed for a version-named daemon-parented session"
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
+}
+
+test_e2e_daemon_parented_legacy_record_is_backfilled_onto_the_session() {
+  local dir session_pid daemon_pid lock_after
+  dir="$TMP_ROOT/e2e-daemon-backfill"
+  make_primary_home "$dir"
+  run_fixture_tree "$dir" "$NAMED_CLAUDE" "$NAMED_CLAUDE" sess-daemon-upgrade
+  session_pid=$(tr -d '[:space:]' < "$dir/state/session-pid")
+  daemon_pid=$(tr -d '[:space:]' < "$dir/state/daemon-pid")
+  # Read the record with the spaces intact: the typed form is three fields.
+  lock_after=$(cat "$dir/state/.lock")
+  [ -n "$session_pid" ] && [ "$session_pid" != "$daemon_pid" ] \
+    || fail "fixture did not produce a distinct daemon and session: session=$session_pid daemon=$daemon_pid"
+  expect_code 2 "$(hook_rc "$dir")" "a daemon-parented session must still arm the firing that backfills its record"
+  [ -e "$dir/state/arm-ran" ] || fail "supervision never armed for the backfilling firing"
+  # The recorded pid must be preserved verbatim. Re-resolving it would return
+  # the OUTERMOST pid of the contiguous harness run - here the daemon - and the
+  # record would migrate off the session it names.
+  [ "$lock_after" = "pid=$session_pid harness=claude session=sess-daemon-upgrade" ] \
+    || fail "the backfill moved the record off the session, expected pid $session_pid (daemon $daemon_pid): $lock_after"
+  pass "session-lock e2e: backfilling a daemon-parented session's legacy record keeps the recorded pid on the session"
 }
 
 # --- end-to-end layer: a /clear inside one unchanged process tree ------------
@@ -630,4 +660,5 @@ test_competing_version_named_session_is_seen_as_live
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
+test_e2e_daemon_parented_legacy_record_is_backfilled_onto_the_session
 test_e2e_cleared_session_is_told_to_claim_the_home_and_can
