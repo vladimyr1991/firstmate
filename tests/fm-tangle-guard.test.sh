@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # Behavior tests for the worktree-tangle guards.
 #
-# Firstmate is a treehouse-pooled git repo of itself: linked worktrees and
-# secondmate homes all sit at a detached HEAD on the default branch, while the
-# PRIMARY checkout (FM_ROOT) is a normal checkout on a real branch. The "tangle"
-# is a crewmate branching/committing in the primary instead of its own worktree,
-# stranding the primary on a feature branch. Two guards cover it:
+# Firstmate is a treehouse-pooled git repo of itself: disposable crewmate
+# worktrees and leased secondmate homes are all linked worktrees of the same
+# repo. The "tangle" is a crewmate branching/committing in the OPERATING
+# checkout - the one its session runs its home from - instead of its own
+# disposable worktree, stranding that checkout on a feature branch. A crewmate
+# on the fm/<id> branch its brief mandates, inside its own linked worktree, is
+# correct work and must stay silent. Two guards cover it:
 #   GUARD 1 (prevention) - the brief asserts isolation before its branch step, and
 #            fm-spawn refuses to launch unless the resolved worktree is isolated.
-#   GUARD 2 (detection)  - fm-guard and fm-bootstrap alarm when the primary is on
-#            a feature branch, and stay silent on the default branch or detached.
-# These cases pin: the shared lib's branch classification, the fm-guard banner,
-# the fm-bootstrap problem line, the brief assertion ordering, and the fm-spawn
-# abort - all hermetic over temp git repos and fakebins.
+#   GUARD 2 (detection)  - fm-guard and fm-bootstrap resolve the operating
+#            checkout (fm_tangle_checkout), then alarm when THAT checkout is on a
+#            named non-default branch. The default branch, a detached HEAD, and a
+#            disposable worktree the script merely runs from stay silent.
+# These cases pin: the shared lib's path-local branch classification, the
+# operating-checkout resolver, the fm-guard banner, the fm-bootstrap problem
+# line, the brief assertion ordering, and the fm-spawn abort - all hermetic over
+# temp git repos and fakebins.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -34,8 +39,10 @@ make_repo() {
 
 # --- shared lib: branch classification --------------------------------------
 
-# fm_primary_tangle_branch is the whole scoping decision: a NAMED non-default
-# branch is the tangle; the default branch and detached HEAD are healthy.
+# fm_primary_tangle_branch is the path-local half of the decision: given ONE
+# directory, a NAMED non-default branch is the tangle; the default branch and
+# detached HEAD are healthy. Which directory it is handed is fm_tangle_checkout's
+# job, covered separately below.
 test_lib_classification() {
   local repo n=0 label state branch expect out
   repo=$(make_repo "$TMP_ROOT/lib-repo")
@@ -117,6 +124,171 @@ test_bootstrap_line() {
   assert_contains "$out" "read-only session must leave restore work" "detect-only bootstrap did not explain restore ownership"
   assert_not_contains "$out" "checkout main" "detect-only bootstrap printed a state-changing restore command"
   pass "fm-bootstrap: TANGLE problem line fires only for a feature branch and suppresses repair commands in detect-only mode"
+}
+
+# --- GUARD 2c: operating-checkout resolution --------------------------------
+
+# Install the real scripts into <dir>/bin so a guard/bootstrap run from there
+# resolves its script-relative FM_ROOT to <dir> - the ordinary crewmate shape,
+# where neither FM_ROOT_OVERRIDE nor FM_HOME is set and the executed copy lives
+# inside the disposable worktree.
+install_bin() {
+  local dir=$1
+  mkdir -p "$dir/bin/backends"
+  cp "$ROOT"/bin/*.sh "$dir/bin/"
+  cp "$ROOT"/bin/backends/*.sh "$dir/bin/backends/"
+}
+
+# Physical path of <dir>, which is what git reports back to the resolver.
+real_path() {
+  (cd "$1" && pwd -P)
+}
+
+# Run the copy of fm-guard.sh under <script_root>/bin with the crewmate
+# environment: FM_ROOT_OVERRIDE unset, FM_HOME unset unless given, and home
+# state pointed at scratch so no sweep depends on the fixture layout.
+run_guard_from() {
+  local script_root=$1 scratch=$2 home=${3:-}
+  if [ -n "$home" ]; then
+    env -u FM_ROOT_OVERRIDE FM_HOME="$home" \
+      FM_STATE_OVERRIDE="$scratch/state" FM_CONFIG_OVERRIDE="$scratch/config" \
+      "$script_root/bin/fm-guard.sh" 2>&1
+  else
+    env -u FM_ROOT_OVERRIDE -u FM_HOME \
+      FM_STATE_OVERRIDE="$scratch/state" FM_CONFIG_OVERRIDE="$scratch/config" \
+      "$script_root/bin/fm-guard.sh" 2>&1
+  fi
+}
+
+# Same for fm-bootstrap.sh, with every home path pointed at scratch so its
+# sweeps stay inert (no projects/, no secondmates).
+run_bootstrap_from() {
+  local script_root=$1 scratch=$2 home=${3:-}
+  if [ -n "$home" ]; then
+    env -u FM_ROOT_OVERRIDE FM_HOME="$home" \
+      FM_STATE_OVERRIDE="$scratch/state" FM_CONFIG_OVERRIDE="$scratch/config" \
+      FM_DATA_OVERRIDE="$scratch/data" FM_PROJECTS_OVERRIDE="$scratch/projects" \
+      "$script_root/bin/fm-bootstrap.sh" 2>/dev/null
+  else
+    env -u FM_ROOT_OVERRIDE -u FM_HOME \
+      FM_STATE_OVERRIDE="$scratch/state" FM_CONFIG_OVERRIDE="$scratch/config" \
+      FM_DATA_OVERRIDE="$scratch/data" FM_PROJECTS_OVERRIDE="$scratch/projects" \
+      "$script_root/bin/fm-bootstrap.sh" 2>/dev/null
+  fi
+}
+
+# AC-1 / AC-6: a ship worker that did exactly what its brief mandates - a named
+# fm/<id> branch inside its own linked worktree - is healthy, and so is a scout
+# worktree left detached. This is the false fire the resolver exists to stop.
+test_isolated_worktree_is_healthy() {
+  local repo ship scout scratch out
+  repo=$(make_repo "$TMP_ROOT/iso-repo")
+  ship="$TMP_ROOT/iso-ship"
+  scout="$TMP_ROOT/iso-scout"
+  scratch="$TMP_ROOT/iso-scratch"
+  mkdir -p "$scratch"
+  git -C "$repo" worktree add -q -b fm/ship-ac1 "$ship" >/dev/null 2>&1
+  git -C "$repo" worktree add -q --detach "$scout" >/dev/null 2>&1
+  install_bin "$ship"
+  install_bin "$scout"
+
+  out=$(fm_primary_tangle_branch "$(fm_tangle_checkout "$ship" "" 0)" || true)
+  [ -z "$out" ] || fail "resolver+classifier reported a tangle for an isolated ship worktree: '$out'"
+
+  out=$(run_guard_from "$ship" "$scratch")
+  assert_not_contains "$out" "WORKTREE TANGLE" "guard alarmed on a crewmate's own fm/<id> worktree"
+  out=$(run_bootstrap_from "$ship" "$scratch" | grep '^TANGLE:' || true)
+  [ -z "$out" ] || fail "bootstrap emitted a TANGLE line for a crewmate's own worktree: $out"
+
+  out=$(run_guard_from "$scout" "$scratch")
+  assert_not_contains "$out" "WORKTREE TANGLE" "guard alarmed from a detached scout worktree"
+  pass "operating-checkout resolution: an isolated fm/<id> worktree and a detached scout never alarm"
+}
+
+# AC-3: the genuine case a crewmate must still see - the repo's main worktree is
+# itself stranded on a feature branch. Running from a linked worktree must still
+# fire, and must name the main worktree and ITS branch, not the caller's.
+test_primary_tangle_from_linked_worktree() {
+  local repo ship scratch main_path out
+  repo=$(make_repo "$TMP_ROOT/gen-repo")
+  ship="$TMP_ROOT/gen-ship"
+  scratch="$TMP_ROOT/gen-scratch"
+  mkdir -p "$scratch"
+  git -C "$repo" worktree add -q -b fm/ship-ac3 "$ship" >/dev/null 2>&1
+  install_bin "$ship"
+  git -C "$repo" checkout -q -B fm/primary-tangled
+  main_path=$(real_path "$repo")
+
+  out=$(fm_tangle_checkout "$ship" "" 0 || true)
+  [ "$out" = "$main_path" ] || fail "resolver picked '$out', expected the main worktree '$main_path'"
+
+  out=$(run_guard_from "$ship" "$scratch")
+  assert_contains "$out" "WORKTREE TANGLE" "guard missed a stranded main worktree when run from a linked worktree"
+  assert_contains "$out" "fm/primary-tangled" "guard banner did not name the stranded branch"
+  assert_contains "$out" "$main_path" "guard banner did not name the stranded main worktree path"
+  assert_not_contains "$out" "fm/ship-ac3" "guard banner named the caller's own worktree branch"
+  assert_contains "$out" "git -C $main_path checkout main" "guard banner did not target the main worktree for repair"
+
+  out=$(run_bootstrap_from "$ship" "$scratch" | grep '^TANGLE:' || true)
+  assert_contains "$out" "fm/primary-tangled" "bootstrap missed the stranded main worktree"
+  assert_contains "$out" "git -C $main_path checkout main" "bootstrap TANGLE line did not target the main worktree"
+  assert_not_contains "$out" "fm/ship-ac3" "bootstrap TANGLE line named the caller's own worktree branch"
+  pass "operating-checkout resolution: a stranded main worktree still alarms from a crewmate pane and names the main path"
+}
+
+# AC-4: a secondmate home is a leased LINKED worktree and is the operating
+# checkout for its own session, so a feature branch there is a real tangle. The
+# session carries FM_HOME; that wins over the script-relative worktree.
+test_secondmate_home_tangle() {
+  local repo home ship scratch home_path out
+  repo=$(make_repo "$TMP_ROOT/sm-repo")
+  home="$TMP_ROOT/sm-home"
+  ship="$TMP_ROOT/sm-ship"
+  scratch="$TMP_ROOT/sm-scratch"
+  mkdir -p "$scratch"
+  git -C "$repo" worktree add -q -b fm/secondmate-home "$home" >/dev/null 2>&1
+  git -C "$repo" worktree add -q -b fm/ship-ac4 "$ship" >/dev/null 2>&1
+  install_bin "$ship"
+  home_path=$(real_path "$home")
+
+  out=$(fm_tangle_checkout "$ship" "$home" 0 || true)
+  [ "$out" = "$home_path" ] || fail "resolver picked '$out', expected the FM_HOME work tree '$home_path'"
+
+  out=$(run_guard_from "$ship" "$scratch" "$home")
+  assert_contains "$out" "WORKTREE TANGLE" "guard missed a secondmate home stranded on a feature branch"
+  assert_contains "$out" "fm/secondmate-home" "guard banner did not name the secondmate home branch"
+  assert_contains "$out" "$home_path" "guard banner did not name the secondmate home path"
+  assert_not_contains "$out" "fm/ship-ac4" "guard banner named the caller's worktree instead of the home"
+
+  out=$(run_bootstrap_from "$ship" "$scratch" "$home" | grep '^TANGLE:' || true)
+  assert_contains "$out" "fm/secondmate-home" "bootstrap missed the stranded secondmate home"
+  assert_contains "$out" "git -C $home_path checkout main" "bootstrap TANGLE line did not target the secondmate home"
+  pass "operating-checkout resolution: a secondmate home on a feature branch still alarms and names the home"
+}
+
+# AC-5 / AC-7: the two contracts the fix must not quietly relax - an explicit
+# FM_ROOT_OVERRIDE still wins over any FM_HOME (the wake-helper test seam), and
+# the path-local classifier still reports a named branch in a linked worktree
+# when asked about that path directly. The false-fire fix lives in resolution,
+# not in "a named branch in a linked worktree is healthy".
+test_override_and_path_local_contracts() {
+  local repo ship notgit out
+  repo=$(make_repo "$TMP_ROOT/ctr-repo")
+  ship="$TMP_ROOT/ctr-ship"
+  notgit="$TMP_ROOT/ctr-notgit"
+  mkdir -p "$notgit"
+  git -C "$repo" worktree add -q -b fm/ship-ac7 "$ship" >/dev/null 2>&1
+
+  out=$(fm_primary_tangle_branch "$ship" || true)
+  [ "$out" = "fm/ship-ac7" ] || fail "path-local classifier no longer reports a named branch in a linked worktree: '$out'"
+
+  out=$(fm_tangle_checkout "$notgit" "$ship" 1 || true)
+  [ "$out" = "$notgit" ] || fail "FM_ROOT_OVERRIDE did not win over FM_HOME: got '$out'"
+
+  git -C "$repo" checkout -q -B fm/should-not-matter
+  out=$(FM_ROOT_OVERRIDE="$notgit" FM_HOME="$repo" "$ROOT/bin/fm-guard.sh" 2>&1)
+  assert_not_contains "$out" "WORKTREE TANGLE" "a non-git FM_ROOT_OVERRIDE no longer suppresses the tangle check"
+  pass "operating-checkout resolution: FM_ROOT_OVERRIDE still wins and the path-local classifier is unchanged"
 }
 
 # --- GUARD 1a: brief isolation assertion ------------------------------------
@@ -304,6 +476,10 @@ test_spawn_tmux_window_construction() {
 test_lib_classification
 test_guard_banner
 test_bootstrap_line
+test_isolated_worktree_is_healthy
+test_primary_tangle_from_linked_worktree
+test_secondmate_home_tangle
+test_override_and_path_local_contracts
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
 test_spawn_tmux_window_construction

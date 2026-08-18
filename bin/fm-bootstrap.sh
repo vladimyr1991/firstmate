@@ -42,9 +42,13 @@
 #          failed names whether the endpoint was missing or agent-less.
 #          Already-live and successfully relaunched secondmates are silent
 #          unless FM_BOOTSTRAP_VERBOSE_FACTS=1 requests BOOTSTRAP_INFO facts.
-#          A TANGLE line means the firstmate primary checkout (FM_ROOT) is stranded
-#          on a feature branch instead of its default branch - a crewmate's work
-#          landed in the primary instead of its own worktree; restore it per the line.
+#          A TANGLE line means the OPERATING firstmate checkout is stranded on a
+#          feature branch instead of its default branch - a crewmate's work landed
+#          in the operating home instead of its own worktree; restore it per the
+#          line, which names the resolved checkout. fm-tangle-lib.sh owns which
+#          checkout that is (FM_ROOT_OVERRIDE, else the caller's FM_HOME work
+#          tree, else the repo's main worktree when this script runs from a
+#          linked worktree), so a crewmate's own fm/<id> worktree never trips it.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
@@ -95,6 +99,14 @@
 #          installer itself prints, or a single "error: ..." line for an
 #          unknown or manual-only tool.
 set -u
+
+# Capture the tangle-resolution inputs BEFORE FM_ROOT/FM_HOME are defaulted
+# below; see the same capture in bin/fm-guard.sh.
+tangle_overridden=0
+if [ -n "${FM_ROOT_OVERRIDE:-}" ]; then
+  tangle_overridden=1
+fi
+tangle_env_home=${FM_HOME:-}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -934,16 +946,22 @@ if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
   echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
 fi
 gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
-# Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
-# default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
-# primary only; detached-HEAD worktrees and secondmate homes never trip it.
-tangle_branch=$(fm_primary_tangle_branch "$FM_ROOT" 2>/dev/null || true)
+# Worktree-tangle check: the OPERATING firstmate checkout must sit on its default
+# branch, not a feature branch. fm-tangle-lib.sh owns both halves - resolving
+# which checkout is the operating home for this invocation, and classifying it -
+# so a disposable crewmate worktree on its mandated fm/<id> branch stays silent
+# and a stranded operating home still reports.
+tangle_checkout=$(fm_tangle_checkout "$FM_ROOT" "$tangle_env_home" "$tangle_overridden" 2>/dev/null || true)
+tangle_branch=
+if [ -n "$tangle_checkout" ]; then
+  tangle_branch=$(fm_primary_tangle_branch "$tangle_checkout" 2>/dev/null || true)
+fi
 if [ -n "$tangle_branch" ]; then
-  tangle_default=$(fm_default_branch "$FM_ROOT" 2>/dev/null || echo main)
+  tangle_default=$(fm_default_branch "$tangle_checkout" 2>/dev/null || echo main)
   if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ]; then
     echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock"
   else
-    echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $FM_ROOT checkout $tangle_default, then re-validate the branch in a proper worktree"
+    echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $tangle_checkout checkout $tangle_default, then re-validate the branch in a proper worktree"
   fi
 fi
 crew=

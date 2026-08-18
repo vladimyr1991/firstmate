@@ -137,11 +137,11 @@ Crewmates never intentionally touch your project clone; [treehouse](https://gith
 For ship and scout work, `fm-spawn.sh` refuses to launch unless the resolved task path is a real git worktree root that is distinct from the project primary checkout.
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
-Its operating checkout (`FM_ROOT`) and the disposable crewmate worktrees are all linked git worktrees of the same repository, so the valid discriminator is branch state, not whether the checkout is linked.
-The primary checkout is healthy on its default branch, and linked worktrees or secondmate homes are healthy at detached HEAD.
-Only a named non-default branch checked out in `FM_ROOT` is a worktree tangle.
+Its operating checkout, the leased secondmate homes, and the disposable crewmate worktrees are all checkouts of the same repository, so the alarm has to answer two separate questions: which checkout is the operating home for this invocation, and whether that one checkout is on a named non-default branch.
+A crewmate on the `fm/<id>` branch its brief mandates, inside its own disposable worktree, is correct work and never the subject; the operating home is.
 
-`fm-tangle-lib.sh` resolves the default branch from `origin/HEAD`, then local `main` or `master`, and classifies that named non-default primary branch as the tangle.
+`bin/fm-tangle-lib.sh` owns both halves and is the authority for how the operating checkout is resolved and classified.
+It resolves the default branch from `origin/HEAD`, then local `main` or `master`, and treats a named non-default branch in the resolved operating checkout as the tangle, staying silent on the default branch, a detached HEAD, and an unresolvable target.
 `fm-guard.sh` prints the repair command on the next mutable fleet action, while `bin/fm-session-start.sh` reports the same condition through bootstrap as a `TANGLE:` line at session start.
 If another live session holds the fleet lock, both surfaces keep the alarm but switch to read-only wording with no repair command.
 Ship briefs also tell the crewmate to verify `pwd -P` and `git rev-parse --show-toplevel` before creating `fm/<id>`, then stop with a blocked status if it landed in the primary checkout.

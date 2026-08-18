@@ -8,13 +8,14 @@
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # fm-wake-drain.sh now calls fm-guard.sh to assert watcher liveness on every
-# drain. fm-guard.sh's first check warns when the firstmate PRIMARY checkout
-# (FM_ROOT) sits on a feature branch; with no override FM_ROOT resolves to the
-# test runner's own checkout, which during validation is on a feature branch, so
-# each drain would emit a spurious worktree-tangle banner. Point the tangle check
-# at a fresh non-git dir to keep it inert across these suites - the same trick the
-# direct fm-guard.sh tests use. A per-call FM_ROOT_OVERRIDE still wins where a
-# suite sets its own (e.g. the watcher-lock guard-banner cases).
+# drain. fm-guard.sh's first check warns when the OPERATING firstmate checkout
+# sits on a feature branch; with no override that resolves out of the test
+# runner's own environment, so a drain could emit a worktree-tangle banner that
+# has nothing to do with the case under test. Point the tangle check at a fresh
+# non-git dir to keep it inert across these suites - FM_ROOT_OVERRIDE wins over
+# every other resolution input, the same trick the direct fm-guard.sh tests use.
+# A per-call FM_ROOT_OVERRIDE still wins where a suite sets its own (e.g. the
+# watcher-lock guard-banner cases).
 if [ -z "${FM_ROOT_OVERRIDE:-}" ]; then
   FM_ROOT_OVERRIDE="$(fm_test_tmproot fm-wake-tangle-root)"
   export FM_ROOT_OVERRIDE

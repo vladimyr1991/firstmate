@@ -2,9 +2,12 @@
 # Watcher liveness and worktree-tangle guard, called by supervision scripts, by
 # fm-wake-drain.sh after it empties queued wakes, and by fm-session-start.sh in
 # read-only advisory mode whenever session-lock ownership was not verified.
-# First, always warn if the firstmate primary checkout (FM_ROOT) is on a named
+# First, always warn if the OPERATING firstmate checkout is on a named
 # non-default branch, because that means firstmate-on-itself work landed in the
-# primary instead of an isolated worktree.
+# operating home instead of an isolated worktree. Which checkout that is comes
+# from fm-tangle-lib.sh's resolver (FM_ROOT_OVERRIDE, else the caller's FM_HOME
+# work tree, else the repo's main worktree when this script runs from a linked
+# worktree); a crewmate on its own fm/<id> worktree is never the subject.
 # Then, if a task is in flight (a state/<id>.meta exists) or X-mode relay
 # polling is active (state/x-watch.check.sh exists) and no identity-matched
 # watcher has a liveness beacon (state/.last-watcher-beat, touched every poll
@@ -19,6 +22,15 @@
 # wake and the next supervision resume) stays inside the grace window and stays
 # silent. Always exits 0: the guard warns, it never blocks.
 set -u
+
+# Capture the tangle-resolution inputs BEFORE FM_ROOT/FM_HOME are defaulted
+# below: the resolver needs to know whether FM_ROOT_OVERRIDE was set at all, and
+# what FM_HOME was before it falls back to FM_ROOT.
+tangle_overridden=0
+if [ -n "${FM_ROOT_OVERRIDE:-}" ]; then
+  tangle_overridden=1
+fi
+tangle_env_home=${FM_HOME:-}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -116,26 +128,32 @@ fm_guard_clear_stale_banner() {
 }
 
 # Worktree-tangle alarm, checked FIRST and independent of in-flight tasks: the
-# firstmate PRIMARY checkout (FM_ROOT) must stay on its default branch. If a
-# crewmate's branch/commits landed here instead of in its own isolated worktree,
-# the primary is stranded on a feature branch - surface it loudly on the very next
-# fleet action, the same way the watcher-down banner does. Scoped to the primary
-# only: detached HEAD (linked worktrees, secondmate homes) never trips this.
-tangle_branch=$(fm_primary_tangle_branch "$FM_ROOT" || true)
+# OPERATING firstmate checkout must stay on its default branch. If a crewmate's
+# branch/commits landed there instead of in its own isolated worktree, that
+# checkout is stranded on a feature branch - surface it loudly on the very next
+# fleet action, the same way the watcher-down banner does. fm_tangle_checkout
+# picks the checkout to judge (a disposable worktree this script happens to be
+# running from is not it); an unresolvable checkout stays silent rather than
+# alarming on correct work.
+tangle_checkout=$(fm_tangle_checkout "$FM_ROOT" "$tangle_env_home" "$tangle_overridden" || true)
+tangle_branch=
+if [ -n "$tangle_checkout" ]; then
+  tangle_branch=$(fm_primary_tangle_branch "$tangle_checkout" || true)
+fi
 if [ -n "$tangle_branch" ]; then
-  tangle_default=$(fm_default_branch "$FM_ROOT" 2>/dev/null || echo main)
+  tangle_default=$(fm_default_branch "$tangle_checkout" 2>/dev/null || echo main)
   trule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
   {
     printf '●%s\n' "$trule"
     printf '●  WORKTREE TANGLE - PRIMARY CHECKOUT IS ON A FEATURE BRANCH\n'
-    printf "●  %s is on '%s', not its default branch '%s'.\n" "$FM_ROOT" "$tangle_branch" "$tangle_default"
-    printf '●  A crewmate likely branched/committed in the primary instead of its own worktree.\n'
+    printf "●  %s is on '%s', not its default branch '%s'.\n" "$tangle_checkout" "$tangle_branch" "$tangle_default"
+    printf '●  A crewmate likely branched/committed in the operating checkout instead of its own worktree.\n'
     printf "●  The work is SAFE on the '%s' ref.\n" "$tangle_branch"
     if [ "$READ_ONLY" -eq 1 ]; then
       printf '●  This read-only session must leave restore work to a session with verified fleet-lock ownership.\n'
     else
       printf "●  Restore the primary to '%s':\n" "$tangle_default"
-      printf '●      git -C %s checkout %s\n' "$FM_ROOT" "$tangle_default"
+      printf '●      git -C %s checkout %s\n' "$tangle_checkout" "$tangle_default"
       printf "●  then re-validate '%s' in a proper isolated worktree.\n" "$tangle_branch"
     fi
     printf '●%s\n' "$trule"
