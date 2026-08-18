@@ -434,6 +434,31 @@ test_upgrade_refuses_a_record_this_session_does_not_own() {
   pass "fm-lock: upgrade refuses, and writes nothing, when the record is not this session's"
 }
 
+test_upgrade_refuses_a_lock_that_is_not_a_regular_file() {
+  local dir out status recorded_pid strays
+  dir=$(make_primary_dir "$TMP_ROOT/upgrade-symlink")
+  # A symlinked lock whose target holds a bare pid in this ancestry passes the
+  # ownership test, so only a shape check can stop the publication from
+  # replacing the operator's symlink with a regular file. The acquisition path
+  # already refuses this shape; the upgrade must refuse it before writing.
+  out=$(FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+      printf "%s\n" "$$" > "$FM_HOME/state/elsewhere-lock"
+      printf "%s\n" "$$" > "$FM_HOME/state/recorded-pid"
+      ln -s "$FM_HOME/state/elsewhere-lock" "$FM_HOME/state/.lock"
+      "$FM_HOME/bin/fm-lock.sh" upgrade sess-symlink
+    ' 2>&1); status=$?
+  recorded_pid=$(cat "$dir/state/recorded-pid")
+  strays=$(find "$dir/state" -name '.lock.upgrade.*' 2>/dev/null | wc -l | tr -d ' ')
+  expect_code 1 "$status" "upgrade must refuse a lock that is not a regular file"
+  assert_contains "$out" "not a regular file" "the refusal must say on stderr why it refused"
+  [ -L "$dir/state/.lock" ] \
+    || fail "a refused upgrade replaced the symlinked lock with a regular file"
+  [ "$(cat "$dir/state/elsewhere-lock")" = "$recorded_pid" ] \
+    || fail "a refused upgrade rewrote the symlink's target: $(cat "$dir/state/elsewhere-lock")"
+  [ "$strays" = 0 ] || fail "a refused upgrade left $strays staged temp files behind"
+  pass "fm-lock: upgrade refuses, and writes nothing, when the lock is not a regular file"
+}
+
 test_inert_when_afk() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/afk")
@@ -777,6 +802,7 @@ test_owned_legacy_record_is_upgraded_in_place
 test_backfilled_home_still_arms_after_its_pid_leaves_the_ancestry
 test_legacy_record_without_a_resolvable_id_is_left_untouched
 test_upgrade_refuses_a_record_this_session_does_not_own
+test_upgrade_refuses_a_lock_that_is_not_a_regular_file
 test_inert_when_afk
 test_stale_lock_recovery_preserves_afk_and_need_gates
 test_resolves_outermost_claude_pid_in_nested_bgspare_chain

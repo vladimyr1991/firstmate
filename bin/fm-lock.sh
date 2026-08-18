@@ -21,7 +21,8 @@
 #                             verbatim; a no-op exit 0 unless the record is
 #                             legacy, owned, and an id and harness name both
 #                             resolve; exit 1 only when the record is not this
-#                             session's or the write cannot be verified.
+#                             session's, is not a regular file, or the write
+#                             cannot be verified.
 #                             The optional argument is a hook payload's own
 #                             session id, used only when the environment
 #                             publishes none
@@ -83,11 +84,31 @@ if [ "${1:-}" = "upgrade" ]; then
   # shellcheck source=bin/fm-wake-lib.sh
   . "$SCRIPT_DIR/fm-wake-lib.sh"
   UPGRADE_CLAIM="$STATE/.lock.acquire"
+  up_tmp=''
+  # shellcheck disable=SC2329 # Registered by the EXIT trap below.
+  release_upgrade_claim() {
+    fm_lock_release "$UPGRADE_CLAIM"
+    if [ -n "$up_tmp" ]; then
+      rm -f "$up_tmp" 2>/dev/null || true
+    fi
+    return 0
+  }
   # Serialize against the acquisition path below, but NEVER wait for it: this
   # runs inside a Stop hook. A concurrent acquisition publishes a typed record
   # by itself, so skipping is always the right answer when the claim is held.
   fm_lock_try_acquire "$UPGRADE_CLAIM" || exit 0
-  trap 'fm_lock_release "$UPGRADE_CLAIM"' EXIT
+  trap release_upgrade_claim EXIT
+  trap 'exit 1' HUP INT TERM
+  # A lock that is not a regular file is the same operator-visible anomaly the
+  # acquisition path refuses below, and it must be refused BEFORE anything is
+  # staged or published: ownership is read through the symlink, so publishing
+  # would replace it with a regular file and destroy the anomaly's own evidence.
+  if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then
+    if [ ! -f "$LOCK" ] || [ -L "$LOCK" ]; then
+      echo "error: session lock is not a regular file; refusing to upgrade it" >&2
+      exit 1
+    fi
+  fi
   if ! fm_session_lock_owned_by_self "$STATE" "${2:-}"; then
     echo "error: refusing to upgrade a lock record this session does not own" >&2
     exit 1
@@ -105,15 +126,14 @@ if [ "${1:-}" = "upgrade" ]; then
   up_record="pid=$FM_LOCK_PID harness=$up_harness session=$up_session"
   up_tmp="$LOCK.upgrade.$$"
   if ! { printf '%s\n' "$up_record" > "$up_tmp"; } 2>/dev/null; then
-    rm -f "$up_tmp" 2>/dev/null || true
     echo "error: cannot stage the upgraded session-lock record; leaving the existing record in place" >&2
     exit 1
   fi
   if ! mv -f "$up_tmp" "$LOCK" 2>/dev/null; then
-    rm -f "$up_tmp" 2>/dev/null || true
     echo "error: cannot publish the upgraded session-lock record; leaving the existing record in place" >&2
     exit 1
   fi
+  up_tmp=''
   up_written=$(cat "$LOCK" 2>/dev/null) || up_written=''
   if [ ! -f "$LOCK" ] || [ -L "$LOCK" ] || [ "$up_written" != "$up_record" ]; then
     echo "error: upgraded session-lock record failed verification" >&2
