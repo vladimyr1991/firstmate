@@ -573,7 +573,10 @@ test_e2e_live_owner_outside_the_ancestry_still_refuses_acquisition() {
   "$NAMED_CLAUDE" -c 'sleep 60; :' >/dev/null 2>&1 &
   other=$!
   printf 'pid=%s harness=claude session=sess-foreign\n' "$other" > "$dir/state/.lock"
-  out=$(FM_HOME="$dir" "$NAMED_CLAUDE" -c '"$FM_HOME/bin/fm-lock.sh"' 2>&1); status=$?
+  # The trailing exit keeps bash from exec-collapsing a lone simple command into
+  # this harness-named process: without it the acquiring process replaces the
+  # only claude in its ancestry and the refusal under test is never reached.
+  out=$(FM_HOME="$dir" "$NAMED_CLAUDE" -c '"$FM_HOME/bin/fm-lock.sh"; exit $?' 2>&1); status=$?
   lock_after=$(cat "$dir/state/.lock")
   kill "$other" 2>/dev/null || true
   wait "$other" 2>/dev/null || true
