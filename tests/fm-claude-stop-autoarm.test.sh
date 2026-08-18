@@ -498,7 +498,7 @@ test_stale_lock_recovery_preserves_afk_and_need_gates() {
 }
 
 test_resolves_outermost_claude_pid_in_nested_bgspare_chain() {
-  local dir out status inner_pid lock_pid
+  local dir out status inner_pid outer_pid lock_pid
   dir=$(make_primary_dir "$TMP_ROOT/nested-chain")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
@@ -513,15 +513,22 @@ test_resolves_outermost_claude_pid_in_nested_bgspare_chain() {
   out=$(printf '%s\n' '{"session_id":"nested"}' \
     | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
         printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+        printf "%s\n" "$$" > "$FM_HOME/state/outer-pid"
         "$FAKE_CLAUDE" -c "
           printf \"%s\n\" \"\$\$\" > \"\$FM_HOME/state/inner-pid\"
           \"\$FM_HOME/bin/fm-claude-stop-autoarm.sh\"
         "
       ' 2>&1); status=$?
   inner_pid=$(cat "$dir/state/inner-pid" 2>/dev/null || true)
-  lock_pid=$(cat "$dir/state/.lock" 2>/dev/null || true)
-  [ -n "$inner_pid" ] && [ "$inner_pid" != "$lock_pid" ] \
-    || fail "test setup did not produce a genuine two-hop claude chain: inner=$inner_pid lock=$lock_pid"
+  outer_pid=$(cat "$dir/state/outer-pid" 2>/dev/null || true)
+  # Compare the two recorded pids, never the lock record: this firing arms, so
+  # it also backfills the record into the typed form, and a comparison against
+  # the record's post-hook contents can no longer fail whatever the chain did.
+  [ -n "$inner_pid" ] && [ -n "$outer_pid" ] && [ "$inner_pid" != "$outer_pid" ] \
+    || fail "test setup did not produce a genuine two-hop claude chain: inner=$inner_pid outer=$outer_pid"
+  lock_pid=$(sed -n 's/^pid=\([0-9][0-9]*\) .*$/\1/p' "$dir/state/.lock" 2>/dev/null || true)
+  [ "$lock_pid" = "$outer_pid" ] \
+    || fail "the backfilled record does not name the outer lock-owning pid $outer_pid: $(cat "$dir/state/.lock")"
   expect_code 2 "$status" "a nested contiguous claude ancestry must resolve to the outer lock-owning pid and arm"
   [ -e "$dir/state/arm-ran" ] || fail "hook did not resolve past the inner claude-named process to the outer lock owner"
   [ "$(epoch_outcome "$dir")" = rewake ] || fail "nested-chain arm must record outcome=rewake"

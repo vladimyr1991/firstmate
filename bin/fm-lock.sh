@@ -183,12 +183,16 @@ if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then
     echo "error: session lock is unreadable; operate read-only until resolved" >&2
     exit 1
   }
-  # A record this session already owns is refreshed, not contested. Otherwise
-  # only a live harness pid means a genuinely competing session: a dead pid, a
-  # non-harness pid, and an unrecognized record are all stale, exactly as
-  # before, whichever record form carried them.
+  # A record this session already owns is refreshed, not contested, and so is
+  # one naming a pid ANYWHERE in this process's contiguous harness ancestry:
+  # that pid is a genuine ancestor of this session whatever id the record
+  # carries, and a daemon-parented session's record names an inner pid that can
+  # never equal the outermost pid resolved above. Otherwise only a live harness
+  # pid means a genuinely competing session: a dead pid, a non-harness pid, and
+  # an unrecognized record are all stale, exactly as before, whichever record
+  # form carried them.
   if ! fm_session_lock_owned_by_self "$STATE" \
-    && [ -n "$FM_LOCK_PID" ] && [ "$FM_LOCK_PID" != "$me" ] \
+    && [ -n "$FM_LOCK_PID" ] && ! fm_harness_ancestry_has_pid "$FM_LOCK_PID" \
     && fm_harness_pid_alive "$FM_LOCK_PID"; then
     echo "error: another live firstmate session holds the lock ($(lock_holder_desc)); operate read-only until resolved" >&2
     exit 1

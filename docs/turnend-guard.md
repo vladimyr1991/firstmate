@@ -59,15 +59,17 @@ The recorded pid remains only a liveness hint: the lock is stale when that pid i
 An unrecognized record fails closed as malformed, with no pid any caller can act on.
 
 One residual of that contract is accepted deliberately.
-Session-id separation is enforced when ownership is read, but the acquisition path still treats a recorded pid equal to this process's own resolved harness pid as non-contesting, so two primary sessions sharing one pooled background host process in the same home can still take the lock from each other, because that shared pid is a genuine ancestor of both.
+Session-id separation is enforced when ownership is read, but the acquisition path still treats a recorded pid found anywhere in this process's contiguous harness ancestry as non-contesting, so two primary sessions sharing one pooled background host process in the same home can still take the lock from each other, because that shared pid is a genuine ancestor of both.
+Membership is the test rather than equality with the outermost resolved pid, because a record can name an inner pid: a session parented by a harness-named daemon records its own pid, which is never the outermost pid of that contiguous run.
 Refusing on a typed-record id mismatch regardless of pid would be worse: it would lock a session out of its own home after an ordinary `/clear`, where a new session id meets a still-live recorded pid, which is the same live-but-stale-owner outage this contract exists to end, on a routine daily operation.
-The session-start nudge makes that residual actively prompted rather than merely reachable: in the pooled shape the sibling session mismatches on the recorded session id, is told to run session start, and the pid-equality rule above then lets it take the record.
+The session-start nudge makes that residual actively prompted rather than merely reachable: in the pooled shape the sibling session mismatches on the recorded session id, is told to run session start, and the ancestry-membership rule above then lets it take the record.
 The residual is tolerable because every session is already instructed to run session start, watcher health keys on `state/.watch.lock` rather than `state/.lock` so an existing watcher survives the rewrite, and the displaced session no longer blocks forever - it takes the bounded and loud read-only allow described below.
 
 The backfill narrows that shape deliberately, and the narrowing is the intended one-session-per-home semantics rather than a new restriction.
 While a pooled home still holds a legacy record, every session descending from the shared host process reads it as its own, because the shared pid is a genuine ancestor of all of them.
 Once one of them upgrades the record, only the session it names reads that home as its own and each sibling takes the read-only non-owner path instead.
-That is not a lockout: the displaced sibling is told to run session start, and the pid-equality rule above then lets its acquisition take the record, exactly as it does after an ordinary `/clear`.
+That is not a lockout: the displaced sibling is told to run session start, and the ancestry-membership rule above then lets its acquisition take the record, exactly as it does after an ordinary `/clear`.
+Membership is what makes that true in every shape rather than only the pooled one, because the pid an upgrade preserves is the recorded session's own, which a daemon-parented sibling reaches through its ancestry and never through equality with its outermost pid.
 
 ## Reaching a bounded outcome without the auto-arm
 

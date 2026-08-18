@@ -526,6 +526,65 @@ test_e2e_daemon_parented_legacy_record_is_backfilled_onto_the_session() {
   pass "session-lock e2e: backfilling a daemon-parented session's legacy record keeps the recorded pid on the session"
 }
 
+# A home whose typed record names the session's OWN pid under a harness-named
+# daemon - exactly the shape the backfill above leaves behind - met by a session
+# that has been cleared and now publishes a new id. The recorded pid is a live
+# INNER ancestor and can never equal the outermost pid of that contiguous run,
+# so only ancestry membership tells this apart from a foreign live session.
+make_daemon_clear_home() {  # <dir>
+  local dir=$1
+  make_primary_home "$dir"
+  cat > "$dir/session.sh" <<'SH'
+#!/usr/bin/env bash
+state="$FM_HOME/state"
+printf '%s\n' "$$" > "$state/session-pid"
+printf 'pid=%s harness=claude session=sess-pre-clear\n' "$$" > "$state/.lock"
+"$FM_HOME/bin/fm-lock.sh" > "$state/hook.out" 2>&1
+printf '%s\n' "$?" > "$state/hook.rc"
+SH
+  chmod +x "$dir/session.sh"
+}
+
+test_e2e_cleared_daemon_parented_session_reclaims_its_own_record() {
+  local dir session_pid daemon_pid lock_after
+  dir="$TMP_ROOT/e2e-daemon-clear"
+  make_daemon_clear_home "$dir"
+  run_fixture_tree "$dir" "$NAMED_CLAUDE" "$NAMED_CLAUDE" sess-post-clear
+  session_pid=$(tr -d '[:space:]' < "$dir/state/session-pid")
+  daemon_pid=$(tr -d '[:space:]' < "$dir/state/daemon-pid")
+  lock_after=$(cat "$dir/state/.lock")
+  [ -n "$session_pid" ] && [ "$session_pid" != "$daemon_pid" ] \
+    || fail "fixture did not produce a distinct daemon and session: session=$session_pid daemon=$daemon_pid"
+  expect_code 0 "$(hook_rc "$dir")" \
+    "a cleared session was locked out of the home its own record names: $(cat "$dir/state/hook.out")"
+  # Acquisition keeps writing the outermost pid of the contiguous run, unchanged.
+  [ "$lock_after" = "pid=$daemon_pid harness=claude session=sess-post-clear" ] \
+    || fail "the cleared session did not take the record, expected pid $daemon_pid: $lock_after"
+  pass "session-lock e2e: a cleared daemon-parented session reclaims a record naming its own inner pid"
+}
+
+test_e2e_live_owner_outside_the_ancestry_still_refuses_acquisition() {
+  local dir other out status lock_after
+  dir="$TMP_ROOT/e2e-foreign-owner"
+  make_primary_home "$dir"
+  # A live harness process that is a SIBLING of the acquiring process and never
+  # an ancestor of it: the genuinely competing session this lock exists to
+  # refuse. Widening the contest test to ancestry membership must not reach it.
+  "$NAMED_CLAUDE" -c 'sleep 60; :' >/dev/null 2>&1 &
+  other=$!
+  printf 'pid=%s harness=claude session=sess-foreign\n' "$other" > "$dir/state/.lock"
+  out=$(FM_HOME="$dir" "$NAMED_CLAUDE" -c '"$FM_HOME/bin/fm-lock.sh"' 2>&1); status=$?
+  lock_after=$(cat "$dir/state/.lock")
+  kill "$other" 2>/dev/null || true
+  wait "$other" 2>/dev/null || true
+  expect_code 1 "$status" "a live owner outside this process's harness ancestry must still refuse acquisition"
+  assert_contains "$out" "another live firstmate session holds the lock" \
+    "the refusal did not report the competing live session"
+  [ "$lock_after" = "pid=$other harness=claude session=sess-foreign" ] \
+    || fail "a refused acquisition rewrote the competing session's record: $lock_after"
+  pass "session-lock e2e: a live recorded owner outside this harness ancestry still refuses acquisition"
+}
+
 # --- end-to-end layer: a /clear inside one unchanged process tree ------------
 #
 # Clearing a Claude session publishes a new session id while its process tree is
@@ -661,4 +720,6 @@ test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
 test_e2e_daemon_parented_legacy_record_is_backfilled_onto_the_session
+test_e2e_cleared_daemon_parented_session_reclaims_its_own_record
+test_e2e_live_owner_outside_the_ancestry_still_refuses_acquisition
 test_e2e_cleared_session_is_told_to_claim_the_home_and_can

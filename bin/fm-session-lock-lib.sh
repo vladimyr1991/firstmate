@@ -158,6 +158,24 @@ EOF
   printf '%s\n' "$outermost"
 }
 
+# True when pid $1 is a member of this process's contiguous harness ancestry, at
+# any depth. Membership, not equality with the outermost pid, is the honest test
+# of whether this process descends from the recorded pid: the lock owner sits at
+# an unknown depth in a contiguous Claude run, and a record naming a session
+# parented by a harness-named daemon names an inner pid that can never equal the
+# outermost one.
+fm_harness_ancestry_has_pid() {  # <pid>
+  local want=$1 pids pid
+  [ -n "$want" ] || return 1
+  pids=$(fm_harness_ancestry_pids) || return 1
+  while IFS= read -r pid; do
+    [ "$pid" = "$want" ] && return 0
+  done <<EOF
+$pids
+EOF
+  return 1
+}
+
 # Print the canonical harness name of live pid $1, or return 1. Used by the
 # acquisition path to label the record it is about to write, so the name always
 # comes from the same match that resolved the pid.
@@ -266,7 +284,7 @@ fm_harness_pid_alive() {
 # a session id that does not match, a lock held by a harness outside this
 # ancestry, or an ancestry that cannot be resolved all fail closed.
 fm_session_lock_owned_by_self() {  # <state-dir> [<payload-session-id>]
-  local state=$1 fallback=${2:-} self_session pids pid
+  local state=$1 fallback=${2:-} self_session
   fm_session_lock_read "$state" || return 1
   if [ "$FM_LOCK_FORM" = typed ]; then
     if self_session=$(fm_harness_session_id "$FM_LOCK_HARNESS" "$fallback"); then
@@ -274,11 +292,5 @@ fm_session_lock_owned_by_self() {  # <state-dir> [<payload-session-id>]
       return 1
     fi
   fi
-  pids=$(fm_harness_ancestry_pids) || return 1
-  while IFS= read -r pid; do
-    [ "$pid" = "$FM_LOCK_PID" ] && return 0
-  done <<EOF
-$pids
-EOF
-  return 1
+  fm_harness_ancestry_has_pid "$FM_LOCK_PID"
 }
