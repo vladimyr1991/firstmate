@@ -64,12 +64,9 @@ fm_tangle_work_tree() {
 # Absolute physical path of <path>, resolved against the caller's working
 # directory when it is relative. CDPATH is cleared so a stray CDPATH entry
 # cannot redirect the resolution. Echoes the path, or returns 1 when it does
-# not resolve to an existing directory.
+# not resolve to an existing directory - absolute and relative input alike.
 fm_tangle_abs_dir() {
   local path=$1
-  case "$path" in
-    /*) printf '%s\n' "$path"; return 0 ;;
-  esac
   (CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || return 1
 }
 
@@ -149,12 +146,12 @@ fm_tangle_main_worktree() {
 # checkout can be resolved. A resolution failure must stay silent at the call
 # site: missing a genuine tangle is preferable to alarming on correct work.
 #
-# A relative FM_HOME is absolutized against the caller's working directory
-# first, the same CDPATH-immune way fm-spawn.sh and fm-brief.sh resolve
-# directory input, so the branch depends on the intended home and never on a
-# same-named directory that happens to sit under the caller's cwd. An FM_HOME
-# that does not resolve to a work tree falls through to script-relative
-# resolution rather than claiming a target.
+# FM_HOME is normalized to an absolute physical path first, the same way
+# fm-spawn.sh and fm-brief.sh resolve directory input, so every later git call
+# and the printed banner path name one canonical directory. A relative FM_HOME
+# still resolves against the caller's working directory, exactly as it does
+# everywhere else. An FM_HOME that does not resolve to a work tree falls through
+# to script-relative resolution rather than claiming a target.
 fm_tangle_checkout() {
   local script_root=$1 env_home=$2 overridden=$3 top home_abs=
   if [ "$overridden" = 1 ]; then

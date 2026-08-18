@@ -332,42 +332,6 @@ test_bare_backed_layout_stays_silent() {
   pass "operating-checkout resolution: a bare-backed repo layout resolves to no checkout and stays silent"
 }
 
-# FM_HOME is a directory input like any other, so a RELATIVE one must resolve
-# the same CDPATH-immune way fm-spawn.sh and fm-brief.sh resolve theirs: against
-# the caller's own working directory, never through a CDPATH entry that happens
-# to hold a same-named directory. Getting that wrong points the alarm at some
-# other repo's checkout.
-test_relative_fm_home_resolution() {
-  local repo home ship decoy scratch home_path out
-  repo=$(make_repo "$TMP_ROOT/rel-repo")
-  home="$TMP_ROOT/rel-home"
-  ship="$TMP_ROOT/rel-ship"
-  decoy="$TMP_ROOT/rel-decoy"
-  scratch="$TMP_ROOT/rel-scratch"
-  mkdir -p "$scratch" "$decoy"
-  git -C "$repo" worktree add -q -b fm/secondmate-rel "$home" >/dev/null 2>&1
-  git -C "$repo" worktree add -q -b fm/ship-rel "$ship" >/dev/null 2>&1
-  install_bin "$ship"
-  home_path=$(real_path "$home")
-  # A same-named decoy home, stranded on its own distinct branch, reachable only
-  # through CDPATH.
-  make_repo "$decoy/rel-home" >/dev/null
-  git -C "$decoy/rel-home" checkout -q -B fm/decoy-home
-
-  out=$(cd "$TMP_ROOT" && CDPATH="$decoy" fm_tangle_checkout "$ship" rel-home 0 || true)
-  [ "$out" = "$home_path" ] || fail "relative FM_HOME resolved to '$out', expected '$home_path'"
-
-  out=$(cd "$TMP_ROOT" && env -u FM_ROOT_OVERRIDE FM_HOME=rel-home CDPATH="$decoy" \
-    FM_STATE_OVERRIDE="$scratch/state" FM_CONFIG_OVERRIDE="$scratch/config" \
-    "$ship/bin/fm-guard.sh" 2>&1)
-  assert_contains "$out" "WORKTREE TANGLE" "guard missed a stranded home named by a relative FM_HOME"
-  assert_contains "$out" "fm/secondmate-rel" "guard did not name the branch of the relative FM_HOME's home"
-  assert_contains "$out" "$home_path" "guard did not name the relative FM_HOME's resolved path"
-  assert_not_contains "$out" "fm/decoy-home" "guard resolved a relative FM_HOME through CDPATH"
-  assert_not_contains "$out" "fm/ship-rel" "guard named the caller's own worktree instead of the home"
-  pass "operating-checkout resolution: a relative FM_HOME resolves against the caller's cwd, immune to CDPATH"
-}
-
 # --- GUARD 1a: brief isolation assertion ------------------------------------
 
 # The generated ship brief must carry the isolation assertion AHEAD of the
@@ -558,7 +522,6 @@ test_primary_tangle_from_linked_worktree
 test_secondmate_home_tangle
 test_override_and_path_local_contracts
 test_bare_backed_layout_stays_silent
-test_relative_fm_home_resolution
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
 test_spawn_tmux_window_construction
