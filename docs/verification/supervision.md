@@ -155,6 +155,58 @@ Before this work an unparsable record did not affect the guard at all, which kep
 It is accepted because the outcome is loud rather than silent, the session-start nudge still fires - the record does not parse as this session's own acquisition - and session start reclaims the record, so the exposure is the bounded window before session start rather than an unbounded block.
 The same shape applies to any future record form an older checkout cannot parse.
 
+A home that acquired before its harness could publish an id keeps a legacy bare-pid record, whose ownership rests on ancestry alone and so does not survive that migration at all, which is why `bin/fm-lock.sh upgrade` backfills the durable identity into such a record in place while ancestry still proves ownership.
+That guarantee was measured on 2026-08-18 on macOS 26.5.2 under the stock `/bin/bash` 3.2.57(1)-release, in a throwaway fixture home built twice, once with the pre-upgrade `bin/` and once with the current one, whose harness is a `bash` symlink named `claude`.
+Phase 1 fires the Stop hook from inside the owning process tree over a legacy record and leaves that process alive; phase 2 fires the same session's Stop from a process tree that does not contain the still-live recorded pid, where ancestry proves nothing and only a backfilled identity can.
+
+```sh
+FM_HOME="$dir" "$dir/fakebin/claude" -c '
+    printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+    printf "%s\n" "{\"session_id\":\"session-rehost\"}" \
+      | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>&1
+    sleep 60; :
+  ' &
+printf '%s\n' '{"session_id":"session-rehost"}' \
+  | FM_HOME="$dir" bash "$dir/bin/fm-claude-stop-autoarm.sh"
+```
+
+Observed with the pre-upgrade `bin/`:
+
+```text
+phase1 record: 81682
+phase2 exit: 0
+recorded pid alive during phase2: yes
+phase2 armed: no
+phase2 epoch: <none>
+```
+
+Observed with the current `bin/`:
+
+```text
+phase1 record: pid=82157 harness=claude session=session-rehost
+phase2 exit: 2
+recorded pid alive during phase2: yes
+phase2 armed: yes
+phase2 epoch: epoch=2 owner_pid=83014 outcome=rewake updated_at=1787081275
+```
+
+The backfill preserves the recorded pid verbatim, so a daemon-parented home's record names an inner pid, and the acquisition path's non-contesting test is membership of this process's contiguous harness ancestry rather than equality with the outermost resolved pid.
+Two properties therefore have to hold together: a session cleared under a harness-named daemon still reclaims the home its own record names, and a live recorded owner outside this ancestry is still refused.
+Both were measured in real process trees on 2026-08-18, in the same run as the hook-side backfill cases in `tests/fm-claude-stop-autoarm.test.sh`.
+
+```sh
+bin/fm-test-run.sh tests/fm-claude-stop-autoarm.test.sh tests/fm-session-lock-ancestry.test.sh
+```
+
+Observed output:
+
+```text
+ok - session-lock e2e: backfilling a daemon-parented session's legacy record keeps the recorded pid on the session
+ok - session-lock e2e: a cleared daemon-parented session reclaims a record naming its own inner pid
+ok - session-lock e2e: a live recorded owner outside this harness ancestry still refuses acquisition
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=81022
+```
+
 `tests/fm-watch-arm.test.sh` runs a real watcher and attached arm to verify that a delivered reason survives queue draining, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
 
 The Claude product live path ran with Claude Code 2.1.219 on 2026-07-24:
