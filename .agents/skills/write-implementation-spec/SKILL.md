@@ -99,8 +99,12 @@ Make the specification executable:
 - use stable requirement IDs such as `FR-1`, `API-1`, and `NFR-1`;
 - make acceptance criteria independently observable and express important behavior as Given/When/Then;
 - include positive, negative, boundary, loading, empty, permission, retry, and regression coverage where relevant;
+- for any acceptance criterion that compares against the pre-change state, either prescribe how the permanent test obtains the pre-change artifact - a pinned golden fixture, or reading the base revision read-only with `git show <base-sha>:<path>` - or mark the criterion one-shot and name the evidence the implementer must return;
 - define what must not change;
 - specify evidence the implementer must return: changed files, test results, screenshots, API examples, migrations, or logs as appropriate.
+
+A criterion phrased as "before and after this change" is a one-shot migration check, not a regression test, and a permanent test has no "before" unless the specification supplies one.
+Left unprescribed, the implementer substitutes a self-comparison that proves determinism, and the gate goes green on a property nobody checked.
 
 When the specification prescribes a test seam - a fixture, environment flag, media emulation, or hook - verify it against the project's own testing documentation and a one-line measurement on the dispatch base.
 Prefer project-proven seams over framework documentation.
@@ -123,6 +127,8 @@ Mark `READY` only when all statements below are true:
 - no unresolved choice can cause meaningful rework;
 - A specification that makes a component READ a new record must name the component that WRITES it, or state explicitly that the record is recorded by hand and by whom.
   If it is recorded by hand into a file another component parses, the spec must also name every existing parser of that file and say what the new key's position and format must satisfy - a hand-edited key is a change to that file's contract, not an addition beside it.
+- A specification that defines a derived set, a completeness claim, or a correctness rule over data produced by a named producer must enumerate every way that producer can return an incomplete answer - its documented exclusions, bounds, timeouts, and skip rules, including ones defined elsewhere in the same specification - and state the ruling for each.
+  Naming the risk class and assigning its mitigation to the implementer does not satisfy this.
 
 Otherwise mark `BLOCKED`, name each blocker, identify its owner, and ask the minimum next questions.
 
