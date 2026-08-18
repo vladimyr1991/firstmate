@@ -237,6 +237,43 @@ test_primary_tangle_from_linked_worktree() {
   pass "operating-checkout resolution: a stranded main worktree still alarms from a crewmate pane and names the main path"
 }
 
+# AC-3 through the production path of an ordinary firstmate primary session:
+# neither FM_ROOT_OVERRIDE nor FM_HOME is set, and the running script lives in
+# the repo's own MAIN worktree, so resolution must fall through to that root.
+# The pre-existing must-fire cases reach the banner through FM_ROOT_OVERRIDE,
+# which returns before resolution runs; this one proves the resolver itself
+# still hands the primary checkout to the classifier, so a regression that made
+# a main worktree resolve to nothing could not stay green while disarming the
+# alarm for the session the whole guard exists to protect.
+test_primary_tangle_from_main_worktree() {
+  local repo scratch repo_path out
+  repo=$(make_repo "$TMP_ROOT/mainwt-repo")
+  scratch="$TMP_ROOT/mainwt-scratch"
+  mkdir -p "$scratch"
+  install_bin "$repo"
+  repo_path=$(real_path "$repo")
+
+  out=$(fm_tangle_checkout "$repo" "" 0 || true)
+  [ "$out" = "$repo_path" ] || fail "resolver picked '$out', expected the main worktree itself '$repo_path'"
+  out=$(run_guard_from "$repo" "$scratch")
+  assert_not_contains "$out" "WORKTREE TANGLE" "guard alarmed while the main worktree was on its default branch"
+
+  git -C "$repo" checkout -q -B fm/primary-mainwt
+  out=$(fm_tangle_checkout "$repo" "" 0 || true)
+  [ "$out" = "$repo_path" ] || fail "resolver stopped echoing the main worktree once it was on a feature branch: '$out'"
+
+  out=$(run_guard_from "$repo" "$scratch")
+  assert_contains "$out" "WORKTREE TANGLE" "guard missed a named branch in the repo's own main worktree"
+  assert_contains "$out" "fm/primary-mainwt" "guard banner did not name the stranded branch"
+  assert_contains "$out" "$repo_path" "guard banner did not name the main worktree path"
+  assert_contains "$out" "git -C $repo_path checkout main" "guard banner did not target the main worktree for repair"
+
+  out=$(run_bootstrap_from "$repo" "$scratch" | grep '^TANGLE:' || true)
+  assert_contains "$out" "fm/primary-mainwt" "bootstrap missed the stranded main worktree"
+  assert_contains "$out" "git -C $repo_path checkout main" "bootstrap TANGLE line did not target the main worktree"
+  pass "operating-checkout resolution: a primary session in the main worktree resolves to itself and still alarms"
+}
+
 # AC-4: a secondmate home is a leased LINKED worktree and is the operating
 # checkout for its own session, so a feature branch there is a real tangle. The
 # session carries FM_HOME; that wins over the script-relative worktree.
@@ -519,6 +556,7 @@ test_guard_banner
 test_bootstrap_line
 test_isolated_worktree_is_healthy
 test_primary_tangle_from_linked_worktree
+test_primary_tangle_from_main_worktree
 test_secondmate_home_tangle
 test_override_and_path_local_contracts
 test_bare_backed_layout_stays_silent
