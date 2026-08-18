@@ -176,6 +176,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/lessons-learned/RETIRED.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": ".agents/skills/lessons-learned/SKILL.md",
       "audience": "agent-runtime"
     },
