@@ -99,7 +99,7 @@ Make the specification executable:
 - use stable requirement IDs such as `FR-1`, `API-1`, and `NFR-1`;
 - make acceptance criteria independently observable and express important behavior as Given/When/Then;
 - include positive, negative, boundary, loading, empty, permission, retry, and regression coverage where relevant;
-- for any acceptance criterion that compares against the pre-change state, either prescribe how the permanent test obtains the pre-change artifact - a pinned golden fixture, or reading the base revision read-only with `git show <base-sha>:<path>` - or mark the criterion one-shot and name the evidence the implementer must return;
+- for any acceptance criterion that compares against the pre-change state, either prescribe how the permanent test obtains the pre-change artifact - a pinned golden fixture, or reading the base revision read-only with `git show <base-sha>:<path>` where the specification also states how that base object is present in the checkout that runs the permanent test, by a full-depth fetch or by an explicit fetch of that commit, and the pinned golden fixture wherever that presence cannot be guaranteed - or mark the criterion one-shot and name the evidence the implementer must return;
 - define what must not change;
 - specify evidence the implementer must return: changed files, test results, screenshots, API examples, migrations, or logs as appropriate.
 
