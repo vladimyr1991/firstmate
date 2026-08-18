@@ -129,6 +129,9 @@ Mark `READY` only when all statements below are true:
   If it is recorded by hand into a file another component parses, the spec must also name every existing parser of that file and say what the new key's position and format must satisfy - a hand-edited key is a change to that file's contract, not an addition beside it.
 - A specification that defines a derived set, a completeness claim, or a correctness rule over data produced by a named producer must enumerate every way that producer can return an incomplete answer - its documented exclusions, bounds, timeouts, and skip rules, including ones defined elsewhere in the same specification - and state the ruling for each.
   Naming the risk class and assigning its mitigation to the implementer does not satisfy this.
+- A specification that constrains test changes - forbidding new tests, freezing the existing ones, or naming the only test that may change - must name the behavioral coverage that constraint may not cost, or state explicitly that coverage may be traded and why.
+  Establish that by asking which behaviors the frozen or rewritten tests are the repository's only executable check of; a constraint that leaves a behavior with no remaining assertion deletes that coverage however narrow the constraint looks, and forbidding a new test also turns any finding whose only fix is a test into an escalation instead of a repair.
+  Two rules follow and belong in the specification's own prescribed edits: an existing negative assertion may not be inverted unless a neighboring assertion still proves the same refusal, and a test's name or comment must not claim a property its assertions do not test.
 
 Otherwise mark `BLOCKED`, name each blocker, identify its owner, and ask the minimum next questions.
 
