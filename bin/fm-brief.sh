@@ -8,7 +8,7 @@
 # of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--staging-autonomy] [--sync-base <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--sync-base <branch>] [--herdr-lab]
-#        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects} [--standing-duty]
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -147,6 +147,7 @@ fi
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+STANDING_DUTY=0
 STAGING_AUTONOMY=0
 MODE=
 MODE_SET=0
@@ -172,6 +173,7 @@ for a in "$@"; do
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
+    --standing-duty) STANDING_DUTY=1 ;;
     --staging-autonomy) STAGING_AUTONOMY=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
@@ -243,6 +245,11 @@ if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   exit 1
 fi
 
+if [ "$STANDING_DUTY" -eq 1 ] && [ "$KIND" != secondmate ]; then
+  echo "error: --standing-duty applies only to --secondmate charters" >&2
+  exit 1
+fi
+
 BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
 mkdir -p "$DATA/$ID"
@@ -300,6 +307,31 @@ else
   PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
   PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
 fi
+# CHARTER-1: --standing-duty replaces exactly two idle-by-default passages.
+# shellcheck disable=SC2016  # single quotes are deliberate: backtick-wrapped paths and [key=...] tokens must reach the reading agent verbatim
+if [ "$STANDING_DUTY" -eq 1 ]; then
+  OPERATING_INITIATIVE_BODY='You have one standing duty, named in the Charter above, and you perform it on the schedule the Charter names.
+That standing duty is the complete list of work you may start on your own initiative.
+Everything else still comes from the main firstmate: you do not generate your own work, and outside that one named duty you never start a survey, an audit, or a "find improvements" sweep on your own initiative.'
+  DEFINITION_IDLE_BODY='You are persistent by default.
+Between runs of your standing duty, and whenever the main firstmate has routed you nothing, go idle and wait silently.
+An empty queue is a healthy resting state; it is never a cue to widen your standing duty or to invent work beside it.
+On startup and restart, run normal firstmate bootstrap and recovery through `bin/fm-session-start.sh` for your own home, but only to RECONCILE work that is already yours: in-flight crewmates, tracked backlog items, and durable watches recorded in this home.'
+  # Standing-duty escalation shape (FR-15): finding doc in own data/, keyed status.
+  # NFR-5: mid-session liveness is session-start-only.
+  STANDING_ESCALATION_NOTE='
+When your standing duty finds something the main firstmate must act on, write a finding document under this home'\''s `data/` (for example `data/fleet-divergence/<YYYY-MM-DD>-<nn>.md`), then append one keyed line such as `needs-decision [key=fleet-divergence-<slug>]: <summary>; see <absolute path>` (or `blocked:` when you yourself are stuck). On a later cycle where that finding no longer holds, append `resolved [key=<same key>]: <why>`. Quiet cycles append nothing.
+Mid-session death of this agent is not auto-recovered until the next main firstmate session start; do not assume mid-session relaunch exists.'
+else
+  OPERATING_INITIATIVE_BODY='You do not generate your own work.
+Act only on tasks the main firstmate routes to you.
+Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.'
+  DEFINITION_IDLE_BODY='You are persistent by default. Do not exit just because your queue is empty.
+On startup and restart, run normal firstmate bootstrap and recovery through `bin/fm-session-start.sh` for your own home, but only to RECONCILE work that is already yours: in-flight crewmates, tracked backlog items, and durable watches recorded in this home.
+When you have no assigned or in-flight work after that reconciliation, go idle and wait silently for the main firstmate to route you a task.
+An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative.'
+  STANDING_ESCALATION_NOTE=
+fi
 cat > "$BRIEF" <<EOF
 You are a persistent second mate managed by the main firstmate. Work on your own; do not wait for a human.
 
@@ -317,9 +349,7 @@ You are in an isolated firstmate home. The local \`AGENTS.md\` is your job descr
 $PROJECT_CLONES_NOTE
 Delegate project work to your own crewmates with the normal firstmate lifecycle: brief, spawn, status, watcher, steer, teardown, and recovery.
 Do not invent a second delegation system.
-You do not generate your own work.
-Act only on tasks the main firstmate routes to you.
-Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.
+$OPERATING_INITIATIVE_BODY
 
 # Requests from the main firstmate
 You are a firstmate in your own home, so an incoming message reaches you in your own chat.
@@ -347,13 +377,10 @@ When a routed-work phase has a supervisor-actionable material change worth repor
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
 When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>]: {why it is no longer active}\`.
 When a decision you escalated is answered or a blocker clears and your domain resumes, append \`resolved: {how it was decided or unblocked}\` (keyed with \`[key=<slug>]\` if you opened it with one) so it is durably closed instead of resurfacing behind later unrelated events.
-Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
+Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.$STANDING_ESCALATION_NOTE
 
 # Definition of done
-You are persistent by default. Do not exit just because your queue is empty.
-On startup and restart, run normal firstmate bootstrap and recovery through \`bin/fm-session-start.sh\` for your own home, but only to RECONCILE work that is already yours: in-flight crewmates, tracked backlog items, and durable watches recorded in this home.
-When you have no assigned or in-flight work after that reconciliation, go idle and wait silently for the main firstmate to route you a task.
-An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
+$DEFINITION_IDLE_BODY
 If this charter cannot be carried out, append \`blocked: {why}\` or \`failed: {why}\` to the main status file and stop.
 EOF
 if [ "$SECONDMATE_CHARTER" = "{TASK}" ]; then

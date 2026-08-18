@@ -102,9 +102,10 @@ test_corrupt_stamp_does_not_wedge_the_poll
 # owning it is the actual fix, and this test is the one that would have caught
 # the omission.
 test_bootstrap_owns_the_shim() {
-  local d shim
+  local d shim trust mode
   d="$TMP_ROOT/shim"; mkdir -p "$d/config" "$d/state" "$d/data" "$d/projects"
   shim="$d/state/sprint-watch.check.sh"
+  trust="$d/state/sprint-watch.check-trust"
 
   run_bootstrap() {
     env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$d" FM_CONFIG_OVERRIDE="$d/config" \
@@ -114,16 +115,25 @@ test_bootstrap_owns_the_shim() {
 
   run_bootstrap
   [ ! -e "$shim" ] || fail "with no config the shim must NOT exist - the watcher must be untouched until opt-in"
+  [ ! -e "$trust" ] || fail "with no config the trust record must NOT exist"
 
   printf 'FM_SPRINT_INTERVAL=3600\n' > "$d/config/sprint-poll.env"
   run_bootstrap
   [ -x "$shim" ] || fail "bootstrap must create an executable shim once sprint-poll.env exists"
   grep -q 'fm-sprint-poll.sh' "$shim" || fail "the shim must forward to the repository script, not reimplement it"
+  [ -f "$trust" ] || fail "AC-9: bootstrap must register sprint-watch via check-trust"
+  if [ "$(uname)" = Darwin ]; then
+    mode=$(stat -f '%Lp' "$trust")
+  else
+    mode=$(stat -c '%a' "$trust")
+  fi
+  [ "$mode" = "600" ] || fail "AC-9: check-trust mode must be 600, got $mode"
 
   rm -f "$d/config/sprint-poll.env"
   run_bootstrap
   [ ! -e "$shim" ] || fail "removing the config must remove the shim, or the poll outlives its opt-in"
-  pass "fm-sprint-poll.sh: bootstrap creates and removes the watcher shim with the config"
+  [ ! -e "$trust" ] || fail "AC-10: removing the config must remove the trust record too"
+  pass "fm-sprint-poll.sh: bootstrap creates/registers and removes the watcher shim with the config"
 }
 
 test_bootstrap_owns_the_shim

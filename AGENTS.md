@@ -222,6 +222,8 @@ Keep `local-only` work in the main home.
 
 A secondmate is idle by default and acts only on work routed by the main firstmate.
 It reconciles its own work under way after restart, then waits silently; an empty queue never authorizes a survey, audit, or self-directed improvement sweep.
+A standing-duty secondmate is the sole exception to that idle-by-default rule; `secondmate-provisioning` owns the charter procedure and the duty boundary.
+A secondmate's only cross-home write remains its parent status line; read-only cross-home visibility of the parent and the parent's registered siblings is granted solely through `bin/fm-fleet-snapshot.sh --cross-home` / `--home-summary` as owned by `secondmate-provisioning`.
 Do not reconstruct or supervise a secondmate's child tree from the main home.
 
 Route durable knowledge to its most specific owner:

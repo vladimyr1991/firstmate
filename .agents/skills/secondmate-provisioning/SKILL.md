@@ -11,7 +11,7 @@ metadata:
 
 # secondmate-provisioning
 
-Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default.
+Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default except for a standing-duty secondmate scaffolded with `--standing-duty` (owned below).
 Each referenced script's own header owns its exact flags, refusal codes, and data mechanics; this reference owns the decisions and the boundaries.
 
 ## Routing table
@@ -36,6 +36,7 @@ That home-seeded `data/charter.md` is the sole owner of boilerplate idle-by-defa
 
 ```sh
 bin/fm-brief.sh <id> --secondmate {<project>...|--no-projects}
+bin/fm-brief.sh <id> --secondmate --standing-duty {<project>...|--no-projects}
 ```
 
 The scaffold writes a charter brief instead of a task brief.
@@ -44,6 +45,25 @@ Set `FM_SECONDMATE_CHARTER='<charter>'` to fill the charter text, and `FM_SECOND
 `--no-projects` scaffolds a project-less charter for a domain whose subject is the firstmate repo itself, whose home is a firstmate worktree and whose crews take pooled worktrees of the same repo.
 It is mutually exclusive with a project list, and omitting both still fails loudly, so an accidental omission is never mistaken for a deliberate project-less seed.
 Re-seeding a populated home as project-less is refused non-destructively when the home contains project clones or `data/projects.md` entries: retire or clean that home first, and re-scaffold a stale project-bearing charter with `--no-projects` before seeding.
+
+`--standing-duty` is refused outside `--secondmate` and replaces exactly two idle-by-default passages in the generated charter so the secondmate may perform one named standing duty on its own schedule.
+That duty is the complete list of self-started work; everything else still comes from the main firstmate, and the empty-queue resting state must not widen the duty or invent work beside it.
+A standing duty may include continuous board or fleet observation, scheduled self-wakes such as `config/sprint-poll.env`, and reporting divergences; it may not grant write access into another home, dispatch implementation work itself, contact the captain, steer or merge foreign tasks, or discover homes by scanning the filesystem.
+
+### Cross-home read grant
+
+A standing-duty secondmate (and only a secondmate whose charter names this need) may read the parent home and every home listed in the parent's `data/secondmates.md` through the existing snapshot owner:
+
+```sh
+bin/fm-fleet-snapshot.sh --cross-home <parent-home-path>
+bin/fm-fleet-snapshot.sh --home-summary <absolute-home-path>
+```
+
+The grant is one-directional (child reads parent and parent's registered siblings; never the reverse and never outside that registry), read-only, and enumerated only from the parent's own registry.
+The secondmate's only cross-home write remains the existing parent status line its charter already mandates (`needs-decision:` / `blocked:` / `resolved [key=…]` into the parent home's `state/<id>.status`).
+Escalation shape for a fleet or board finding: write a document under the secondmate's own `data/`, append one keyed status line pointing at that absolute path, and append `resolved [key=…]` when the finding clears.
+Quiet cycles append nothing.
+A home the snapshot could not read is **unknown**, never empty: cards that home might own must not be classified as orphaned.
 
 The scaffolded charter, later copied to `data/charter.md`, owns the standard lifecycle and escalation wording, so preserve its generated sections and keep custom text focused on the persistent responsibility, available project clones, and genuinely domain-specific hard rules.
 
