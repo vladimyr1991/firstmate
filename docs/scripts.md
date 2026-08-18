@@ -27,7 +27,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-test-isolation-proof.sh` | Concurrent isolation proof and proven-isolated candidate set owner |
 | `fm-ensure-agents-md.sh` | Ensure a project's real `AGENTS.md`, its `CLAUDE.md` symlink, and the canonical self-governance section |
 | `fm-skill-trigger-check.sh` | Assert every tracked skill under `.agents/skills/` has a load trigger, declared as `user-invocable` or named in `AGENTS.md` |
-| `fm-guard.sh`            | Warn on primary-checkout tangles, pending queued wakes, and stale watcher liveness   |
+| `fm-guard.sh`            | Warn on operating-checkout tangles, pending queued wakes, and stale watcher liveness |
 | `fm-primary-scope-lib.sh` | Shared marker-or-plain-checkout primary-home predicate for tracked hooks             |
 | `fm-session-lock-lib.sh` | Shared session-lock record contract and harness identity: record parse, session id, ancestry walk, holder liveness (docs/turnend-guard.md) |
 | `fm-claude-stop-autoarm.sh` | Claude Stop `asyncRewake` hook owning tokenless watcher continuity with single-flight exit-2 rewake (docs/watcher-continuity.md) |
