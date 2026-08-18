@@ -644,8 +644,8 @@ SH
 # The hand-recorded ship base the retro pass reads is the one meta key no script
 # writes, so a human records it wherever the file already sits - which after
 # fm-pr-check has run means appending it below pr=. The identity whitelist names
-# base= like the x_* keys, so either position parses to the same PR identity
-# while every unlisted key after pr= stays tampering.
+# base= like the x_* keys, so either position parses to the same PR identity,
+# and a key the whitelist does not name is still refused after pr=.
 test_recorded_ship_base_parses_in_either_metadata_position() {
   local dir head=0123456789abcdef0123456789abcdef01234567
   dir=$(make_case recorded-ship-base-placement)
@@ -672,7 +672,18 @@ test_recorded_ship_base_parses_in_either_metadata_position() {
     || fail "a ship base appended after pr= was refused by the PR identity check"
   [ "$FM_PR_META_NUMBER" = 9 ] \
     || fail "a ship base below pr= did not yield the recorded PR: $FM_PR_META_NUMBER"
-  pass "a recorded ship base parses through the PR identity check above or below the pr= line"
+
+  fm_write_meta "$dir/home/state/task-c.meta" \
+    "window=firstmate:fm-task-c" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "pr=https://github.com/o/r/pull/9" \
+    "pr_head=$head" \
+    "note=x"
+  ! fm_pr_metadata_identity_parse "$dir/home/state/task-c.meta" \
+    || fail "an unlisted note= key appended after pr= was accepted as PR identity"
+
+  pass "a recorded ship base parses above or below the pr= line while an unlisted key after pr= is still refused"
 }
 
 run_watcher_bounded() {
