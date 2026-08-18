@@ -642,10 +642,11 @@ SH
 }
 
 # The hand-recorded ship base the retro pass reads is the one meta key no script
-# writes, so where a human puts it is guidance rather than something the writer
-# enforces. This pins what that guidance has to say: past the pr= line every key
-# outside the identity whitelist is tampering, so the base belongs above it.
-test_recorded_ship_base_parses_only_above_pr_metadata() {
+# writes, so a human records it wherever the file already sits - which after
+# fm-pr-check has run means appending it below pr=. The identity whitelist names
+# base= like the x_* keys, so either position parses to the same PR identity,
+# and a key the whitelist does not name is still refused after pr=.
+test_recorded_ship_base_parses_in_either_metadata_position() {
   local dir head=0123456789abcdef0123456789abcdef01234567
   dir=$(make_case recorded-ship-base-placement)
   fm_write_meta "$dir/home/state/task-a.meta" \
@@ -658,7 +659,7 @@ test_recorded_ship_base_parses_only_above_pr_metadata() {
   fm_pr_metadata_identity_parse "$dir/home/state/task-a.meta" \
     || fail "a ship base recorded above pr= was refused by the PR identity check"
   [ "$FM_PR_META_NUMBER" = 9 ] \
-    || fail "the documented layout did not yield the recorded PR: $FM_PR_META_NUMBER"
+    || fail "a ship base above pr= did not yield the recorded PR: $FM_PR_META_NUMBER"
 
   fm_write_meta "$dir/home/state/task-b.meta" \
     "window=firstmate:fm-task-b" \
@@ -667,9 +668,22 @@ test_recorded_ship_base_parses_only_above_pr_metadata() {
     "pr=https://github.com/o/r/pull/9" \
     "pr_head=$head" \
     "base=origin/develop"
-  ! fm_pr_metadata_identity_parse "$dir/home/state/task-b.meta" \
-    || fail "a ship base appended after pr= passed the PR identity check"
-  pass "a recorded ship base parses through the PR identity check only above the pr= line"
+  fm_pr_metadata_identity_parse "$dir/home/state/task-b.meta" \
+    || fail "a ship base appended after pr= was refused by the PR identity check"
+  [ "$FM_PR_META_NUMBER" = 9 ] \
+    || fail "a ship base below pr= did not yield the recorded PR: $FM_PR_META_NUMBER"
+
+  fm_write_meta "$dir/home/state/task-c.meta" \
+    "window=firstmate:fm-task-c" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "pr=https://github.com/o/r/pull/9" \
+    "pr_head=$head" \
+    "note=x"
+  ! fm_pr_metadata_identity_parse "$dir/home/state/task-c.meta" \
+    || fail "an unlisted note= key appended after pr= was accepted as PR identity"
+
+  pass "a recorded ship base parses above or below the pr= line while an unlisted key after pr= is still refused"
 }
 
 run_watcher_bounded() {
@@ -3389,7 +3403,7 @@ test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
-test_recorded_ship_base_parses_only_above_pr_metadata
+test_recorded_ship_base_parses_in_either_metadata_position
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_atomic_interruption_leaves_no_partial_artifact

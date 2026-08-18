@@ -353,7 +353,13 @@ fm_pr_metadata_identity_parse() {
           fm_pr_head_valid "$value" || post_pr_invalid=1
         fi
         ;;
-      x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)
+      # Keys other writers append to the same file that carry no PR identity,
+      # so they are skipped instead of counting as a post-pr= tamper. base= is
+      # the hand-recorded ship base bin/fm-retro.sh reads, and it deliberately
+      # takes no value validator: that reader accepts any git revision
+      # expression, which may contain whitespace, and treats an unresolvable
+      # one as a safe fallback rather than as identity.
+      base=*|x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)
         ;;
       *)
         [ "$seen_pr" -eq 0 ] || post_pr_invalid=1
