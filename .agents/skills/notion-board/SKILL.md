@@ -89,7 +89,8 @@ This contract deliberately carries no check that the cards a task already links 
 
 This section owns what witnessed and unwitnessed mean, and every other place in this file uses those terms rather than restating the rule.
 A first attempt that returns zero rows or fails with a tool error earns one retry of the same read, and no other outcome earns one, so both of those branches are judged on the final attempt rather than the first.
-A cycle is witnessed when that final attempt returned at least one row, raised no tool error, reported `has_more` false, and came back with fewer than 200 rows.
+A cycle is witnessed when that final attempt returned at least one row and none of the CHECK FAILED conditions occurred: a tool error, `has_more: true`, or a result of 200 rows or more.
+An absent `has_more` is not `has_more: true`, so a result that simply omits the field triggers nothing and witnesses the cycle on its rows alone.
 A cycle is unwitnessed in every other case: the final attempt errored, or returned zero rows, or reported `has_more: true`, or returned 200 rows or more.
 Every unwitnessed cycle is CHECK FAILED.
 
