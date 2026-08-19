@@ -30,8 +30,9 @@ Only a `claude`-harness agent can reach the connector at all; never route the PM
 The firstmate primary and implementation workers never scan the board or substitute for a PM whose spawn failed.
 
 `query_data_sources` and `query_database_view` are rate-limited on the captain's plan; `search` and `fetch` are not.
-Spend at most TWO `query_data_sources` calls per cycle - the eligibility sweep and the orphaned-status sweep below - and read individual cards with `fetch`.
-Never issue a query per card, and never re-run either sweep inside the same cycle.
+A healthy cycle spends exactly ONE `query_data_sources` call - the witnessed read below, from which both sweeps are derived - and TWO per cycle remains the hard ceiling, the second reserved for that read's single retry, deliberately covering a zero-row result as well as an error, and for nothing else.
+The call the second sweep used to spend is freed, not repurposed: do not add a new query use with it.
+Never issue a query per card, read individual cards with `fetch`, and never re-run the witnessed read inside the same cycle beyond that one permitted retry.
 
 ## Board contract
 
@@ -49,24 +50,60 @@ Database `✅ Tasks (Тактический уровень)`, id `4163a7f3-7122-
 `♻️ Пул` is the recycle pool, already present in the schema; every other option is the captain's and is never edited.
 It is deliberately the one `Status` value that describes the CARD rather than the task - a card sitting in the pool holds no task at all.
 
-The eligibility sweep, the first of the two rate-limited calls per cycle:
+## The witnessed read
+
+One rate-limited call per cycle reads the whole collection, and both sweeps are derived from its rows inside the PM's own turn:
 
 ```sql
-SELECT url, "Name", "Status", "Priority", "Tags", "Description"
+SELECT url, "Name", "Status", "Stream", "Sprint"
 FROM "collection://f33b6b87-20fb-40c0-a601-4ac8b88cd5f4"
-WHERE "Stream" = ? AND "Sprint" = ? AND "Status" = ?
+LIMIT 200
 ```
-with params `["Деливери", "🏃 Текущий спринт", "Новая"]`.
+with no `WHERE` clause and no parameters - send `params` omitted or `[]`.
 
-The orphaned-status sweep, the second call, which selects nothing and only detects divergence:
+It is unfiltered and unparameterized on purpose.
+On 2026-08-19 a filtered sweep returned a well-formed empty result, with no error, for a board that provably held a matching card, and an empty result is byte-identical to a healthy clean board - so a detector that cannot prove it read something can report "all healthy" about a board nobody saw.
+The SQL surface accepts only a single SELECT, so the proof cannot be a second statement inside the query; it has to be rows from the whole collection, which can never legitimately be empty because cards are never deleted, only recycled into `♻️ Пул` (see "Recycling a card").
+Diagnosis and probes: `data/fm-notion-orphan-sweep-diagnose-and-spec/report.md`.
 
-```sql
-SELECT url, "Name", "Status"
-FROM "collection://f33b6b87-20fb-40c0-a601-4ac8b88cd5f4"
-WHERE "Stream" = ? AND "Sprint" = ? AND "Status" IN (?, ?, ?)
-```
-with params `["Деливери", "🏃 Текущий спринт", "В работе", "На ревью", "Нужны исправления"]`.
-The status-sync section below owns what its results mean and how they are reported.
+The column list is deliberately narrower than the one that report's specification asked for, and this is the one place this skill overrides it.
+It carries card identity and nothing more: `url` is the row identity, `Name` is what lets a report name the card it is about, and `Status`, `Stream`, and `Sprint` are the whole of what the two derived sets are predicated on.
+A title arriving as a row of this read is identity, which the PM may use to name a card in a report and for nothing else; the Boundaries rule that gives a card's title and description the weight of a captain instruction governs the card content the PM acts on, which reaches it only through the `fetch` below.
+What the narrowing leaves out is card BODY text, `Description` above all, because the read-proof needs rows rather than bodies and selecting prose with no `WHERE` clause would pull every stream's card text, `Финансы` and `Лигал` included, into the PM's turn carrying the weight the Boundaries section gives the captain's writing, for cards this role has no business reading at all.
+A card's body reaches the PM one card at a time through a free `fetch`, never in bulk from this read, and the only body it may take in to act on is that of a card the eligible set holds, fetched before the dispatchability test judges that card.
+What this narrows is bulk ingestion, never a single targeted `fetch` the rest of this file already calls for, such as the status-sync re-read of an active card before writing to it.
+A `fetch` render can lag, so a `fetch` is never the proof that the board was read this cycle: the witnessed read alone carries that proof.
+
+Derive both sets from the returned rows by byte-exact string comparison against the option strings in the table above:
+
+- the eligible set, which is the eligibility sweep: `Stream=Деливери` **and** `Sprint=🏃 Текущий спринт` **and** `Status=Новая`.
+- the active set, which is the orphaned-status sweep: the same `Stream` and `Sprint`, with `Status` one of `В работе`, `На ревью`, `Нужны исправления`.
+
+That sweep selects nothing and only detects divergence; the status-sync section below owns what its results mean and how they are reported.
+
+Neither derived set may be believed unless the cycle came back witnessed, which this read's one witness anchors and the conditions below complete:
+
+- **W-1, the read-proof.** The read produced at least one row, judged on the final attempt the definition below governs.
+  Zero rows means "nothing was read", never "nothing matched", and never a clean board.
+
+This contract deliberately carries no check that the cards a task already links to appear among the returned rows, because a stored link keeps whatever host, slug, and query form it was handed, so a failed match cannot be told apart from a genuinely missing row, and a witness that halted the cycle on that ambiguity would stop all dispatch over a URL mismatch rather than over an unread board; storing a canonical page id at link time in `bin/fm-notion-link.sh` is what would make the check answerable, owed as `fm-notion-link-store-canonical-id`, and until it lands the absence of this check is never evidence that the linked cards were verified.
+
+This section owns what witnessed and unwitnessed mean, and every other place in this file uses those terms rather than restating the rule.
+A first attempt that returns zero rows or fails with a tool error earns one retry of the same read, and no other outcome earns one, so both of those branches are judged on the final attempt rather than the first.
+A cycle is witnessed when that final attempt returned at least one row and none of the CHECK FAILED conditions occurred: a tool error, `has_more: true`, or a result of 200 rows or more.
+An absent `has_more` is not `has_more: true`, so a result that simply omits the field triggers nothing and decides nothing on its own.
+A cycle is unwitnessed in every other case: the final attempt errored, or returned zero rows, or reported `has_more: true`, or returned 200 rows or more.
+Every unwitnessed cycle is CHECK FAILED.
+
+A truncated read earns no retry, because repeating it returns the same truncation: `has_more: true` and a result of 200 rows or more mean the board outgrew this contract's assumption that it stays well under 200 rows, so say that explicitly and let firstmate revisit it.
+The one retry a zero-row or errored first attempt earns is the only use of the second call in the budget.
+Covering a zero-row result is a deliberate widening of a reserve the specification wrote for an errored call alone, stated here rather than left silent, because the fault this contract exists to close was a well-formed empty answer that succeeded on an immediate re-run, so one repeat is exactly what separates a transient fail-open from a board that genuinely returned nothing.
+It is strictly one attempt for the whole cycle, never a loop, and never more than that reserved second call.
+Having retried is never itself what makes a cycle healthy or clean: a retry that also comes back with no row leaves the cycle unwitnessed, while a retry that returns rows and meets every other condition above leaves it witnessed and the cycle proceeds normally.
+
+On CHECK FAILED the cycle draws no conclusion at all from board content - no dispatch, no "the slot stays free", no "no divergence", and no silence.
+It reports the failed check, naming the error text or the row count that caused it, in the scout report and on the rolling status page, and ends there.
+The next cycle re-runs normally, and repeated failures are a real blocker to raise with firstmate rather than a state to keep re-entering quietly.
 
 ## What the PM may take
 
@@ -91,7 +128,8 @@ Only a brief with no `linked_cards` line at all leaves the sweep unarmed; `linke
 The PM may select at most `4 - active_count` dispatchable cards from the eligibility sweep and records each selected card separately in its report.
 If the fleet is already at four, leave every `Новая` card untouched and end the scan without dispatching another worker.
 Re-check capacity before every spawn in a multi-card handoff because another task may have started after the PM produced its report.
-An empty eligible set is a normal, silent result: report nothing and do not widen the filter to find work.
+A **witnessed** empty eligible set is a normal, silent result: report nothing and do not widen the filter to find work.
+Silence is only ever available to a witnessed cycle; an unwitnessed empty is CHECK FAILED and is always reported.
 That silence covers dispatch reporting only, and it never silences a divergence the orphaned-status sweep found, which is reported even when no card was eligible.
 That sweep is also not a widening of this filter: it selects no work and only detects divergence.
 
@@ -143,11 +181,13 @@ A bare `done:` with staging prose in it is not that signal: firstmate does not r
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
 Never move a card the captain moved by hand in the meantime; re-read the card before writing and, if it has moved somewhere this table did not put it, leave it and report the divergence.
 Reporting a divergence means leaving the card exactly as it is, writing it into the PM's scout report, and listing it on the rolling status page - never a silent correction, because only firstmate decides what to do about one.
+Name the card on both surfaces, because a divergence firstmate cannot identify is not a divergence it can act on: on a sprint-check take the `Name` and `url` from the row the witnessed read already returned, and on an event wake, which runs no such read, take them from the card the re-read above just fetched, so naming never costs a `query_data_sources` call this wake was not given.
 
-The orphaned-status sweep finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
-Check every card that sweep returns against the brief's `linked_cards` list, not against bare `notion_page=` notes in the backlog.
+The orphaned-status sweep - the active set derived from the witnessed read - finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
+Check every card in that set against the brief's `linked_cards` list, not against bare `notion_page=` notes in the backlog.
 That is deliberately a stronger test than the bare-presence check that keeps the eligibility sweep from dispatching a card twice: presence proves a card was taken once, while the brief's list proves a task is still working it.
 If the brief carries no `linked_cards` line at all, skip this sweep for that scan and report no divergence from it: a test the PM cannot answer is not evidence that every active card is orphaned, and firstmate owns supplying the list.
+That skips only the orphan report, never the witnessed read itself, which still serves eligibility and still has to come back witnessed.
 A standing PM with no per-cycle brief may instead use its own per-cycle self-computed live-link set as an equally valid `linked_cards` source: the cards a non-terminal task somewhere in the fleet carries an active `notion_page=` link to.
 Build that set as the union of two reads, both required: `bin/fm-fleet-snapshot.sh --cross-home` for the parent and every sibling (`homes[].summary.endpoints[].links.notion_page`), and `bin/fm-fleet-snapshot.sh --json` run in the PM's own home for the PM itself (`tasks[].links.notion_page`, which enumerates every task meta and so has no truncation case of its own).
 The PM's own home is the one home `--cross-home` is defined never to return - it skips the observer as a fleet member by design, with no `homes[]` or `unavailable[]` record and nothing in `counts` - so a set built from `--cross-home` alone silently omits every card the PM is itself working and reports each of them orphaned, with no field in the output to warn that it did.
@@ -169,7 +209,7 @@ Every scan that runs it re-detects an unresolved divergence, which is deliberate
 
 Two pages, both found by exact title with `search` and created once if absent, both under `🎯 Project Tracking Hub`:
 
-- `📊 PM — текущий спринт` - the rolling status page. Always `replace_content`, never append, so its block count stays flat. Holds: what is under way, what is waiting on the captain, what landed this sprint, what the PM could not take and why, and any divergence the status-sync section told it to report.
+- `📊 PM — текущий спринт` - the rolling status page. Always `replace_content`, never append, so its block count stays flat. Holds: what is under way, what is waiting on the captain, what landed this sprint, what the PM could not take and why, any divergence the status-sync section told it to report, and the failed check of any cycle the witnessed-read section ruled CHECK FAILED.
 - `🗄️ Архив задач` - one line per finished task, appended. This is the durable history that lets a card be recycled.
 
 For every project's card, write the result into its body - what changed, the implementing branch name, landing commit hash, PR URL, and CI run - rather than creating a page per task.
@@ -217,17 +257,18 @@ that out yourself, in the turn the wake opened.
 
 On a `sprint-check` wake or a direct captain request that launched this PM:
 
-1. Read the board.
-   Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so skip them or the same card is picked up again every hour.
-2. **Run the orphaned-status sweep when the brief carries a `linked_cards` line, including `linked_cards: none`.**
-   It selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
-   Only when that line is missing entirely, skip the query and the sweep's report for this scan and continue to the next step.
-3. **Fill available capacity; do not build the cards yourself.**
+1. **Run the witnessed read, and derive the orphaned-status sweep from it when the brief carries a `linked_cards` line, including `linked_cards: none`.**
+   This one call is the cycle's whole board read: every step below works from its rows, and nothing here reads the board a second time.
+   Whether the cycle came back witnessed, in the sense the witnessed-read section defines, decides whether anything in it may be believed: an unwitnessed cycle is CHECK FAILED, reported on both surfaces, and stops here with no dispatch and no divergence claim.
+   Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so drop them from the eligible set those rows produce or the same card is picked up again every hour.
+   The sweep selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
+   Only when that line is missing entirely, skip the sweep's report for this scan - the read itself still stands, because it also serves eligibility - and continue to the next step.
+2. **Fill available capacity; do not build the cards yourself.**
    Select as many dispatchable cards as the four-worker cap permits, write each one into the scout report, and open the single keyed dispatch hold described above.
    Stay live until firstmate confirms which dispatched workers are durably running and linked, then move only those cards to `В работе`.
-4. **Found nothing? End the turn silently.**
+3. **Found nothing in a witnessed cycle? End the turn silently.**
    Around eleven checks run each weekday, so reporting "nothing new" every time trains the captain to stop reading reports and hides the one that matters.
-   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched.
+   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched, and a CHECK FAILED cycle is never one of the silent ones.
 
 ## When a card is unclear
 
