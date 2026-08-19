@@ -85,17 +85,18 @@ Neither derived set may be believed unless the cycle came back witnessed, which 
 
 - **W-1, the read-proof.** The read produced at least one row. Zero rows earns the single retry below, and it is CHECK FAILED only when that retry also comes back with no row - "nothing was read", never "nothing matched", and never a clean board.
 
-This contract deliberately carries no check that the cards a task already links to appear among the returned rows, because URL-string identity cannot answer that reliably and the fix is a canonical page id stored at link time in `bin/fm-notion-link.sh`, owed as `fm-notion-link-store-canonical-id`; until it lands, the absence of such a check is never evidence that the linked cards were verified.
+This contract deliberately carries no check that the cards a task already links to appear among the returned rows, because a stored link keeps whatever host, slug, and query form it was handed, so a failed match cannot be told apart from a genuinely missing row, and a witness that halted the cycle on that ambiguity would stop all dispatch over a URL mismatch rather than over an unread board; storing a canonical page id at link time in `bin/fm-notion-link.sh` is what would make the check answerable, owed as `fm-notion-link-store-canonical-id`, and until it lands the absence of this check is never evidence that the linked cards were verified.
 
-CHECK FAILED also covers any tool error, `has_more: true`, and a result of 200 rows or more.
-The last two mean the read was truncated and the board outgrew this contract's assumption that it stays well under 200 rows, so say that explicitly and let firstmate revisit it.
 This section owns what witnessed and unwitnessed mean, and every other place in this file uses those terms rather than restating the rule.
-A cycle is witnessed when W-1 holds, meaning the read returned at least one row - after its single permitted retry when the first attempt returned none - and no tool error, `has_more: true`, or result of 200 rows or more occurred.
-A cycle is unwitnessed in every other case: zero rows after that retry, any tool error, `has_more: true`, or 200 rows or more.
+A first attempt that returns zero rows or fails with a tool error earns one retry of the same read, and no other outcome earns one, so both of those branches are judged on the final attempt rather than the first.
+A cycle is witnessed when that final attempt returned at least one row, raised no tool error, reported `has_more` false, and came back with fewer than 200 rows.
+A cycle is unwitnessed in every other case: the final attempt errored, or returned zero rows, or reported `has_more: true`, or returned 200 rows or more.
 Every unwitnessed cycle is CHECK FAILED.
-One retry of the same call is permitted, after an error and after a zero-row result alike, and it is the only use of the second call in the budget.
+
+A truncated read earns no retry, because repeating it returns the same truncation: `has_more: true` and a result of 200 rows or more mean the board outgrew this contract's assumption that it stays well under 200 rows, so say that explicitly and let firstmate revisit it.
+The one retry those two branches earn is the only use of the second call in the budget.
 Covering a zero-row result is a deliberate widening of a reserve the specification wrote for an errored call alone, stated here rather than left silent, because the fault this contract exists to close was a well-formed empty answer that succeeded on an immediate re-run, so one repeat is exactly what separates a transient fail-open from a board that genuinely returned nothing.
-It is strictly one attempt, never a loop, never more than that reserved second call, and never a reason to report a healthy or a clean result: a second error or a second empty answer is final for the cycle and CHECK FAILED stands.
+It is strictly one attempt for the whole cycle, never a loop, never more than that reserved second call, and never a reason to report a healthy or a clean result.
 
 On CHECK FAILED the cycle draws no conclusion at all from board content - no dispatch, no "the slot stays free", no "no divergence", and no silence.
 It reports the failed check, naming the error text or the row count that caused it, in the scout report and on the rolling status page, and ends there.
