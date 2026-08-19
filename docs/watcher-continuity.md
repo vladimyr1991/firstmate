@@ -56,6 +56,12 @@ Each record includes arm and watcher PIDs, start and end timestamps, exit code a
 The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYCLE_LOG_KEEP_LINES`.
 `state/.watch-triage.log` remains only the watcher's bounded absorbed-wake debug log and carries no lifecycle semantics.
 
+A freshly forked watcher gets `FM_ARM_CONFIRM_TIMEOUT` seconds to become healthy, and each new progress fact it publishes - the singleton lock naming that child, or a beacon moved past its mtime at fork - buys one further budget.
+Extension is bounded by the `FM_ARM_CONFIRM_MAX` ceiling and by needing a fresh progress fact each time, so it always terminates; a foreign lock holder is not progress.
+A child that published nothing is terminated at the first deadline and recorded as `reason=confirmation-timeout`, while one that progressed and then stalled is terminated at the ceiling and recorded as `reason=confirmation-ceiling`.
+Both print the unchanged `watcher: FAILED - no live watcher with a fresh beacon` and exit nonzero.
+An adapter that waits for the arm to report readiness must keep its own timeout above that ceiling, or it retires a slow but working arm and relocates the same defect one layer up.
+
 The default 300-second grace is unchanged.
 Only the watcher process touches `state/.last-watcher-beat`; no helper process can make a wedged watcher appear healthy.
 
@@ -64,6 +70,7 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 `tests/fm-pi-watch-extension.test.sh` checks Pi's first-cycle-or-explicit-repair tool metadata and ownership-based redundant-call no-ops, then simulates actionable and empty child closes against the actual Pi and OpenCode close handlers, blocks prompt delivery to prove the successor launches first, verifies single-flight behavior, changes the session lock before close to prove ownership is rechecked, and hangs each successor arm to prove bounded fallback delivery includes the typed restoration failure.
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
+`tests/fm-watch-arm.test.sh` covers the confirmation budget against a watcher stub with a known pre-lock cost: an advancing child is confirmed past the old fixed budget and killed again when extension is disabled, a child with no progress is never extended, one unchanging progress fact grants at most one extension, the ceiling terminates a forever-progressing child with the distinguishable ledger reason, a non-numeric ceiling falls back to the default bound, and a child that exits early is reported as an exit without burning the budget.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.

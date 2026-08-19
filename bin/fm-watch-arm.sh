@@ -81,12 +81,13 @@ BEAT="$STATE/.last-watcher-beat"
 # "Fresh" reuses the guard's threshold so there is one definition of liveness.
 GRACE=${FM_GUARD_GRACE:-300}
 # How long to wait for a freshly forked watcher to acquire the lock and beat.
-# Git Bash/MSYS pays a much higher fork cost while the watcher completes its
-# required pre-lock migration, so its bounded default covers that cold start.
-case "${OSTYPE:-}" in
-  msys*|mingw*|cygwin*) ARM_CONFIRM_DEFAULT=30 ;;
-  *) ARM_CONFIRM_DEFAULT=10 ;;
-esac
+# The watcher's required pre-lock migration publishes nothing this arm can see
+# and dominates that cost: measured at up to 22.5s against a real state
+# directory on the migration's repair path, on every platform rather than only
+# on MSYS (docs/verification/supervision.md, "Watcher continuity"). 45s is twice
+# that worst measurement and still an order of magnitude below GRACE, so a
+# watcher confirmed late is still fresh by the guard's definition.
+ARM_CONFIRM_DEFAULT=45
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
 # Hard ceiling on total confirmation wall clock, measured from fork. Progress
 # extends the budget; this ceiling is what keeps extension from becoming an

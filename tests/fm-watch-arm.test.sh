@@ -294,6 +294,48 @@ test_confirmation_extends_for_a_child_that_is_still_advancing() {
 }
 
 
+test_default_budget_confirms_a_watcher_that_starts_past_the_old_budget() {
+  local dir state arm armout status wpid
+  # The realistic shape of the reported outage: the watcher publishes nothing at
+  # all until its pre-lock migration finishes, here at 12s. The OLD 10s budget
+  # SIGTERMed exactly this child one second from success.
+  dir=$(make_case confirm-old-budget-control)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=healthy-at FM_STUB_HEALTHY_AT=14 \
+    FM_ARM_CONFIRM_TIMEOUT=10 FM_ARM_CONFIRM_MAX=10
+  wait_for_exit "$STUB_ARM_PID" 200
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "the old 10s fixed budget must still kill this child (status $status)"
+  grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+    || fail "the fixed-budget control did not fail as expected: $(cat "$armout")"
+
+  # The shipped default budget must confirm the very same child.
+  dir=$(make_case confirm-default-budget)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=healthy-at FM_STUB_HEALTHY_AT=14
+  local i=0
+  while [ "$i" -lt 250 ]; do
+    grep -q '^watcher: ' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  wpid=$(cat "$state/.watch.lock/pid" 2>/dev/null || echo none)
+  grep -qF "watcher: started pid=$wpid (beacon fresh)" "$armout" \
+    || fail "the default budget did not confirm a watcher healthy at 14s: $(cat "$armout")"
+  is_live_non_zombie "$wpid" \
+    || fail "the confirmed watcher was terminated instead of being followed"
+  kill -TERM "$STUB_ARM_PID" 2>/dev/null || true
+  wait_for_exit "$STUB_ARM_PID" 80 >/dev/null
+  pass "the default confirmation budget confirms a watcher that the old 10s budget killed"
+}
+
 test_confirmation_never_extends_for_a_child_that_shows_no_progress() {
   local dir state arm armout started elapsed status
   dir=$(make_case confirm-no-progress)
@@ -404,6 +446,7 @@ test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
 test_confirmation_extends_for_a_child_that_is_still_advancing
+test_default_budget_confirms_a_watcher_that_starts_past_the_old_budget
 test_confirmation_never_extends_for_a_child_that_shows_no_progress
 test_one_unchanging_progress_fact_grants_at_most_one_extension
 test_the_ceiling_terminates_a_child_that_keeps_progressing

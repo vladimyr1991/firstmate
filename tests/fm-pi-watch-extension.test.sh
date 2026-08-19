@@ -462,6 +462,81 @@ EOF
   pass "Pi hung successor falls back to one typed actionable wake"
 }
 
+test_pi_default_ready_timeout_survives_a_slow_but_working_arm() {
+  local repo home plugin log out status
+  # The arm's own confirmation budget now tolerates a slow watcher start, so the
+  # extension's readiness timeout must tolerate a slow arm. At the OLD 12s
+  # default this successor would be declared unready and SIGTERMed by retireArm,
+  # relocating the very defect the arm's budget change removes. The default is
+  # left unset here on purpose: this case is about the shipped default.
+  repo="$TMP_ROOT/pi-slow-ready-root"
+  home="$TMP_ROOT/pi-slow-ready-home"
+  log="$TMP_ROOT/pi-slow-ready.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: synthetic wake\n'
+  exit 0
+fi
+# A successor that confirms slowly, past the old 12s readiness default, and then
+# keeps running exactly as a healthy attached arm does.
+trap 'exit 0' TERM INT
+sleep 20
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+while :; do sleep 0.2; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let tool = null;
+let prompt = "";
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompt += message;
+  },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("tool-call-slow-ready", {}, undefined, undefined, {});
+for (let i = 0; i < 4000 && !prompt; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+const rows = existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+  : [];
+if (rows.length !== 2) throw new Error(`a slow but working successor must not be retired or retried, got ${rows.length} arms: ${rows.join(" | ")}`);
+if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
+if (prompt.includes("could not verify a ready successor watcher")) throw new Error(`a slow but working successor was declared unready: ${prompt}`);
+if (prompt.includes("could not restore watcher continuity")) throw new Error(`a slow but working successor was treated as a restoration failure: ${prompt}`);
+// The successor is deliberately long-lived, exactly as a healthy attached arm
+// is, so retire it here rather than leaving a stray child behind.
+for (const row of rows) {
+  const pid = Number(row.replace("arm=", ""));
+  if (Number.isFinite(pid)) { try { process.kill(pid, "SIGKILL"); } catch {} }
+}
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi must not retire a successor arm that confirms slowly"
+  [ -z "$out" ] || fail "Pi slow-ready test printed output: $out"
+  pass "Pi's default arm-ready timeout tolerates an arm that confirms past the old 12s budget"
+}
+
 test_pi_unretired_successor_falls_back_without_retry() {
   local repo home plugin log release out status
   repo="$TMP_ROOT/pi-unretired-successor-root"
@@ -1698,6 +1773,78 @@ EOF
   pass "OpenCode hung successor falls back to one typed actionable wake"
 }
 
+test_opencode_default_ready_timeout_survives_a_slow_but_working_arm() {
+  local plugin repo home log out status
+  # Same invariant as the Pi case: the plugin's readiness timeout must stay above
+  # the arm's confirmation ceiling, or a slow but successful cold start is
+  # classified as a timeout. The default is deliberately left unset.
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-slow-ready-root"
+  home="$TMP_ROOT/opencode-slow-ready-home"
+  log="$TMP_ROOT/opencode-slow-ready.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  git init -q "$repo"
+  : > "$repo/AGENTS.md"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(wc -l < "$FM_ARM_LOG" | tr -d '[:space:]')
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: synthetic wake\n'
+  exit 0
+fi
+trap 'exit 0' TERM INT
+sleep 20
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+while :; do sleep 0.2; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+let prompt = "";
+const client = {
+  session: {
+    promptAsync: async (request) => {
+      prompt += request.body.parts[0].text;
+    },
+  },
+};
+const hooks = await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+for (let i = 0; i < 4000 && !prompt; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+const rows = existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+  : [];
+if (rows.length !== 2) throw new Error(`a slow but working successor must not be retired or retried, got ${rows.length} arms: ${rows.join(" | ")}`);
+if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
+if (prompt.includes("could not restore watcher continuity")) throw new Error(`a slow but working successor was treated as a restoration failure: ${prompt}`);
+// The successor is deliberately long-lived, exactly as a healthy attached arm
+// is, so retire it here rather than leaving a stray child behind.
+for (const row of rows) {
+  const pid = Number(row.replace("arm=", ""));
+  if (Number.isFinite(pid)) { try { process.kill(pid, "SIGKILL"); } catch {} }
+}
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode must not classify a slow but working successor arm as a readiness timeout"
+  [ -z "$out" ] || fail "OpenCode slow-ready test printed output: $out"
+  pass "OpenCode's default arm-ready timeout tolerates an arm that confirms past the old 12s budget"
+}
+
 test_opencode_unretired_successor_falls_back_without_retry() {
   local plugin repo home log release out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
@@ -2204,6 +2351,7 @@ test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery
 test_pi_hung_successor_falls_back_to_typed_wake
+test_pi_default_ready_timeout_survives_a_slow_but_working_arm
 test_pi_unretired_successor_falls_back_without_retry
 test_pi_late_unretired_close_resumes_supervision
 test_pi_empty_close_retries_instead_of_disappearing
@@ -2222,6 +2370,7 @@ test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake
 test_opencode_pre_ready_actionable_close_preserves_its_successor
 test_opencode_hung_successor_falls_back_to_typed_wake
+test_opencode_default_ready_timeout_survives_a_slow_but_working_arm
 test_opencode_unretired_successor_falls_back_without_retry
 test_opencode_late_unretired_close_resumes_supervision
 test_opencode_empty_close_retries_instead_of_disappearing
