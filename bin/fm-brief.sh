@@ -545,7 +545,7 @@ Only firstmate can spawn the independent browser evaluator, so that key stays op
 To land: merge \`fm/$ID\` -> \`develop\` -> \`staging\`, push both branches, and watch CI to a final result.
 If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked [key=staging-ci-red]: {the failing run}\` and stop.
 $JOB_GREEN_NOTE
-On this path that job-level report is the one red the line above yields to: append the attribution as its own status line, then close with the keyed staging line below, and treat every other red as the blocking red that stops you there.
+On this path a red attributed that way is the only red the keyed \`blocked [key=staging-ci-red]\` stop above yields to: append the attribution as its own status line, then close with the keyed staging line below, and treat every other red as the blocking red that stops you at that keyed form.
 Close with the keyed line, never free prose:
    \`done [key=staging]: staging=<sha> ci=<run-id> result=green\`
 Tagging or releasing \`main\` is never yours: it needs the captain's current explicit word every time, obtained through firstmate (rule 6).

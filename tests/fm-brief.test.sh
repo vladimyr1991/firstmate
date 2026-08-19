@@ -1108,10 +1108,13 @@ test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
       "$id: the job-green case lost its prohibition on landing over red"
   done
   # The staging path keeps its own red rule and keyed lines: the exception sits
-  # between them rather than replacing either.
+  # between them rather than replacing either, and it names the rule it excepts
+  # rather than pointing at whichever line happens to sit above it.
   brief="$home/data/plc-lo-sa/brief.md"
-  assert_grep "the one red the line above yields to" "$brief" \
-    "the staging job-green case did not stay an exception to the keyed red rule"
+  assert_grep "the only red the keyed \`blocked [key=staging-ci-red]\` stop above yields to" "$brief" \
+    "the staging job-green case did not name the keyed red rule it excepts"
+  assert_no_grep "the line above yields to" "$brief" \
+    "the staging job-green case pointed at a positional line instead of naming its rule"
   assert_grep "blocked [key=staging-ci-red]: {the failing run}" "$brief" \
     "the staging job-green case weakened the keyed blocked form for every other red"
   assert_grep "done [key=staging]: staging=<sha> ci=<run-id> result=green" "$brief" \
