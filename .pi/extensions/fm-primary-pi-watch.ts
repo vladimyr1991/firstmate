@@ -88,9 +88,16 @@ const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(exte
 const retryBaseMs = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const retryMaxMs = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const retryLimit = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
-// 35s on Windows so the budget stays above arm's MSYS confirm default (30s in
-// bin/fm-watch-arm.sh): a slow but successful Git Bash cold start must not be
-// SIGTERMed mid-confirmation. Conditioned on win32 so other platforms keep 12s.
+// KNOWN GAP, deliberately left as it is. On timeout this SIGTERMs the arm
+// (retireArm below), and neither default covers the arm's real silent worst
+// case: an arm publishes nothing at all until it prints started/attached/FAILED,
+// and it can stay silent for FM_ARM_CONFIRM_MAX plus one FM_ARM_CONFIRM_TIMEOUT
+// (180s at bin/fm-watch-arm.sh defaults). Raising these numbers alone is not the
+// fix, because the wake is delivered only after restoreAfterActionableClose
+// resolves and that loop runs FM_WATCH_REARM_RETRY_LIMIT + 1 attempts, so a
+// larger per-attempt budget multiplies into a much longer degraded-delivery
+// window. Closing this properly needs a progress signal the adapter can actually
+// observe, which is a design question with its own specification.
 const armReadyTimeoutMs = positiveInteger(
   "FM_PI_ARM_READY_TIMEOUT_MS",
   process.platform === "win32" ? 35000 : 12000,

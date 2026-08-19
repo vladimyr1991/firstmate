@@ -146,6 +146,425 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
   pass "watch-arm: a cycle that delivered no wake of its own still fails loudly"
 }
 
+# --- confirmation budget: progress-based extension under a hard ceiling ------
+#
+# These cases need a watcher whose pre-lock startup lasts an exact number of
+# seconds, which the real bin/fm-watch.sh cannot be asked for. The arm resolves
+# its watcher as a sibling of its own path, so each case runs the SHIPPED arm
+# through a directory holding a link to it, a link to the shared wake library,
+# and a stub standing in for the watcher. Nothing about the arm is stubbed.
+
+# Build the sibling directory and echo the arm path to invoke.
+make_stub_arm_dir() {  # <case-dir>
+  local dir=$1
+  local bin="$dir/armbin"
+  mkdir -p "$bin"
+  ln -sf "$ROOT/bin/fm-watch-arm.sh" "$bin/fm-watch-arm.sh"
+  ln -sf "$ROOT/bin/fm-wake-lib.sh" "$bin/fm-wake-lib.sh"
+  cat > "$bin/fm-watch.sh" <<'SH'
+#!/usr/bin/env bash
+# Test stub standing in for bin/fm-watch.sh. It publishes exactly what
+# FM_STUB_MODE asks for, so a case can hold the child pre-lock, or beating but
+# unhealthy, for a known number of seconds.
+set -u
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$SELF_DIR/fm-wake-lib.sh"
+LOCK="$STATE/.watch.lock"
+BEAT="$STATE/.last-watcher-beat"
+
+publish_lock() {
+  mkdir -p "$LOCK"
+  printf '%s\n' "$FM_HOME" > "$LOCK/fm-home"
+  printf '%s\n' "$SELF_DIR/fm-watch.sh" > "$LOCK/watcher-path"
+  fm_pid_identity "$$" > "$LOCK/pid-identity"
+  printf '%s\n' "$$" > "$LOCK/pid"
+}
+
+hold() {
+  while :; do sleep 0.2; done
+}
+
+case "${FM_STUB_MODE:?}" in
+  early-exit)
+    printf 'watcher: FAILED - stub refused to start\n'
+    exit 3
+    ;;
+  never-advance)
+    trap 'exit 0' TERM INT
+    hold
+    ;;
+  lock-then-stall)
+    trap 'exit 0' TERM INT
+    sleep 1
+    publish_lock
+    hold
+    ;;
+  beat-then-healthy)
+    # Beacon movement is the arm's second progress signal. Without the lock the
+    # watcher is still UNHEALTHY, so this stub is visibly progressing and not
+    # yet confirmable until FM_STUB_HEALTHY_AT seconds have passed.
+    trap 'exit 0' TERM INT
+    i=0
+    while [ "$i" -lt "${FM_STUB_HEALTHY_AT:?}" ]; do
+      touch "$BEAT"
+      sleep 1
+      i=$((i + 1))
+    done
+    publish_lock
+    touch "$BEAT"
+    hold
+    ;;
+  healthy-at)
+    # Realistic ordering: nothing at all is published until the pre-lock work
+    # finishes, then the lock and the beacon appear together.
+    trap 'exit 0' TERM INT
+    sleep "${FM_STUB_HEALTHY_AT:?}"
+    publish_lock
+    touch "$BEAT"
+    hold
+    ;;
+esac
+SH
+  chmod +x "$bin/fm-watch.sh"
+  printf '%s\n' "$bin/fm-watch-arm.sh"
+}
+
+# Run the shipped arm against the stub and record its pid in STUB_ARM_PID. Every
+# case states its own budget and ceiling, and the ambient FM_ARM_CONFIRM_* pair is
+# cleared first: an operator override in the environment would otherwise silently
+# decide the outcome of a case about exactly those values. The
+# arm is backgrounded so a confirmed cycle (which blocks on the child) can be
+# asserted and then signalled, exactly as a real harness retires it. A command
+# substitution would make the arm a child of a subshell this shell cannot wait
+# for, the same reason the starters above set a global.
+STUB_ARM_PID=
+run_stub_arm() {  # <arm> <state> <armout> [VAR=VAL ...]
+  local arm=$1 state=$2 out=$3
+  shift 3
+  env -u FM_ARM_CONFIRM_TIMEOUT -u FM_ARM_CONFIRM_MAX \
+    FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 "$@" "$arm" > "$out" 2>&1 &
+  STUB_ARM_PID=$!
+}
+
+test_confirmation_extends_for_a_child_that_is_still_advancing() {
+  local dir state arm armout started elapsed status
+  dir=$(make_case confirm-extends)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  started=$(date +%s)
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=beat-then-healthy FM_STUB_HEALTHY_AT=12 \
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=30
+  local i=0
+  while [ "$i" -lt 250 ]; do
+    grep -q '^watcher: ' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  elapsed=$(( $(date +%s) - started ))
+  grep -qF "watcher: started pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || echo none) (beacon fresh)" "$armout" \
+    || fail "a child that kept advancing was not confirmed: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" \
+    || fail "the arm reported a failure for a child it went on to confirm: $(cat "$armout")"
+  [ "$elapsed" -ge 10 ] \
+    || fail "the fixture confirmed after ${elapsed}s, which does not exercise a start past the old 10s budget"
+  ! grep -q 'reason=confirmation-timeout' "$state/.watch-cycle-exits.log" 2>/dev/null \
+    || fail "a confirmed cycle recorded a confirmation timeout"
+  kill -TERM "$STUB_ARM_PID" 2>/dev/null || true
+  wait_for_exit "$STUB_ARM_PID" 80 >/dev/null
+
+  # Counterfactual: the same fixture with extension disabled (ceiling clamped to
+  # the base budget) is exactly the old fixed-budget arm, and it kills the child.
+  dir=$(make_case confirm-extends-disabled)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=beat-then-healthy FM_STUB_HEALTHY_AT=12 \
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=1
+  wait_for_exit "$STUB_ARM_PID" 150
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "extension disabled must reproduce the fixed-budget failure (status $status)"
+  grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+    || fail "extension disabled did not emit the unchanged failure line: $(cat "$armout")"
+  pass "arm extends confirmation for an advancing child and still fails when extension is disabled"
+}
+
+
+test_default_budget_confirms_a_watcher_that_starts_past_the_old_budget() {
+  local dir state arm armout status wpid
+  # The realistic shape of the reported outage: the watcher publishes nothing at
+  # all until its pre-lock migration finishes, here at 12s. The OLD 10s budget
+  # SIGTERMed exactly this child one second from success.
+  dir=$(make_case confirm-old-budget-control)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=healthy-at FM_STUB_HEALTHY_AT=14 \
+    FM_ARM_CONFIRM_TIMEOUT=10 FM_ARM_CONFIRM_MAX=10
+  wait_for_exit "$STUB_ARM_PID" 200
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "the old 10s fixed budget must still kill this child (status $status)"
+  grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+    || fail "the fixed-budget control did not fail as expected: $(cat "$armout")"
+
+  # The shipped default budget must confirm the very same child.
+  dir=$(make_case confirm-default-budget)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=healthy-at FM_STUB_HEALTHY_AT=14
+  local i=0
+  while [ "$i" -lt 250 ]; do
+    grep -q '^watcher: ' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  wpid=$(cat "$state/.watch.lock/pid" 2>/dev/null || echo none)
+  grep -qF "watcher: started pid=$wpid (beacon fresh)" "$armout" \
+    || fail "the default budget did not confirm a watcher healthy at 14s: $(cat "$armout")"
+  is_live_non_zombie "$wpid" \
+    || fail "the confirmed watcher was terminated instead of being followed"
+  kill -TERM "$STUB_ARM_PID" 2>/dev/null || true
+  wait_for_exit "$STUB_ARM_PID" 80 >/dev/null
+  pass "the default confirmation budget confirms a watcher that the old 10s budget killed"
+}
+
+test_confirmation_never_extends_for_a_child_that_shows_no_progress() {
+  local dir state arm armout started elapsed status
+  dir=$(make_case confirm-no-progress)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  started=$(date +%s)
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=never-advance \
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=30
+  wait_for_exit "$STUB_ARM_PID" 200
+  status=$?
+  elapsed=$(( $(date +%s) - started ))
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "a child that published nothing must still fail loudly (status $status)"
+  grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+    || fail "no-progress failure changed the arm's failure line: $(cat "$armout")"
+  [ "$elapsed" -le 6 ] \
+    || fail "a child with no progress was granted an extension: failed only after ${elapsed}s"
+  grep -q 'reason=confirmation-timeout' "$state/.watch-cycle-exits.log" \
+    || fail "a child that never progressed was not recorded as a confirmation timeout"
+  ! grep -q 'reason=confirmation-ceiling' "$state/.watch-cycle-exits.log" \
+    || fail "a child that never progressed was misrecorded as reaching the ceiling"
+  pass "arm never extends confirmation for a child that published no progress"
+}
+
+test_one_unchanging_progress_fact_grants_at_most_one_extension() {
+  local dir state arm armout started elapsed status
+  # The mirror of the ceiling case: here the ceiling is held far out of reach,
+  # so only the fresh-fact requirement can end the loop. The child publishes the
+  # lock once and then stalls, so correct behaviour grants exactly one extension
+  # and terminates at about 5s, while an implementation that extended on a stale
+  # fact would keep going to the ceiling at about 61s.
+  dir=$(make_case confirm-single-fact)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  started=$(date +%s)
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=lock-then-stall \
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=60
+  wait_for_exit "$STUB_ARM_PID" 250
+  status=$?
+  elapsed=$(( $(date +%s) - started ))
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "a child that stalled after one progress fact must be terminated (status $status)"
+  [ "$elapsed" -le 15 ] \
+    || fail "a single unchanging progress fact kept extending: terminated only after ${elapsed}s"
+  grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+    || fail "the stalled-child failure line changed: $(cat "$armout")"
+  grep -q 'reason=confirmation-ceiling' "$state/.watch-cycle-exits.log" \
+    || fail "a child that progressed then stalled was not distinguished from one that never started"
+  pass "one unchanging progress fact grants at most one extension and records the ceiling reason"
+}
+
+test_the_ceiling_terminates_a_child_that_keeps_progressing() {
+  local dir state arm armout started elapsed status
+  # The child beats forever and so publishes a NEW progress fact at every
+  # deadline. Only the ceiling can end this, which is the bound that keeps an
+  # extension policy from becoming an unbounded wait.
+  dir=$(make_case confirm-ceiling)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  started=$(date +%s)
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=beat-then-healthy FM_STUB_HEALTHY_AT=9999 \
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=6
+  wait_for_exit "$STUB_ARM_PID" 250
+  status=$?
+  elapsed=$(( $(date +%s) - started ))
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "the ceiling must terminate a forever-progressing child (status $status)"
+  [ "$elapsed" -ge 5 ] \
+    || fail "the child was terminated at ${elapsed}s, before any extension was granted"
+  [ "$elapsed" -le 14 ] \
+    || fail "the ceiling did not bound confirmation: terminated only after ${elapsed}s"
+  grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+    || fail "the ceiling changed the arm's failure line: $(cat "$armout")"
+  grep -q 'reason=confirmation-ceiling' "$state/.watch-cycle-exits.log" \
+    || fail "the ceiling close was not classified in the lifecycle ledger"
+  pass "the confirmation ceiling always terminates and records a distinguishable reason"
+}
+
+
+test_a_child_that_exits_early_is_reported_as_an_exit_not_a_timeout() {
+  local dir state arm armout started elapsed status
+  dir=$(make_case confirm-early-exit)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  started=$(date +%s)
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=early-exit FM_ARM_CONFIRM_TIMEOUT=30
+  wait_for_exit "$STUB_ARM_PID" 250
+  status=$?
+  elapsed=$(( $(date +%s) - started ))
+  expect_code 3 "$status" "an early-exiting watcher's own status must propagate"
+  [ "$elapsed" -le 5 ] \
+    || fail "the arm burned the confirmation budget on a child that had already exited (${elapsed}s)"
+  grep -qF 'watcher: FAILED - stub refused to start' "$armout" \
+    || fail "the watcher's own failure line was not surfaced: $(cat "$armout")"
+  grep -q 'reason=nonzero-exit' "$state/.watch-cycle-exits.log" \
+    || fail "an early exit was not classified as an exit in the lifecycle ledger"
+  ! grep -q 'reason=confirmation-' "$state/.watch-cycle-exits.log" \
+    || fail "an early exit was misclassified as a confirmation timeout or ceiling"
+  pass "a watcher that exits early is reported as an exit without burning the budget"
+}
+
+test_a_non_numeric_base_budget_falls_back_to_the_default() {
+  local dir state arm armout
+  # A junk base budget must fall back to the shipped default, not collapse the
+  # whole confirmation window. Before the base budget was sanitized, arithmetic
+  # and the ceiling comparison both read a non-numeric value as 0, which printed
+  # a shell error and left a one-second budget - a fixed budget far shorter than
+  # the 10s one this change exists to replace.
+  dir=$(make_case confirm-base-junk)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=never-advance FM_ARM_CONFIRM_TIMEOUT=not-a-number
+  # Well past the collapsed one-second budget, and far short of the 45s default.
+  local i=0
+  while [ "$i" -lt 80 ]; do
+    grep -q '^watcher: ' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! grep -q '^watcher: ' "$armout" 2>/dev/null \
+    || fail "a junk base budget collapsed the confirmation window: $(cat "$armout")"
+  ! grep -q 'integer expression expected\|integer expected' "$armout" 2>/dev/null \
+    || fail "a junk base budget reached an integer comparison: $(cat "$armout")"
+  is_live_non_zombie "$STUB_ARM_PID" \
+    || fail "the arm exited early under a junk base budget: $(cat "$armout")"
+  kill -TERM "$STUB_ARM_PID" 2>/dev/null || true
+  wait_for_exit "$STUB_ARM_PID" 80 >/dev/null
+  pass "a non-numeric base confirmation budget falls back to the default instead of collapsing"
+}
+
+test_a_non_numeric_ceiling_falls_back_to_the_default() {
+  local dir state arm armout started elapsed status
+  # A junk ceiling must behave like the default (three base budgets), not like a
+  # disabled or absent bound.
+  dir=$(make_case confirm-ceiling-junk)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  started=$(date +%s)
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=beat-then-healthy FM_STUB_HEALTHY_AT=9999 \
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=not-a-number
+  wait_for_exit "$STUB_ARM_PID" 250
+  status=$?
+  elapsed=$(( $(date +%s) - started ))
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "a junk ceiling must still terminate the child (status $status)"
+  [ "$elapsed" -ge 5 ] \
+    || fail "a junk ceiling behaved as a disabled ceiling instead of the default (${elapsed}s)"
+  [ "$elapsed" -le 15 ] \
+    || fail "a junk ceiling did not fall back to three base budgets (${elapsed}s)"
+  grep -q 'reason=confirmation-ceiling' "$state/.watch-cycle-exits.log" \
+    || fail "a junk ceiling did not behave as a ceiling"
+  pass "a non-numeric confirmation ceiling falls back to the default bound"
+}
+
+test_a_zero_padded_base_budget_falls_back_to_the_default() {
+  local dir state arm armout i
+  # A numerically zero base budget is the same collapse as a junk one, reachable
+  # through a value the digit glob accepts. Unsanitized it yields a deadline and
+  # a ceiling one second past the fork, so the arm gives up almost immediately.
+  dir=$(make_case confirm-base-zero)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=never-advance FM_ARM_CONFIRM_TIMEOUT=00
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -q '^watcher: ' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! grep -q '^watcher: ' "$armout" 2>/dev/null \
+    || fail "an all-zero base budget collapsed the confirmation window: $(cat "$armout")"
+  is_live_non_zombie "$STUB_ARM_PID" \
+    || fail "the arm exited early under an all-zero base budget: $(cat "$armout")"
+  kill -TERM "$STUB_ARM_PID" 2>/dev/null || true
+  wait_for_exit "$STUB_ARM_PID" 80 >/dev/null
+  pass "an all-zero base confirmation budget falls back to the default instead of collapsing"
+}
+
+test_a_zero_padded_ceiling_falls_back_to_the_default() {
+  local dir state arm armout started elapsed status
+  # Unsanitized an all-zero ceiling clamps up to the base budget, which silently
+  # disables extension; the default is three base budgets, so a forever-beating
+  # child must survive at least one extension before the ceiling ends it.
+  dir=$(make_case confirm-ceiling-zero)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  started=$(date +%s)
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=beat-then-healthy FM_STUB_HEALTHY_AT=9999 \
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=00
+  wait_for_exit "$STUB_ARM_PID" 250
+  status=$?
+  elapsed=$(( $(date +%s) - started ))
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "an all-zero ceiling must still terminate the child (status $status)"
+  [ "$elapsed" -ge 5 ] \
+    || fail "an all-zero ceiling disabled extension instead of falling back to the default (${elapsed}s)"
+  [ "$elapsed" -le 15 ] \
+    || fail "an all-zero ceiling did not fall back to three base budgets (${elapsed}s)"
+  grep -q 'reason=confirmation-ceiling' "$state/.watch-cycle-exits.log" \
+    || fail "an all-zero ceiling did not behave as a ceiling"
+  pass "an all-zero confirmation ceiling falls back to the default bound"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
+test_confirmation_extends_for_a_child_that_is_still_advancing
+test_default_budget_confirms_a_watcher_that_starts_past_the_old_budget
+test_confirmation_never_extends_for_a_child_that_shows_no_progress
+test_one_unchanging_progress_fact_grants_at_most_one_extension
+test_the_ceiling_terminates_a_child_that_keeps_progressing
+test_a_child_that_exits_early_is_reported_as_an_exit_not_a_timeout
+test_a_non_numeric_ceiling_falls_back_to_the_default
+test_a_non_numeric_base_budget_falls_back_to_the_default
+test_a_zero_padded_ceiling_falls_back_to_the_default
+test_a_zero_padded_base_budget_falls_back_to_the_default

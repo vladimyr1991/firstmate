@@ -44,6 +44,22 @@
 # so the failure is loud. A live cycle already present means re-arm attaches - do
 # not start a second watcher.
 #
+# Confirmation is bounded, but not rigid. A freshly forked watcher gets
+# FM_ARM_CONFIRM_TIMEOUT seconds to become healthy. When that budget expires the
+# arm grants one further budget for each NEW piece of progress the child itself
+# published - the singleton lock naming THIS child, or a beacon mtime moved past
+# its value at fork - and never past the FM_ARM_CONFIRM_MAX ceiling. A child
+# that published nothing is terminated at the first deadline. A child that
+# progressed and then stalled is terminated one base budget after its LAST new
+# progress fact, usually well short of the ceiling; the ceiling is the separate
+# bound that terminates a child which keeps publishing new facts. It ALWAYS
+# terminates, so extension buys a slow start time and never an unbounded wait.
+# The arm prints nothing until one of the lines above, so its silent worst case
+# is CONFIRM_MAX plus one CONFIRM_TIMEOUT: a clean childless close falls through
+# wait_for_healthy_successor for one further base budget.
+# Both print the same FAILED line above; only the cycle ledger tells them apart,
+# through reason=confirmation-timeout versus reason=confirmation-ceiling.
+#
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
 # arm/watcher identities, timestamps, exit/signal classification, beacon age,
@@ -70,13 +86,37 @@ BEAT="$STATE/.last-watcher-beat"
 # "Fresh" reuses the guard's threshold so there is one definition of liveness.
 GRACE=${FM_GUARD_GRACE:-300}
 # How long to wait for a freshly forked watcher to acquire the lock and beat.
-# Git Bash/MSYS pays a much higher fork cost while the watcher completes its
-# required pre-lock migration, so its bounded default covers that cold start.
-case "${OSTYPE:-}" in
-  msys*|mingw*|cygwin*) ARM_CONFIRM_DEFAULT=30 ;;
-  *) ARM_CONFIRM_DEFAULT=10 ;;
-esac
+# The watcher's required pre-lock migration publishes nothing this arm can see
+# and dominates that cost: measured at up to 22.5s against a real state
+# directory on the migration's repair path, on every platform rather than only
+# on MSYS (docs/verification/supervision.md, "Watcher continuity"). 45s is twice
+# that worst measurement and still an order of magnitude below GRACE, so a
+# watcher confirmed late is still fresh by the guard's definition.
+ARM_CONFIRM_DEFAULT=45
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
+# Sanitized like the ceiling below. Without this a non-numeric override makes
+# every later arithmetic and integer test read it as 0, collapsing the whole
+# confirmation budget to one second instead of failing visibly. The glob
+# rejects non-numeric text before any arithmetic runs; the base-10 conversion
+# then makes a zero-padded value mean what an operator wrote, since $(( ))
+# would otherwise read it as octal, and any numerically zero value falls back.
+case "$CONFIRM_TIMEOUT" in
+  ''|*[!0-9]*) CONFIRM_TIMEOUT=0 ;;
+  *) CONFIRM_TIMEOUT=$(( 10#$CONFIRM_TIMEOUT )) ;;
+esac
+[ "$CONFIRM_TIMEOUT" -gt 0 ] || CONFIRM_TIMEOUT=$ARM_CONFIRM_DEFAULT
+# Hard ceiling on total confirmation wall clock, measured from fork. Progress
+# extends the budget; this ceiling is what keeps extension from becoming an
+# unbounded wait, and it always terminates. A value below the base budget is
+# clamped up to it, disabling extension rather than producing a ceiling under
+# the base budget.
+CONFIRM_MAX=${FM_ARM_CONFIRM_MAX:-}
+case "$CONFIRM_MAX" in
+  ''|*[!0-9]*) CONFIRM_MAX=0 ;;
+  *) CONFIRM_MAX=$(( 10#$CONFIRM_MAX )) ;;
+esac
+[ "$CONFIRM_MAX" -gt 0 ] || CONFIRM_MAX=$(( CONFIRM_TIMEOUT * 3 ))
+[ "$CONFIRM_MAX" -ge "$CONFIRM_TIMEOUT" ] || CONFIRM_MAX=$CONFIRM_TIMEOUT
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
@@ -257,6 +297,16 @@ report_attached() {
 # Give a successor the same bounded confirmation window used for a fresh child.
 # Adapter-owned continuations normally win immediately, but the bound avoids a
 # false failure when process-close delivery and lock publication cross briefly.
+# This intentionally shares CONFIRM_TIMEOUT, so raising the base budget widened
+# this wait along with it. Two paths pay that budget: the attached fallback in
+# attach_and_wait, and an owned child that exits clean without an actionable
+# wake in owned_child_finished. Only an owned child that exits WITH a wake, or
+# with a nonzero status, returns without reaching here. The widening is
+# accepted because both paths are rare: across 847 observed cycles in the
+# primary home ledger the attached path ran 2 times and the owned clean close
+# without a wake ran 0 times. A separate bound for this wait was deliberately
+# not added, because a fifth constant in this mechanism is the arithmetic drift
+# it exists to avoid.
 wait_for_healthy_successor() {
   local deadline
   # date(1) exposes whole seconds. Add one rounding second so a timeout of one
@@ -426,6 +476,33 @@ cleanup_child() {
   fi
 }
 
+# Non-blocking liveness for OUR OWN child, from bash's own job table. kill -0
+# also succeeds on a child that has exited but not been reaped, and granting a
+# confirmation extension to a finished child would defeat the ceiling.
+# fm_pid_alive stays untouched: its other callers inspect processes that are not
+# children of this shell, where jobs does not apply.
+child_running() {
+  [ -n "$child" ] || return 1
+  jobs -r -p | grep -qx "$child"
+}
+
+# Progress THIS child published, printed as an opaque observation token so the
+# caller can tell one progress fact from the next and never extend twice on the
+# same unchanging fact. A foreign live lock holder is not progress: the lock must
+# name this child. A missing or unreadable beacon mtime reads as 0.
+child_progressed() {
+  local lock_pid beat_mtime lock_fact=0
+  lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  if [ -n "$lock_pid" ] && [ "$lock_pid" = "$child" ]; then
+    lock_fact=1
+  fi
+  beat_mtime=$(fm_path_mtime "$BEAT")
+  case "$beat_mtime" in ''|*[!0-9]*) beat_mtime=0 ;; esac
+  [ "$beat_mtime" -gt "$fork_beat_mtime" ] || beat_mtime=0
+  [ "$lock_fact" -eq 1 ] || [ "$beat_mtime" -gt 0 ] || return 1
+  printf 'lock=%s beat=%s\n' "$lock_fact" "$beat_mtime"
+}
+
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
 handle_arm_signal() {
   local signal=$1 rc=$2
@@ -449,6 +526,11 @@ child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
 }
 "$WATCH" >"$child_out" &
 child=$!
+# The beacon's mtime AT FORK. Progress means this child moved the beacon past
+# this value, so a beacon left behind by an earlier watcher can never read as
+# this child's progress.
+fork_beat_mtime=$(fm_path_mtime "$BEAT")
+case "$fork_beat_mtime" in ''|*[!0-9]*) fork_beat_mtime=0 ;; esac
 cycle_begin "$child" started "$(fm_pid_identity "$child" 2>/dev/null || true)"
 child_done=0
 
@@ -510,7 +592,14 @@ owned_child_finished() {
 # until the child gives up. Only then print the honest line.
 # date(1) exposes whole seconds. Keep the configured confirmation budget from
 # collapsing when startup begins just before the next second boundary.
-deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
+confirm_started=$(date +%s)
+deadline=$(( confirm_started + CONFIRM_TIMEOUT + 1 ))
+confirm_ceiling=$(( confirm_started + CONFIRM_MAX + 1 ))
+# A child that never published anything is a startup failure; a child that
+# published something and then stalled ran out of ceiling. The ledger tells them
+# apart, and the printed line does not.
+confirm_reason=confirmation-timeout
+last_progress=
 while :; do
   if healthy_watcher; then
     if [ "$HEALTHY_PID" = "$child" ]; then
@@ -528,14 +617,35 @@ while :; do
     owned_child_finished "$rc"
     exit $?
   fi
-  if [ "$child_done" -eq 0 ] && ! fm_pid_alive "$child"; then
+  if [ "$child_done" -eq 0 ] && ! child_running; then
     wait "$child"
     rc=$?
     child_done=1
     owned_child_finished "$rc"
     exit $?
   fi
-  [ "$(date +%s)" -ge "$deadline" ] && break
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    # Extend only for a child that is still running and has published a NEW
+    # progress fact since the last extension, and never past the ceiling.
+    # Either bound alone ends this loop; neither is redundant.
+    progress=$(child_progressed) || progress=
+    if [ -n "$progress" ] \
+      && [ "$progress" != "$last_progress" ] \
+      && [ "$deadline" -lt "$confirm_ceiling" ] \
+      && child_running; then
+      last_progress=$progress
+      confirm_reason=confirmation-ceiling
+      deadline=$(( deadline + CONFIRM_TIMEOUT ))
+      # This clamp is the one that can actually fire: an extension adds a whole
+      # further base budget, which genuinely overshoots the ceiling whenever the
+      # remaining ceiling is shorter than that budget. The initial deadline
+      # cannot cross the ceiling, because CONFIRM_MAX is clamped up to
+      # CONFIRM_TIMEOUT above and both bounds take the same offset.
+      [ "$deadline" -le "$confirm_ceiling" ] || deadline=$confirm_ceiling
+    else
+      break
+    fi
+  fi
   sleep 0.2
 done
 
@@ -544,6 +654,6 @@ print_watch_output "$child_out"
 cleanup_child
 wait "$child" 2>/dev/null
 rc=$?
-cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
+cycle_log_append "$rc" "$(cycle_signal_name "$rc")" "$confirm_reason" none
 echo "watcher: FAILED - no live watcher with a fresh beacon"
 exit 1

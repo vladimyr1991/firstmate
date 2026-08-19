@@ -255,12 +255,39 @@ Observed guarantee: after ordinary `session_shutdown` for `/new`, `/resume`, and
 Stale prior-generation tool callbacks could not mutate the active child, repeated transitions kept exactly one live arm cycle, and terminal `quit` still refused late rearm.
 Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner; other primary harnesses are not applicable because they do not use this Pi extension lifecycle.
 
+### Watcher pre-lock startup cost
+
+`bin/fm-watch-arm.sh`'s confirmation budget must exceed the watcher's pre-lock startup, because the watcher publishes no lock, no identity, and no beacon until `bin/fm-pr-check-migrate.sh --checks-safe` has cleared.
+That cost scales with the number of entries in `state/`, so it was measured against a copy of a real 1472-entry state directory on 2026-08-19, on Darwin 25.5.0 with `sysctl -n hw.ncpu` reporting 8 and a one-minute load average of 1.98.
+Each run used its own `cp -a` copy in a throwaway `FM_STATE_OVERRIDE` lab, forked the watcher with `FM_POLL=999999 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999`, and timed fork to the first appearance of `state/.last-watcher-beat`, which is the earliest moment the arm's health predicate can succeed:
+
+```sh
+env FM_ROOT_OVERRIDE="$lab/root" FM_STATE_OVERRIDE="$lab/copy" \
+  FM_POLL=999999 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+  bin/fm-watch.sh >/dev/null 2>&1 &
+while [ ! -e "$lab/copy/.last-watcher-beat" ]; do sleep 0.05; done
+```
+
+Observed fork-to-first-beacon:
+
+```text
+empty state, first run:                                     0.56 s
+live state copy, first-ever run (migration repair path):    8.19 s
+live state copy, second copy:                               8.64 s
+live state copy, third copy:                                8.19 s
+```
+
+An idle host therefore leaves only about 1.8 seconds of margin under the former 10-second budget, and the same measurement reached 22.5 seconds on the migration's repair path under synthetic load during the preceding investigation.
+The base default is 45 seconds: twice that worst measurement, and an order of magnitude below the 300-second `FM_GUARD_GRACE`, so a watcher confirmed late is still fresh by the guard's definition.
+`FM_ARM_CONFIRM_MAX` caps one arm's total confirmation wall clock at three base budgets and always terminates.
+
 Deterministic entry points:
 
 ```sh
 tests/fm-pi-watch-extension.test.sh
 tests/fm-pi-primary-types.test.sh
 tests/fm-watcher-lock.test.sh
+tests/fm-watch-arm.test.sh
 tests/fm-subagent-pretool-check.test.sh
 tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
