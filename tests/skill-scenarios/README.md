@@ -5,12 +5,16 @@ But a skill's purpose is to make an agent decide correctly, and decisions are te
 These fixtures compare the DECISIONS a skill produces, before and after it is rewritten, which is the repository's own test rule applied to instructions.
 
 Each `<skill>.md` here holds numbered scenarios for one skill in `.agents/skills/`.
-Every scenario states a situation, asks one question the skill is supposed to settle, records the answer derived from the skill text **as it stood before the edit**, and cites the line that answer came from.
+Every scenario states a situation, asks one question the skill is supposed to settle, records the answer the skill is expected to produce, and cites the line that answer came from.
 
-## Why the answers are derived from the original
+## Which text the answers come from
 
 A scenario answered from the rewritten text proves only that the rewritten text is self-consistent.
-The fixture is a regression baseline, so its answers must predate the change they are meant to catch, exactly as a behavioral test is written against the behavior being preserved rather than the code being written.
+A compaction fixture is a regression baseline, so its answers must predate the change they are meant to catch, exactly as a behavioral test is written against the behavior being preserved rather than the code being written.
+
+A fixture written for a question the pre-edit skill never settled is the one exception, because there is no earlier answer to record.
+Those scenarios record the answer the repaired text owes, and the control run against the pre-edit skill is expected to answer `NOT STATED` for them rather than to agree.
+State in that fixture's own opening which of its scenarios are of this kind, so a control mismatch reads as the gap closing rather than as damage the edit caused.
 
 ## The blind re-answer
 

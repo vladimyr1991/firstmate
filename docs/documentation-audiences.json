@@ -444,6 +444,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "tests/skill-scenarios/notion-board.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "tests/skill-scenarios/secondmate-provisioning.md",
       "audience": "maintainer-verification"
     }
