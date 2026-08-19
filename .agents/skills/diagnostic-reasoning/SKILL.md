@@ -3,7 +3,7 @@ name: diagnostic-reasoning
 description: >-
   Agent-only procedure for diagnosing reported bugs.
   Use before scoping a reported bug and before acting on a diagnostic report.
-  Owns end-user-aligned reproduction, causal separation, divergent-path and history inspection, counterfactual testing, and disconfirming evidence.
+  Owns end-user-aligned reproduction, the irreproducible field report, causal separation, divergent-path and history inspection, counterfactual testing, and disconfirming evidence.
 user-invocable: false
 metadata:
   internal: true
@@ -32,6 +32,13 @@ Separate these three facts explicitly:
 Do not collapse those facts into one label.
 A masking condition may explain why a fault appears only sometimes without being the initiating cause, and the visible symptom may be several layers downstream from both.
 
+A report from a real device that reproduces in no environment available to the investigation is a finding in itself, not the absence of one.
+This applies only once the reproduction required above has actually been attempted and the symptom did not appear; it never stands in for attempting it.
+Treat that outcome as a question about the reporter's environment before continuing to hunt a mechanism in the code, because it is the case where the masking condition is not merely why the fault appears sometimes but is the whole explanation.
+Enumerate the per-device operating-system and platform settings that alter motion, contrast, colour, text size, network use, or power behavior - reduced motion, increased contrast, forced colours, text scaling, data saver, and battery saver are instances rather than the whole class, and the reporter's platform states its own current membership in its accessibility and battery settings surfaces.
+Establish the reporter's actual values for the settings whose effect matches the visible symptom, and obtain them from the reporter through the channel that already carries the report rather than inferring them.
+That question is the cheap first move rather than a last resort: a local environment can emulate such a setting to test a hypothesis, but no emulation establishes what the reporter's device is set to.
+
 ## Test the causal explanation
 
 Inspect the failing path and a proven path where the intended behavior is known to work.
@@ -46,7 +53,7 @@ Compare the final explanation against the proven path and show why the proposed 
 
 ## Scope and act on the result
 
-A diagnosis brief should ask for the reproduction, trigger/mask/symptom separation, divergent and proven path comparison, relevant history, smallest counterfactual, and disconfirming evidence in the report.
+A diagnosis brief should ask for the reproduction, trigger/mask/symptom separation, divergent and proven path comparison, relevant history, smallest counterfactual, disconfirming evidence, and, when the report came from a real device and the reproduction came back clean, the reporter's relevant environment settings in the report.
 A diagnostic report should distinguish observed facts from hypotheses and state any unresolved uncertainty that could change the recommended scope.
 Before acting on the report, verify that its claimed cause explains the end-user reproduction and the proven path without relying on an untested masking condition.
 If a load-bearing element is missing, route a focused follow-up investigation instead of treating confidence or implementation detail as proof.
