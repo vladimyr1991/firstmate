@@ -126,6 +126,7 @@ Write that line on every brief, using `linked_cards: none` when `active_count` i
 Only a brief with no `linked_cards` line at all leaves the sweep unarmed; `linked_cards: none` arms it exactly like a populated list, and on an idle fleet every card that sweep returns is then a divergence.
 
 `active_count` and `linked_cards` must correspond, and that correspondence is the PM's check on the capacity block it was handed: the list names exactly the tasks the count counted, so a list holding a different number of card URLs than `active_count` is a malformed block rather than a number to interpret.
+That check runs only on a brief that carries a `linked_cards` line, so a brief missing the line entirely is never a malformed block: it is the unarmed-sweep case above, where only the sweep's report is skipped while the read still stands for eligibility and the scan dispatches normally.
 The PM never resolves that contradiction: it sees only what the brief says, has no view of live fleet state, and so cannot tell which figure is the true one or recompute either.
 On a block that contradicts itself it selects no card, dispatches nothing, leaves every eligible card at `Новая` for the next scan, and reports the contradiction with both figures and the list quoted, in its scout report and on the rolling status page, so firstmate can fix the brief that produced them.
 That report is never one of the silent cycles.
@@ -216,9 +217,8 @@ Every scan that runs it re-detects an unresolved divergence, which is deliberate
 Two pages, both found by exact title with `search` and created once if absent, both under `🎯 Project Tracking Hub`:
 
 - `📊 PM — текущий спринт` - the rolling status page. Always `replace_content`, never append, so its block count stays flat. Holds: what is under way, what is waiting on the captain, what landed this sprint, what the PM could not take and why, any divergence the status-sync section told it to report, the failed check of any cycle the witnessed-read section ruled CHECK FAILED, and the contradiction of any malformed capacity block, written out as both figures and the quoted `linked_cards` list.
-  Rewrite it only on a cycle that has something for it: a card dispatched or moved, a card the PM could not take, a divergence, a malformed capacity block, a CHECK FAILED, or a stale notice this cycle cleared.
-  A notice standing on the page clears only on a cycle that answered the question it raised, because unanswered is not resolved and the notice stands: a CHECK FAILED clears on a cycle that came back witnessed, a malformed capacity block clears on a cycle whose capacity block is well formed, and a divergence clears only when the orphaned-status sweep ran armed and complete and returned that card healthy - never when that sweep was skipped for a missing `linked_cards` line, ruled unknown-not-orphaned on an incomplete cross-home snapshot, or was suppressed by a malformed capacity block.
-  A witnessed cycle that found nothing and changed nothing, with no such stale notice cleared, leaves this page exactly as it is, because rewriting it on every scheduled cycle spends the captain's block budget restating an unchanged page.
+  Rewrite it only on a cycle that has something for it: a card dispatched or moved, a card the PM could not take, a divergence, a malformed capacity block, or a CHECK FAILED.
+  A witnessed cycle that found nothing and changed nothing leaves this page exactly as it is, because rewriting it on every scheduled cycle spends the captain's block budget restating an unchanged page.
 - `🗄️ Архив задач` - one line per finished task, appended. This is the durable history that lets a card be recycled.
 
 For every project's card, write the result into its body - what changed, the implementing branch name, landing commit hash, PR URL, and CI run - rather than creating a page per task.
@@ -278,7 +278,7 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
 3. **Found nothing in a witnessed cycle? End the turn silently.**
    Silently means no captain-facing update and no board write; the scout report and the `done:` status line the PM owes as an ordinary fleet worker are always written, whatever the cycle found.
    Around eleven checks run each weekday, so reporting "nothing new" every time trains the captain to stop reading reports and hides the one that matters.
-   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched, a CHECK FAILED cycle is never one of the silent ones, and neither is a cycle that cleared a stale notice standing on the rolling status page.
+   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched, and a CHECK FAILED cycle is never one of the silent ones.
 
 ## When a card is unclear
 
