@@ -97,10 +97,10 @@ The loop, per surface under test:
 2. `snapshot` to get the interactive elements and their uids - this is what makes the pass adaptive rather than a fixed script.
 3. For **every element the task added or changed**: `click` / `fill` / `press` it and observe what actually happened. A button that produces no navigation, no request, and no state change is a defect regardless of how it looks.
 4. `console` and `network` after the interactions - a clean-looking page throwing a `TypeError` on click, or firing a request that 404s, fails.
-5. `screenshot` the surface at desktop width, then take the mobile viewport with `emulate --viewport "375x812x3,mobile,touch"` and screenshot again.
+5. Take the desktop viewport with `emulate --viewport "1280x800x1"` and `screenshot` the surface, then take the mobile viewport with `emulate --viewport "375x812x3,mobile,touch"` and screenshot again.
 
 **Verify the viewport you got, never the one you asked for.**
-Read it back before the mobile screenshot and put the number in your report:
+Read it back after each of those `emulate` calls and before the screenshot that call sets up, and put both numbers in your report:
 
 ```sh
 chrome-devtools-axi eval "() => { return JSON.stringify({iw: innerWidth, dpr: devicePixelRatio}) }"
