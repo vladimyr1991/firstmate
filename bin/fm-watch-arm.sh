@@ -96,15 +96,26 @@ ARM_CONFIRM_DEFAULT=45
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
 # Sanitized like the ceiling below. Without this a non-numeric override makes
 # every later arithmetic and integer test read it as 0, collapsing the whole
-# confirmation budget to one second instead of failing visibly.
-case "$CONFIRM_TIMEOUT" in ''|*[!0-9]*|0) CONFIRM_TIMEOUT=$ARM_CONFIRM_DEFAULT ;; esac
+# confirmation budget to one second instead of failing visibly. The glob
+# rejects non-numeric text before any arithmetic runs; the base-10 conversion
+# then makes a zero-padded value mean what an operator wrote, since $(( ))
+# would otherwise read it as octal, and any numerically zero value falls back.
+case "$CONFIRM_TIMEOUT" in
+  ''|*[!0-9]*) CONFIRM_TIMEOUT=0 ;;
+  *) CONFIRM_TIMEOUT=$(( 10#$CONFIRM_TIMEOUT )) ;;
+esac
+[ "$CONFIRM_TIMEOUT" -gt 0 ] || CONFIRM_TIMEOUT=$ARM_CONFIRM_DEFAULT
 # Hard ceiling on total confirmation wall clock, measured from fork. Progress
 # extends the budget; this ceiling is what keeps extension from becoming an
 # unbounded wait, and it always terminates. A value below the base budget is
 # clamped up to it, disabling extension rather than producing a ceiling under
 # the base budget.
 CONFIRM_MAX=${FM_ARM_CONFIRM_MAX:-}
-case "$CONFIRM_MAX" in ''|*[!0-9]*|0) CONFIRM_MAX=$(( CONFIRM_TIMEOUT * 3 )) ;; esac
+case "$CONFIRM_MAX" in
+  ''|*[!0-9]*) CONFIRM_MAX=0 ;;
+  *) CONFIRM_MAX=$(( 10#$CONFIRM_MAX )) ;;
+esac
+[ "$CONFIRM_MAX" -gt 0 ] || CONFIRM_MAX=$(( CONFIRM_TIMEOUT * 3 ))
 [ "$CONFIRM_MAX" -ge "$CONFIRM_TIMEOUT" ] || CONFIRM_MAX=$CONFIRM_TIMEOUT
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}

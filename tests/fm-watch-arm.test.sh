@@ -364,6 +364,11 @@ test_confirmation_never_extends_for_a_child_that_shows_no_progress() {
 
 test_one_unchanging_progress_fact_grants_at_most_one_extension() {
   local dir state arm armout started elapsed status
+  # The mirror of the ceiling case: here the ceiling is held far out of reach,
+  # so only the fresh-fact requirement can end the loop. The child publishes the
+  # lock once and then stalls, so correct behaviour grants exactly one extension
+  # and terminates at about 5s, while an implementation that extended on a stale
+  # fact would keep going to the ceiling at about 61s.
   dir=$(make_case confirm-single-fact)
   state="$dir/state"
   arm=$(make_stub_arm_dir "$dir")
@@ -371,13 +376,13 @@ test_one_unchanging_progress_fact_grants_at_most_one_extension() {
   started=$(date +%s)
   run_stub_arm "$arm" "$state" "$armout" \
     FM_STUB_MODE=lock-then-stall \
-    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=8
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=60
   wait_for_exit "$STUB_ARM_PID" 250
   status=$?
   elapsed=$(( $(date +%s) - started ))
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
     || fail "a child that stalled after one progress fact must be terminated (status $status)"
-  [ "$elapsed" -le 12 ] \
+  [ "$elapsed" -le 15 ] \
     || fail "a single unchanging progress fact kept extending: terminated only after ${elapsed}s"
   grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
     || fail "the stalled-child failure line changed: $(cat "$armout")"
@@ -497,6 +502,59 @@ test_a_non_numeric_ceiling_falls_back_to_the_default() {
   pass "a non-numeric confirmation ceiling falls back to the default bound"
 }
 
+test_a_zero_padded_base_budget_falls_back_to_the_default() {
+  local dir state arm armout i
+  # A numerically zero base budget is the same collapse as a junk one, reachable
+  # through a value the digit glob accepts. Unsanitized it yields a deadline and
+  # a ceiling one second past the fork, so the arm gives up almost immediately.
+  dir=$(make_case confirm-base-zero)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=never-advance FM_ARM_CONFIRM_TIMEOUT=00
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -q '^watcher: ' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! grep -q '^watcher: ' "$armout" 2>/dev/null \
+    || fail "an all-zero base budget collapsed the confirmation window: $(cat "$armout")"
+  is_live_non_zombie "$STUB_ARM_PID" \
+    || fail "the arm exited early under an all-zero base budget: $(cat "$armout")"
+  kill -TERM "$STUB_ARM_PID" 2>/dev/null || true
+  wait_for_exit "$STUB_ARM_PID" 80 >/dev/null
+  pass "an all-zero base confirmation budget falls back to the default instead of collapsing"
+}
+
+test_a_zero_padded_ceiling_falls_back_to_the_default() {
+  local dir state arm armout started elapsed status
+  # Unsanitized an all-zero ceiling clamps up to the base budget, which silently
+  # disables extension; the default is three base budgets, so a forever-beating
+  # child must survive at least one extension before the ceiling ends it.
+  dir=$(make_case confirm-ceiling-zero)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  started=$(date +%s)
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=beat-then-healthy FM_STUB_HEALTHY_AT=9999 \
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_CONFIRM_MAX=00
+  wait_for_exit "$STUB_ARM_PID" 250
+  status=$?
+  elapsed=$(( $(date +%s) - started ))
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "an all-zero ceiling must still terminate the child (status $status)"
+  [ "$elapsed" -ge 5 ] \
+    || fail "an all-zero ceiling disabled extension instead of falling back to the default (${elapsed}s)"
+  [ "$elapsed" -le 15 ] \
+    || fail "an all-zero ceiling did not fall back to three base budgets (${elapsed}s)"
+  grep -q 'reason=confirmation-ceiling' "$state/.watch-cycle-exits.log" \
+    || fail "an all-zero ceiling did not behave as a ceiling"
+  pass "an all-zero confirmation ceiling falls back to the default bound"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
@@ -508,3 +566,5 @@ test_the_ceiling_terminates_a_child_that_keeps_progressing
 test_a_child_that_exits_early_is_reported_as_an_exit_not_a_timeout
 test_a_non_numeric_ceiling_falls_back_to_the_default
 test_a_non_numeric_base_budget_falls_back_to_the_default
+test_a_zero_padded_ceiling_falls_back_to_the_default
+test_a_zero_padded_base_budget_falls_back_to_the_default
