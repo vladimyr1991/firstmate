@@ -115,10 +115,16 @@ exit 1
 SH
       ;;
     slow-actionable)
+      # The sleep must outlast the arm's own base confirmation budget
+      # (FM_ARM_CONFIRM_TIMEOUT, 45s), so the two concurrent firings genuinely
+      # overlap for as long as a real slow-but-working arm would occupy the
+      # single-flight owner slot. The parent record proves the hook ran the arm
+      # in its own foreground process tree rather than backgrounding it.
       cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 echo "$$" >> "$FM_HOME/state/arm-ran"
-sleep 2
+ps -p "$PPID" -o args= >> "$FM_HOME/state/arm-parent"
+sleep 50
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 printf 'signal: task.status done: slow fixture\n'
 exit 0
@@ -602,7 +608,9 @@ test_single_flight_admits_exactly_one_owner() {
   [ "$count" -eq 1 ] || fail "concurrent firings must foreground exactly one arm, saw $count"
   { [ "$rc1" = 2 ] && [ "$rc2" = 0 ]; } || { [ "$rc1" = 0 ] && [ "$rc2" = 2 ]; } \
     || fail "exactly one firing must translate the close (rc 2) and the other must no-op (rc 0), got rc1=$rc1 rc2=$rc2"
-  pass "auto-arm: concurrent firings admit one owner and one rewake translation"
+  grep -q 'fm-claude-stop-autoarm.sh' "$dir/state/arm-parent" \
+    || fail "the arm's parent was not the hook that invoked it, so it was not run in the hook's foreground process tree: $(cat "$dir/state/arm-parent" 2>/dev/null)"
+  pass "auto-arm: concurrent firings admit one owner and one rewake translation, with the arm in the hook's own foreground tree"
 }
 
 test_need_vanished_mid_cycle_closes_quietly() {

@@ -262,7 +262,9 @@ That cost scales with the number of entries in `state/`, so it was measured agai
 Each run used its own `cp -a` copy in a throwaway `FM_STATE_OVERRIDE` lab, forked the watcher with `FM_POLL=999999 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999`, and timed fork to the first appearance of `state/.last-watcher-beat`, which is the earliest moment the arm's health predicate can succeed:
 
 ```sh
-env FM_ROOT_OVERRIDE="$lab/root" FM_STATE_OVERRIDE="$lab/copy"   FM_POLL=999999 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999   bin/fm-watch.sh >/dev/null 2>&1 &
+env FM_ROOT_OVERRIDE="$lab/root" FM_STATE_OVERRIDE="$lab/copy" \
+  FM_POLL=999999 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+  bin/fm-watch.sh >/dev/null 2>&1 &
 while [ ! -e "$lab/copy/.last-watcher-beat" ]; do sleep 0.05; done
 ```
 
