@@ -287,11 +287,15 @@ report_attached() {
 # Adapter-owned continuations normally win immediately, but the bound avoids a
 # false failure when process-close delivery and lock publication cross briefly.
 # This intentionally shares CONFIRM_TIMEOUT, so raising the base budget widened
-# this wait along with it. That widening is accepted: it only delays the
-# attached fallback path, which ran 2 times in 847 observed cycles, while an
-# owned child that exits with a wake returns without ever reaching here. A
-# separate bound for this wait was deliberately not added, because a fifth
-# constant in this mechanism is the arithmetic drift it exists to avoid.
+# this wait along with it. Two paths pay that budget: the attached fallback in
+# attach_and_wait, and an owned child that exits clean without an actionable
+# wake in owned_child_finished. Only an owned child that exits WITH a wake, or
+# with a nonzero status, returns without reaching here. The widening is
+# accepted because both paths are rare: across 847 observed cycles in the
+# primary home ledger the attached path ran 2 times and the owned clean close
+# without a wake ran 0 times. A separate bound for this wait was deliberately
+# not added, because a fifth constant in this mechanism is the arithmetic drift
+# it exists to avoid.
 wait_for_healthy_successor() {
   local deadline
   # date(1) exposes whole seconds. Add one rounding second so a timeout of one

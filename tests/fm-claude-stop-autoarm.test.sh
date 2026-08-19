@@ -115,16 +115,22 @@ exit 1
 SH
       ;;
     slow-actionable)
-      # The sleep must outlast the arm's own base confirmation budget
-      # (FM_ARM_CONFIRM_TIMEOUT, 45s), so the two concurrent firings genuinely
-      # overlap for as long as a real slow-but-working arm would occupy the
-      # single-flight owner slot. The parent record proves the hook ran the arm
-      # in its own foreground process tree rather than backgrounding it.
+      # This arm occupies the single-flight owner slot until the case releases
+      # it, so the overlap the case needs - the losing firing reaching its
+      # owner-lock check while the owner is still inside its arm - is a
+      # handshake rather than a timing guess. The parent record names the pid
+      # and argv of the process that forked this arm, so the case can prove
+      # which firing owns it and that the firing was still running while the
+      # arm blocked. The iteration cap is only a runaway guard.
       cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 echo "$$" >> "$FM_HOME/state/arm-ran"
-ps -p "$PPID" -o args= >> "$FM_HOME/state/arm-parent"
-sleep 50
+printf '%s\t%s\n' "$PPID" "$(ps -p "$PPID" -o args= 2>/dev/null)" >> "$FM_HOME/state/arm-parent"
+i=0
+while [ ! -e "$FM_HOME/state/arm-release" ] && [ "$i" -lt 600 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 printf 'signal: task.status done: slow fixture\n'
 exit 0
@@ -589,16 +595,38 @@ test_arms_for_x_mode_poll_need_without_inflight() {
 }
 
 test_single_flight_admits_exactly_one_owner() {
-  local dir rc1 rc2 count
+  local dir rc1 rc2 count owner hp1 hp2
   dir=$(make_primary_dir "$TMP_ROOT/single-flight")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" slow-actionable
+  # The arm blocks until released, so the losing firing provably reaches its
+  # owner-lock check while the owner is still inside its arm. While it blocks,
+  # sample which firings are still running: a firing that ran its arm in the
+  # foreground cannot have returned yet. The settle wait before that sample is
+  # what makes the sample discriminating rather than a race - a firing that
+  # backgrounded its arm has no blocking work left (the retry loop has no
+  # sleeps and at most FM_CLAUDE_AUTOARM_ATTEMPTS greps), so it finishes in
+  # milliseconds and cannot still be running two seconds later.
   FM_HOME="$dir" "$FAKE_CLAUDE" -c '
     printf "%s\n" "$$" > "$FM_HOME/state/.lock"
     printf "%s\n" "{\"session_id\":\"s\"}" | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>"$FM_HOME/state/err1" &
     p1=$!
     printf "%s\n" "{\"session_id\":\"s\"}" | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>"$FM_HOME/state/err2" &
     p2=$!
+    printf "%s\t%s\n" "$p1" "$p2" > "$FM_HOME/state/hook-pids"
+    i=0
+    while [ ! -s "$FM_HOME/state/arm-parent" ] && [ "$i" -lt 300 ]; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    sleep 2
+    for h in "$p1" "$p2"; do
+      case "$(ps -p "$h" -o stat= 2>/dev/null)" in
+        ""|Z*) ;;
+        *) printf "%s\n" "$h" >> "$FM_HOME/state/hooks-running-while-arm-blocked" ;;
+      esac
+    done
+    : > "$FM_HOME/state/arm-release"
     wait "$p1"; echo $? > "$FM_HOME/state/rc1"
     wait "$p2"; echo $? > "$FM_HOME/state/rc2"
   '
@@ -608,9 +636,15 @@ test_single_flight_admits_exactly_one_owner() {
   [ "$count" -eq 1 ] || fail "concurrent firings must foreground exactly one arm, saw $count"
   { [ "$rc1" = 2 ] && [ "$rc2" = 0 ]; } || { [ "$rc1" = 0 ] && [ "$rc2" = 2 ]; } \
     || fail "exactly one firing must translate the close (rc 2) and the other must no-op (rc 0), got rc1=$rc1 rc2=$rc2"
+  IFS=$'\t' read -r hp1 hp2 < "$dir/state/hook-pids"
+  owner=$(cut -f1 "$dir/state/arm-parent")
   grep -q 'fm-claude-stop-autoarm.sh' "$dir/state/arm-parent" \
-    || fail "the arm's parent was not the hook that invoked it, so it was not run in the hook's foreground process tree: $(cat "$dir/state/arm-parent" 2>/dev/null)"
-  pass "auto-arm: concurrent firings admit one owner and one rewake translation, with the arm in the hook's own foreground tree"
+    || fail "the arm's parent was not the hook that invoked it: $(cat "$dir/state/arm-parent" 2>/dev/null)"
+  { [ "$owner" = "$hp1" ] || [ "$owner" = "$hp2" ]; } \
+    || fail "the arm's parent pid $owner was neither firing ($hp1, $hp2)"
+  grep -qx "$owner" "$dir/state/hooks-running-while-arm-blocked" 2>/dev/null \
+    || fail "the firing that forked the arm had already returned while that arm was still blocked, so it did not run the arm in its own foreground"
+  pass "auto-arm: concurrent firings admit one owner and one rewake translation, and the owner stays blocked in the arm it forked"
 }
 
 test_need_vanished_mid_cycle_closes_quietly() {
