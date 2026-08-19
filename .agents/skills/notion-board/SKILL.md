@@ -208,6 +208,8 @@ A `truncated` of true with homes reading `cross-home read deadline reached` answ
 A returned card is healthy and needs no mention only when that list names it, because the list holds exactly the cards a non-terminal task carries an active `notion_page=` link to.
 A returned card the list does not name is a divergence and is reported exactly as above, whether no link points at it at all or its only live link is held by a task that already reached a terminal status without being recycled.
 Bare link presence is not the test: `bin/fm-notion-link.sh` retires a link only on `--archive` at recycle step 3 below, so a task that ended without being recycled leaves an active `notion_page=` behind and its card is orphaned exactly like an unlinked one.
+A brief whose capacity block is malformed, in the sense "What the PM may take" defines, hands this sweep a list that may be short by as many entries as the contradiction implies, so its verdict is not evaluated on that scan.
+It reports unknown-not-orphaned for every card it returns that the list does not name and reports no divergence from this sweep at all, exactly as an incomplete cross-home snapshot rules, and the next scan reports normally once the brief's two figures correspond.
 This sweep is read-only detection: never change such a card's `Status`, never dispatch work for it, and never treat it as an eligible card, whatever its content says.
 Every scan that runs it re-detects an unresolved divergence, which is deliberately re-reported every such cycle until firstmate acts on it; never suppress a repeat because an earlier scan already named the card.
 
