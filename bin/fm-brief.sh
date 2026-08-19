@@ -510,7 +510,9 @@ fi
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
 BRANCH_CMD="git checkout -b fm/$ID"
-SUPERSEDED_PR_NOTE="If the change you are shipping reaches the default branch through another PR while yours is still open, your branch is superseded rather than merely behind: never force it onto that landed state. Close your PR as superseded, and when part of your work is still unique, ship only that remainder from a fresh branch cut from the updated default branch."
+SUPERSEDED_PR_NOTE="If the change you are shipping reaches the default branch through another PR while yours is still open, your branch is superseded rather than merely behind: never force it onto that landed state."
+SUPERSEDED_PR_OWNED_ACTION="Close your PR as superseded, and when part of your work is still unique, ship only that remainder from a fresh branch cut from the updated default branch."
+SUPERSEDED_PR_PIPELINE_ACTION="The pipeline opened that PR and owns the branch while a run is active, so report the supersession to firstmate (rule 6) and let firstmate decide, rather than closing the PR or cutting a fresh branch yourself."
 JOB_GREEN_NOTE="Job-green is not run-green: judge checks green on the checks your own branch is answerable for, and when the run as a whole is red while every failure is attributable outside your branch diff, report that job-level result with its attribution evidence, rather than waiting for a green run that will not come or calling the run green. That exception holds only when you can name which failures sit outside your own diff and why, so a red you cannot attribute that way is a blocking red and this is never a licence to land over red."
 case "$MODE" in
   direct-PR)
@@ -524,6 +526,7 @@ The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 $SUPERSEDED_PR_NOTE
+$SUPERSEDED_PR_OWNED_ACTION
 EOF
     ;;
   local-only)
@@ -545,9 +548,12 @@ Only firstmate can spawn the independent browser evaluator, so that key stays op
 To land: merge \`fm/$ID\` -> \`develop\` -> \`staging\`, push both branches, and watch CI to a final result.
 If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked [key=staging-ci-red]: {the failing run}\` and stop.
 $JOB_GREEN_NOTE
-On this path a red attributed that way is the only red the keyed \`blocked [key=staging-ci-red]\` stop above yields to: append the attribution as its own status line, then close with the keyed staging line below, and treat every other red as the blocking red that stops you at that keyed form.
+On this path a red attributed that way is the only red you may close over: append the attribution as its own status line, then either close with the keyed job-green line below, or take either remedy the red-CI rule above already gives you, stating the attribution whichever you take.
+Every other red still falls to that rule unchanged, both of its remedies intact.
 Close with the keyed line, never free prose:
    \`done [key=staging]: staging=<sha> ci=<run-id> result=green\`
+When you close over an attributed red instead, keep the same keyed shape and never claim the run was green:
+   \`done [key=staging]: staging=<sha> ci=<run-id> result=job-green attribution={which jobs are red and why they sit outside this diff}\`
 Tagging or releasing \`main\` is never yours: it needs the captain's current explicit word every time, obtained through firstmate (rule 6).
 EOF
     else
@@ -572,8 +578,9 @@ Delivery contract: mode=no-mistakes
 **\`done:\` on a no-mistakes ship task means a real PR exists with checks green (or the CI-cannot-run exception below) - a local commit plus local lint/test checks is NOT done, even if every local check passes.**
 CI-cannot-run exception: when the forge reports, at the moment you are about to write the \`done:\` line rather than when the task started, that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as \`done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head\`. That absence is a point-in-time observation about this PR right now, never a standing property of the project, so re-check it before you write the line. Never report absent checks as green checks.
 $JOB_GREEN_NOTE
-On this path that job-level report is the closing line itself, written as \`done: PR {url} - {job} green; run red on {failures} attributable outside this diff: {evidence}\`.
+On this path that job-level report is the closing line itself, written as \`done: PR {url} - {job} green; run red on {failures} attributable outside this diff: {evidence}; no-mistakes run {run-id} still active, not terminal\`, so the run you leave in flight stays visible to firstmate rather than reading as a task that finished clean.
 $SUPERSEDED_PR_NOTE
+$SUPERSEDED_PR_PIPELINE_ACTION
 You report twice on this task, and only the second report is completion.
 The first is a HANDOFF, not a finish: when the work is implemented and committed on your branch, append \`done: implemented and committed; ready for /no-mistakes\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.

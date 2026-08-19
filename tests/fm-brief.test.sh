@@ -1070,17 +1070,31 @@ test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" plc-scout some-proj --scout >/dev/null 2>&1 \
     || fail "scout scaffold for the PR-lifetime contracts exited non-zero"
 
-  # Supersession reaches both PR-bearing modes, with the no-force instruction and
-  # the fresh-branch remedy both intact.
+  # Supersession reaches both PR-bearing modes, with the no-force instruction
+  # intact. Only direct-PR owns its PR, so only there does the note tell the
+  # worker to close it and re-cut a branch; under no-mistakes the pipeline holds
+  # that custody, so the same situation routes to firstmate instead.
   for id in plc-nm plc-dpr; do
     brief="$home/data/$id/brief.md"
     assert_grep "your branch is superseded rather than merely behind" "$brief" \
       "$id: PR brief lost the supersession contract"
     assert_grep "never force it onto that landed state" "$brief" \
       "$id: supersession contract lost its no-force instruction"
-    assert_grep "ship only that remainder from a fresh branch cut from the updated default branch" "$brief" \
-      "$id: supersession contract lost the fresh-branch remedy for unique work"
   done
+  brief="$home/data/plc-dpr/brief.md"
+  assert_grep "Close your PR as superseded" "$brief" \
+    "direct-PR lost the close-as-superseded action it owns"
+  assert_grep "ship only that remainder from a fresh branch cut from the updated default branch" "$brief" \
+    "direct-PR supersession contract lost the fresh-branch remedy for unique work"
+  brief="$home/data/plc-nm/brief.md"
+  assert_grep "report the supersession to firstmate (rule 6) and let firstmate decide" "$brief" \
+    "no-mistakes supersession did not route the decision to firstmate"
+  assert_grep "rather than closing the PR or cutting a fresh branch yourself" "$brief" \
+    "no-mistakes supersession did not forbid acting on the pipeline-owned PR and branch"
+  assert_no_grep "Close your PR as superseded" "$brief" \
+    "no-mistakes supersession still tells the worker to close a PR the pipeline owns"
+  assert_no_grep "ship only that remainder from a fresh branch cut from the updated default branch" "$brief" \
+    "no-mistakes supersession still tells the worker to cut a branch while a run owns it"
   for id in plc-lo plc-lo-sa plc-scout; do
     assert_no_grep "your branch is superseded rather than merely behind" "$home/data/$id/brief.md" \
       "$id: the supersession contract leaked into a scaffold that raises no PR"
@@ -1106,22 +1120,37 @@ test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
       "$id: the job-green case lost its prohibition on landing over red"
   done
   # The staging path keeps its own red rule and keyed lines: the exception sits
-  # between them rather than replacing either, and it names the rule it excepts
-  # rather than pointing at whichever line happens to sit above it.
+  # between them rather than replacing either. The red-CI rule offers two
+  # remedies and the exception must leave both of them standing, so assert the
+  # exception routes back to that rule instead of collapsing it into the stop.
   brief="$home/data/plc-lo-sa/brief.md"
-  assert_grep "the only red the keyed \`blocked [key=staging-ci-red]\` stop above yields to" "$brief" \
-    "the staging job-green case did not name the keyed red rule it excepts"
-  assert_no_grep "the line above yields to" "$brief" \
-    "the staging job-green case pointed at a positional line instead of naming its rule"
+  assert_grep "the only red you may close over" "$brief" \
+    "the staging job-green case did not stay scoped to the attributable red"
+  assert_grep "take either remedy the red-CI rule above already gives you" "$brief" \
+    "the staging exception dropped the fix-forward remedy for an attributable red"
+  assert_grep "Every other red still falls to that rule unchanged, both of its remedies intact." "$brief" \
+    "the staging exception left every other red without the rule's fix-forward remedy"
+  assert_no_grep "treat every other red as the blocking red that stops you" "$brief" \
+    "the staging exception still collapses the red-CI rule into its stop alone"
   assert_grep "blocked [key=staging-ci-red]: {the failing run}" "$brief" \
     "the staging job-green case weakened the keyed blocked form for every other red"
+  # The all-green close keeps result=green; closing over an attributed red gets
+  # its own keyed form, because that run is red and the line is what firstmate
+  # and the board read back.
   assert_grep "done [key=staging]: staging=<sha> ci=<run-id> result=green" "$brief" \
     "the staging job-green case displaced the keyed staging close line"
+  assert_grep "done [key=staging]: staging=<sha> ci=<run-id> result=job-green attribution={which jobs are red and why they sit outside this diff}" "$brief" \
+    "the staging path lost its own keyed close for the job-green case"
+  assert_grep "never claim the run was green" "$brief" \
+    "the staging job-green close did not forbid reusing the all-green result field"
 
-  # The PR-shaped close belongs to the pipeline mode alone.
+  # The PR-shaped close belongs to the pipeline mode alone, and it names the run
+  # it leaves in flight so a still-active run cannot read as a finished task.
   brief="$home/data/plc-nm/brief.md"
-  assert_grep "done: PR {url} - {job} green; run red on {failures} attributable outside this diff: {evidence}" "$brief" \
+  assert_grep "done: PR {url} - {job} green; run red on {failures} attributable outside this diff: {evidence}; no-mistakes run {run-id} still active, not terminal" "$brief" \
     "no-mistakes lost the PR-shaped closing form for the job-green report"
+  assert_grep "the run you leave in flight stays visible to firstmate" "$brief" \
+    "the no-mistakes job-green close did not say why the still-active run is named"
   for id in plc-dpr plc-lo plc-scout; do
     assert_no_grep "Job-green is not run-green" "$home/data/$id/brief.md" \
       "$id: the job-green contract leaked into a scaffold that watches no CI"
