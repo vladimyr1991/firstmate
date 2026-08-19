@@ -1081,17 +1081,26 @@ test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
     assert_grep "never force it onto that landed state" "$brief" \
       "$id: supersession contract lost its no-force instruction"
   done
+  # Two PRs are in play whenever supersession bites - the worker's own and the
+  # one that already landed the change - so each action must name which is meant
+  # rather than leave a pronoun to pick between them.
   brief="$home/data/plc-dpr/brief.md"
-  assert_grep "Close your PR as superseded" "$brief" \
-    "direct-PR lost the close-as-superseded action it owns"
+  assert_grep "Close your own PR as superseded, never the other PR that landed the change" "$brief" \
+    "direct-PR lost the close-as-superseded action it owns, or stopped naming which PR closes"
   assert_grep "ship only that remainder from a fresh branch cut from the updated default branch" "$brief" \
     "direct-PR supersession contract lost the fresh-branch remedy for unique work"
   brief="$home/data/plc-nm/brief.md"
+  assert_grep "your own PR is the one the pipeline opened and the pipeline owns your branch with it" "$brief" \
+    "no-mistakes supersession did not name the PR and branch the pipeline holds"
   assert_grep "report the supersession to firstmate (rule 6) and let firstmate decide" "$brief" \
     "no-mistakes supersession did not route the decision to firstmate"
-  assert_grep "rather than closing the PR or cutting a fresh branch yourself" "$brief" \
-    "no-mistakes supersession did not forbid acting on the pipeline-owned PR and branch"
-  assert_no_grep "Close your PR as superseded" "$brief" \
+  assert_grep "close neither your own PR nor the other PR that landed the change, and cut no fresh branch yourself" "$brief" \
+    "no-mistakes supersession did not forbid acting on either PR or on the branch"
+  # The escalation holds in the window before /no-mistakes runs too, where there
+  # is no active run at all, so the run-active clause must explain rather than gate.
+  assert_grep "whether or not a run is active at that moment" "$brief" \
+    "no-mistakes supersession gated its escalation on an active run"
+  assert_no_grep "Close your own PR as superseded" "$brief" \
     "no-mistakes supersession still tells the worker to close a PR the pipeline owns"
   assert_no_grep "ship only that remainder from a fresh branch cut from the updated default branch" "$brief" \
     "no-mistakes supersession still tells the worker to cut a branch while a run owns it"
@@ -1320,7 +1329,8 @@ test_secondmate_no_projects_charter() {
 
   # The deliberate --no-projects signal scaffolds a valid project-less charter for
   # a domain whose subject is the firstmate repo itself (no clones needed).
-  FM_HOME="$home" FM_SECONDMATE_CHARTER='firstmate self-development' \
+  FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=resolved \
+    FM_SECONDMATE_CHARTER='firstmate self-development' \
     FM_SECONDMATE_SCOPE='firstmate repo work' \
     "$ROOT/bin/fm-brief.sh" fdev --secondmate --no-projects >/dev/null 2>&1; status=$?
   expect_code 0 "$status" "--no-projects secondmate brief should exit 0"
@@ -1363,7 +1373,7 @@ test_secondmate_marked_request_reporting_contract() {
   local home brief
   home="$TMP_ROOT/marked-request-reporting-home"
   mkdir -p "$home/data"
-  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused FM_CLASSIFY_RESOLVE_VERB=resolved \
     FM_SECONDMATE_CHARTER='Handle routed domain work.' \
     "$ROOT/bin/fm-brief.sh" marked-request-reporting --secondmate --no-projects >/dev/null 2>&1
   brief="$home/data/marked-request-reporting/brief.md"
@@ -1543,6 +1553,67 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
   pass "fm-brief.sh: custom pause verb renders in every scaffold"
 }
 
+# The close verb is configurable exactly like the pause verb, and the fold that
+# drops an open key (status_open_decisions in bin/fm-classify-lib.sh) matches only
+# the configured value. A brief that hardcoded `resolved` would therefore require
+# workers to write a close that closes nothing, leaving every escalation counted
+# open - the failure the required-counterpart rule exists to prevent. Assert the
+# override reaches every scaffold that prescribes a close.
+test_resolve_verb_override_renders_all_brief_scaffolds() {
+  local home kind id brief
+  home="$TMP_ROOT/resolve-verb-home"
+  mkdir -p "$home/data"
+
+  for kind in ship staging scout secondmate standing-duty; do
+    id="brief-resolve-verb-$kind"
+    case "$kind" in
+      ship)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+        ;;
+      staging)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode local-only --staging-autonomy >/dev/null 2>&1
+        ;;
+      scout)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+        ;;
+      secondmate)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled FM_SECONDMATE_CHARTER='routed work' \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1
+        ;;
+      standing-duty)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled FM_SECONDMATE_CHARTER='routed work' \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects --standing-duty >/dev/null 2>&1
+        ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded under the close-verb override"
+    assert_no_grep 'resolved [key=' "$brief" \
+      "$kind brief still prescribes the default close verb the fold would ignore"
+  done
+
+  for kind in ship scout; do
+    brief="$home/data/brief-resolve-verb-$kind/brief.md"
+    assert_grep 'settled [key=product-choice]: {how it was decided or unblocked}' "$brief" \
+      "$kind brief did not render the configured close verb in its escalation close"
+  done
+  brief="$home/data/brief-resolve-verb-staging/brief.md"
+  assert_grep 'settled [key=evaluation]:' "$brief" \
+    "staging brief did not render the configured close verb for the evaluation gate"
+  brief="$home/data/brief-resolve-verb-secondmate/brief.md"
+  assert_grep 'settled [key=<work-slug>]' "$brief" \
+    "secondmate charter did not render the configured close verb for a keyed phase"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'append `settled: {how it was decided or unblocked}`' "$brief" \
+    "secondmate charter did not render the configured close verb for an answered decision"
+  brief="$home/data/brief-resolve-verb-standing-duty/brief.md"
+  assert_grep 'settled [key=<same key>]: <why>' "$brief" \
+    "standing-duty charter did not render the configured close verb for its finding close"
+  pass "fm-brief.sh: custom close verb renders in every scaffold that prescribes a close"
+}
+
 test_scout_and_secondmate_load_decision_hold_policy() {
   local home scout charter
   home="$TMP_ROOT/decision-policy-home"
@@ -1603,9 +1674,11 @@ test_pause_examples_name_pipeline_and_ci_waits() {
   local home brief label
   home="$TMP_ROOT/pause-examples-home"
   mkdir -p "$home/data"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-pause-s1 some-proj --mode no-mistakes >/dev/null 2>&1 \
+  FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=resolved \
+    "$ROOT/bin/fm-brief.sh" brief-pause-s1 some-proj --mode no-mistakes >/dev/null 2>&1 \
     || fail "ship scaffold for the pause examples exited non-zero"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-pause-s2 some-proj --scout >/dev/null 2>&1 \
+  FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=resolved \
+    "$ROOT/bin/fm-brief.sh" brief-pause-s2 some-proj --scout >/dev/null 2>&1 \
     || fail "scout scaffold for the pause examples exited non-zero"
   for label in brief-pause-s1 brief-pause-s2; do
     brief="$home/data/$label/brief.md"
@@ -1927,6 +2000,7 @@ test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
+test_resolve_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_outward_write_cleanup_rule_reaches_both_scaffolds
 test_pause_examples_name_pipeline_and_ci_waits

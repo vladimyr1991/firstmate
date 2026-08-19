@@ -86,7 +86,9 @@
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
-# blocked when firstmate must act.
+# blocked when firstmate must act. Every close a scaffold prescribes renders the
+# configured close verb (FM_CLASSIFY_RESOLVE_VERB, default "resolved") for the
+# same reason: only that verb drops an open key in the fold that reads it.
 # Ship and scout briefs additionally key every blocked/needs-decision template
 # the crewmate copies, with the "[key=<slug>]" token between the verb and the
 # colon, so a second escalation cannot evict the first under the shared
@@ -119,6 +121,7 @@ esac
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
+RESOLVE_VERB=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -320,7 +323,7 @@ On startup and restart, run normal firstmate bootstrap and recovery through `bin
   # Standing-duty escalation shape (FR-15): finding doc in own data/, keyed status.
   # NFR-5: mid-session liveness is session-start-only.
   STANDING_ESCALATION_NOTE='
-When your standing duty finds something the main firstmate must act on, write a finding document under this home'\''s `data/` (for example `data/fleet-divergence/<YYYY-MM-DD>-<nn>.md`), then append one keyed line such as `needs-decision [key=fleet-divergence-<slug>]: <summary>; see <absolute path>` (or `blocked:` when you yourself are stuck). On a later cycle where that finding no longer holds, append `resolved [key=<same key>]: <why>`. Quiet cycles append nothing.
+When your standing duty finds something the main firstmate must act on, write a finding document under this home'\''s `data/` (for example `data/fleet-divergence/<YYYY-MM-DD>-<nn>.md`), then append one keyed line such as `needs-decision [key=fleet-divergence-<slug>]: <summary>; see <absolute path>` (or `blocked:` when you yourself are stuck). On a later cycle where that finding no longer holds, append `'"$RESOLVE_VERB"' [key=<same key>]: <why>`. Quiet cycles append nothing.
 Mid-session death of this agent is not auto-recovered until the next main firstmate session start; do not assume mid-session relaunch exists.'
 else
   OPERATING_INITIATIVE_BODY='You do not generate your own work.
@@ -375,8 +378,8 @@ A marked request requires one correlated answer after the work; it does not requ
 Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
 When a routed-work phase has a supervisor-actionable material change worth reporting under the rule above, give that reported phase a stable key.
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
-When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>]: {why it is no longer active}\`.
-When a decision you escalated is answered or a blocker clears and your domain resumes, append \`resolved: {how it was decided or unblocked}\` (keyed with \`[key=<slug>]\` if you opened it with one) so it is durably closed instead of resurfacing behind later unrelated events.
+When a keyed phase ends without another reportable state, append \`$RESOLVE_VERB [key=<work-slug>]: {why it is no longer active}\`.
+When a decision you escalated is answered or a blocker clears and your domain resumes, append \`$RESOLVE_VERB: {how it was decided or unblocked}\` (keyed with \`[key=<slug>]\` if you opened it with one) so it is durably closed instead of resurfacing behind later unrelated events.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.$STANDING_ESCALATION_NOTE
 
 # Definition of done
@@ -477,7 +480,7 @@ $SCOUT_SYNC
    and stop. Firstmate will reply with the decision. Every \`needs-decision\` and \`blocked\` line you
    append has a required counterpart, not an optional courtesy: when firstmate replies
    or a blocker clears and you resume, append
-   \`resolved [key=product-choice]: {how it was decided or unblocked}\`
+   \`$RESOLVE_VERB [key=product-choice]: {how it was decided or unblocked}\`
    with the same key so the decision or blocker is durably closed and does not keep resurfacing. An
    escalation left unclosed keeps counting as open long after it was settled, and a real decision has
    already been lost that way. When one task raises more than one escalation,
@@ -511,8 +514,8 @@ fi
 # explicit --mode before launching.
 BRANCH_CMD="git checkout -b fm/$ID"
 SUPERSEDED_PR_NOTE="If the change you are shipping reaches the default branch through another PR while yours is still open, your branch is superseded rather than merely behind: never force it onto that landed state."
-SUPERSEDED_PR_OWNED_ACTION="Close your PR as superseded, and when part of your work is still unique, ship only that remainder from a fresh branch cut from the updated default branch."
-SUPERSEDED_PR_PIPELINE_ACTION="The pipeline opened that PR and owns the branch while a run is active, so report the supersession to firstmate (rule 6) and let firstmate decide, rather than closing the PR or cutting a fresh branch yourself."
+SUPERSEDED_PR_OWNED_ACTION="Close your own PR as superseded, never the other PR that landed the change, and when part of your work is still unique, ship only that remainder from a fresh branch cut from the updated default branch."
+SUPERSEDED_PR_PIPELINE_ACTION="On this path your own PR is the one the pipeline opened and the pipeline owns your branch with it, so report the supersession to firstmate (rule 6) and let firstmate decide: close neither your own PR nor the other PR that landed the change, and cut no fresh branch yourself, whether or not a run is active at that moment."
 JOB_GREEN_NOTE="Job-green is not run-green: judge checks green on the checks your own branch is answerable for, and when the run as a whole is red while every failure is attributable outside your branch diff, report that job-level result with its attribution evidence, rather than waiting for a green run that will not come or calling the run green. That exception holds only when you can name which failures sit outside your own diff and why, so a red you cannot attribute that way is a blocking red and this is never a licence to land over red."
 case "$MODE" in
   direct-PR)
@@ -544,7 +547,7 @@ Delivery autonomy: staging-inclusive
 This task ships **local-only with standing staging autonomy**: no PR and no pipeline, but you land your own work along this project's git-flow without waiting for a go-ahead.
 Run the project's own test gate first and land only genuinely clean work; never land red or failing work.
 If this task touched the UI, stop before merging anything and append \`blocked [key=evaluation]: test gate green, UI touched, awaiting browser evaluation before merge\`, then wait.
-Only firstmate can spawn the independent browser evaluator, so that key stays open until firstmate answers \`resolved [key=evaluation]:\` and releases you to land.
+Only firstmate can spawn the independent browser evaluator, so that key stays open until firstmate answers \`$RESOLVE_VERB [key=evaluation]:\` and releases you to land.
 To land: merge \`fm/$ID\` -> \`develop\` -> \`staging\`, push both branches, and watch CI to a final result.
 If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked [key=staging-ci-red]: {the failing run}\` and stop.
 $JOB_GREEN_NOTE
@@ -693,7 +696,7 @@ $RULE1
    and stop. Firstmate will apply the configured authority and reply with the decision. Every
    \`needs-decision\` and \`blocked\` line you append has a required counterpart, not an optional
    courtesy: when firstmate replies or a blocker clears and you resume, append
-   \`resolved [key=product-choice]: {how it was decided or unblocked}\` with the same key so the decision or
+   \`$RESOLVE_VERB [key=product-choice]: {how it was decided or unblocked}\` with the same key so the decision or
    blocker is durably closed and does not keep resurfacing. An escalation left unclosed keeps
    counting as open long after it was settled, and a real decision has already been lost that way.
    When one task raises more than one escalation, give each its own distinct key, so closing one
