@@ -81,7 +81,7 @@ Derive both sets from the returned rows by byte-exact string comparison against 
 
 That sweep selects nothing and only detects divergence; the status-sync section below owns what its results mean and how they are reported.
 
-Neither derived set may be believed until the read's one witness holds:
+Neither derived set may be believed unless the cycle came back witnessed, which this read's one witness anchors and the conditions below complete:
 
 - **W-1, the read-proof.** The read produced at least one row. Zero rows earns the single retry below, and it is CHECK FAILED only when that retry also comes back with no row - "nothing was read", never "nothing matched", and never a clean board.
 
@@ -89,7 +89,10 @@ This contract deliberately carries no check that the cards a task already links 
 
 CHECK FAILED also covers any tool error, `has_more: true`, and a result of 200 rows or more.
 The last two mean the read was truncated and the board outgrew this contract's assumption that it stays well under 200 rows, so say that explicitly and let firstmate revisit it.
-A cycle is witnessed exactly when W-1 holds and none of those conditions occurred, and unwitnessed means precisely that and nothing else.
+This section owns what witnessed and unwitnessed mean, and every other place in this file uses those terms rather than restating the rule.
+A cycle is witnessed when W-1 holds, meaning the read returned at least one row - after its single permitted retry when the first attempt returned none - and no tool error, `has_more: true`, or result of 200 rows or more occurred.
+A cycle is unwitnessed in every other case: zero rows after that retry, any tool error, `has_more: true`, or 200 rows or more.
+Every unwitnessed cycle is CHECK FAILED.
 One retry of the same call is permitted, after an error and after a zero-row result alike, and it is the only use of the second call in the budget.
 Covering a zero-row result is a deliberate widening of a reserve the specification wrote for an errored call alone, stated here rather than left silent, because the fault this contract exists to close was a well-formed empty answer that succeeded on an immediate re-run, so one repeat is exactly what separates a transient fail-open from a board that genuinely returned nothing.
 It is strictly one attempt, never a loop, never more than that reserved second call, and never a reason to report a healthy or a clean result: a second error or a second empty answer is final for the cycle and CHECK FAILED stands.
@@ -180,7 +183,7 @@ The orphaned-status sweep - the active set derived from the witnessed read - fin
 Check every card in that set against the brief's `linked_cards` list, not against bare `notion_page=` notes in the backlog.
 That is deliberately a stronger test than the bare-presence check that keeps the eligibility sweep from dispatching a card twice: presence proves a card was taken once, while the brief's list proves a task is still working it.
 If the brief carries no `linked_cards` line at all, skip this sweep for that scan and report no divergence from it: a test the PM cannot answer is not evidence that every active card is orphaned, and firstmate owns supplying the list.
-That skips only the orphan report, never the witnessed read itself, which still serves eligibility and still has to satisfy W-1.
+That skips only the orphan report, never the witnessed read itself, which still serves eligibility and still has to come back witnessed.
 A standing PM with no per-cycle brief may instead use its own per-cycle self-computed live-link set as an equally valid `linked_cards` source: the cards a non-terminal task somewhere in the fleet carries an active `notion_page=` link to.
 Build that set as the union of two reads, both required: `bin/fm-fleet-snapshot.sh --cross-home` for the parent and every sibling (`homes[].summary.endpoints[].links.notion_page`), and `bin/fm-fleet-snapshot.sh --json` run in the PM's own home for the PM itself (`tasks[].links.notion_page`, which enumerates every task meta and so has no truncation case of its own).
 The PM's own home is the one home `--cross-home` is defined never to return - it skips the observer as a fleet member by design, with no `homes[]` or `unavailable[]` record and nothing in `counts` - so a set built from `--cross-home` alone silently omits every card the PM is itself working and reports each of them orphaned, with no field in the output to warn that it did.
@@ -252,7 +255,7 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
 
 1. **Run the witnessed read, and derive the orphaned-status sweep from it when the brief carries a `linked_cards` line, including `linked_cards: none`.**
    This one call is the cycle's whole board read: every step below works from its rows, and nothing here reads the board a second time.
-   Its one witness, W-1, decides whether anything in this cycle may be believed: a cycle W-1 does not witness is CHECK FAILED, reported on both surfaces, and stops here with no dispatch and no divergence claim.
+   Whether the cycle came back witnessed, in the sense the witnessed-read section defines, decides whether anything in it may be believed: an unwitnessed cycle is CHECK FAILED, reported on both surfaces, and stops here with no dispatch and no divergence claim.
    Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so drop them from the eligible set those rows produce or the same card is picked up again every hour.
    The sweep selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
    Only when that line is missing entirely, skip the sweep's report for this scan - the read itself still stands, because it also serves eligibility - and continue to the next step.
