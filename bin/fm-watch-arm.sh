@@ -286,6 +286,12 @@ report_attached() {
 # Give a successor the same bounded confirmation window used for a fresh child.
 # Adapter-owned continuations normally win immediately, but the bound avoids a
 # false failure when process-close delivery and lock publication cross briefly.
+# This intentionally shares CONFIRM_TIMEOUT, so raising the base budget widened
+# this wait along with it. That widening is accepted: it only delays the
+# attached fallback path, which ran 2 times in 847 observed cycles, while an
+# owned child that exits with a wake returns without ever reaching here. A
+# separate bound for this wait was deliberately not added, because a fifth
+# constant in this mechanism is the arithmetic drift it exists to avoid.
 wait_for_healthy_successor() {
   local deadline
   # date(1) exposes whole seconds. Add one rounding second so a timeout of one
@@ -574,7 +580,6 @@ owned_child_finished() {
 confirm_started=$(date +%s)
 deadline=$(( confirm_started + CONFIRM_TIMEOUT + 1 ))
 confirm_ceiling=$(( confirm_started + CONFIRM_MAX + 1 ))
-[ "$deadline" -le "$confirm_ceiling" ] || deadline=$confirm_ceiling
 # A child that never published anything is a startup failure; a child that
 # published something and then stalled ran out of ceiling. The ledger tells them
 # apart, and the printed line does not.
@@ -616,6 +621,11 @@ while :; do
       last_progress=$progress
       confirm_reason=confirmation-ceiling
       deadline=$(( deadline + CONFIRM_TIMEOUT ))
+      # This clamp is the one that can actually fire: an extension adds a whole
+      # further base budget, which genuinely overshoots the ceiling whenever the
+      # remaining ceiling is shorter than that budget. The initial deadline
+      # cannot cross the ceiling, because CONFIRM_MAX is clamped up to
+      # CONFIRM_TIMEOUT above and both bounds take the same offset.
       [ "$deadline" -le "$confirm_ceiling" ] || deadline=$confirm_ceiling
     else
       break

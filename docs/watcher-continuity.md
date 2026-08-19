@@ -62,6 +62,8 @@ A child that published nothing is terminated at the first deadline and recorded 
 A child that progressed and then stalled is terminated one base budget after its last new progress fact, which is usually well short of the ceiling, and recorded as `reason=confirmation-ceiling`; the ceiling is the separate bound that terminates a child which keeps publishing new progress facts.
 Both print the unchanged `watcher: FAILED - no live watcher with a fresh beacon` and exit nonzero.
 The arm publishes nothing at all until it prints one of those lines, so its silent worst case is `FM_ARM_CONFIRM_MAX` plus one `FM_ARM_CONFIRM_TIMEOUT`: a clean childless close falls through `wait_for_healthy_successor` for one further base budget.
+`wait_for_healthy_successor` deliberately shares the same `FM_ARM_CONFIRM_TIMEOUT` base budget, so raising that budget widened the attached fallback wait along with it.
+That widening is accepted rather than given its own bound, because it delays only the attached path, which ran 2 times in 847 observed cycles, while an owned child that exits with a wake returns without reaching that wait at all.
 `FM_PI_ARM_READY_TIMEOUT_MS` and `FM_OPENCODE_ARM_READY_TIMEOUT_MS` are below that figure and are deliberately unchanged here, because an adapter that retires a slow but working arm cannot be fixed by raising a number alone: it needs a progress signal it can observe, and that has its own specification.
 
 The default 300-second grace is unchanged.
