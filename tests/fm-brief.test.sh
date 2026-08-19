@@ -914,7 +914,7 @@ test_no_mistakes_dod_states_what_done_requires() {
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks and braces must stay literal
   statement='**`done:` on a no-mistakes ship task means a real PR exists with checks green (or the CI-cannot-run exception below) - a local commit plus local lint/test checks is NOT done, even if every local check passes.**'
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks and braces must stay literal
-  exception='CI-cannot-run exception: when the forge reports that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as `done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head`. Never report absent checks as green checks.'
+  exception='CI-cannot-run exception: when the forge reports, at the moment you are about to write the `done:` line rather than when the task started, that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as `done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head`. That absence is a point-in-time observation about this PR right now, never a standing property of the project, so re-check it before you write the line. Never report absent checks as green checks.'
   home="$TMP_ROOT/done-clarity-home"
   mkdir -p "$home/data"
   id="brief-done-clarity-c1"
@@ -1077,7 +1077,10 @@ test_ship_baseline_and_no_placeholder_contract() {
   for id_mode in "brief-base-d1:no-mistakes" "brief-base-d2:direct-PR" "brief-base-d3:local-only"; do
     id=${id_mode%%:*}
     mode=${id_mode##*:}
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    # The long-gate assertion below reads the default pause verb literally, so
+    # pin it rather than inheriting an ambient FM_CLASSIFY_PAUSED_VERB.
+    FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+      "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
     brief="$home/data/$id/brief.md"
     assert_present "$brief" "$id: brief was not scaffolded"
     assert_grep "Establish a test baseline before your first edit." "$brief" \
@@ -1092,8 +1095,33 @@ test_ship_baseline_and_no_placeholder_contract() {
       "$id ($mode): baseline contract lost the zero-selection carve-out"
     assert_grep "run the project's documented nonempty gate instead or record that no executable baseline exists" "$brief" \
       "$id ($mode): zero-selection carve-out lost its what-to-do-instead remedy"
-    assert_grep "never call a zero-selection result green evidence" "$brief" \
+    assert_grep "never call a zero-selection or never-executed result green evidence" "$brief" \
       "$id ($mode): zero-selection carve-out lost its prohibition on claiming green evidence"
+    # A check with no run history is the same no-op as a run that selects nothing:
+    # both look like a pass and assert nothing, so the carve-out must name both.
+    assert_grep "as is a check that has never executed a single run" "$brief" \
+      "$id ($mode): zero-selection carve-out did not extend to a never-executed check"
+    assert_grep "or the check you would cite has no run history at all" "$brief" \
+      "$id ($mode): the never-executed case lost its what-to-do-instead remedy"
+    # A task commissioned to fix the very failure the gate shows would otherwise
+    # stop itself on its own starting condition. The carve-out must stay narrow:
+    # it names only that failure, and every other one still stops the task.
+    assert_grep "a baseline that fails in exactly the way this task was commissioned to fix is the task's starting condition" "$brief" \
+      "$id ($mode): baseline contract lost the commissioned-failure starting condition"
+    assert_grep "is still inherited breakage and still stops the task" "$brief" \
+      "$id ($mode): the commissioned-failure carve-out lost its narrowing clause"
+    # Green-before and green-after says nothing about coverage the change deleted.
+    assert_grep "never that what it was asserting is still there" "$brief" \
+      "$id ($mode): baseline contract lost the removed-coverage limit of a green gate"
+    # A long gate run is a declared wait, not a wedge: pause for it, resume after.
+    assert_grep "If the gate will run longer than a few minutes, append one \`paused:\` line naming the gate you are waiting on" "$brief" \
+      "$id ($mode): the long-gate wait lost its declared pause"
+    assert_grep "and a \`working:\` line when it returns" "$brief" \
+      "$id ($mode): the long-gate pause lost its resume line"
+    # git archive extracts many paths at once into scratch and needs no restore,
+    # unlike the git checkout fallback the same paragraph warns about.
+    assert_grep "git archive <base-sha> [-- <paths>] | tar -x -C <scratch-dir>" "$brief" \
+      "$id ($mode): base-revision measurement lost the multi-path git archive route"
     assert_grep "Leave behind no placeholder or unimplemented code" "$brief" \
       "$id ($mode): brief lost the no-placeholder rule"
     assert_grep "an element a user can click and get nothing from is not done" "$brief" \
@@ -1177,7 +1205,8 @@ test_secondmate_no_projects_charter() {
 
   # The deliberate --no-projects signal scaffolds a valid project-less charter for
   # a domain whose subject is the firstmate repo itself (no clones needed).
-  FM_HOME="$home" FM_SECONDMATE_CHARTER='firstmate self-development' \
+  FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=resolved \
+    FM_SECONDMATE_CHARTER='firstmate self-development' \
     FM_SECONDMATE_SCOPE='firstmate repo work' \
     "$ROOT/bin/fm-brief.sh" fdev --secondmate --no-projects >/dev/null 2>&1; status=$?
   expect_code 0 "$status" "--no-projects secondmate brief should exit 0"
@@ -1220,7 +1249,7 @@ test_secondmate_marked_request_reporting_contract() {
   local home brief
   home="$TMP_ROOT/marked-request-reporting-home"
   mkdir -p "$home/data"
-  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused FM_CLASSIFY_RESOLVE_VERB=resolved \
     FM_SECONDMATE_CHARTER='Handle routed domain work.' \
     "$ROOT/bin/fm-brief.sh" marked-request-reporting --secondmate --no-projects >/dev/null 2>&1
   brief="$home/data/marked-request-reporting/brief.md"
@@ -1400,6 +1429,67 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
   pass "fm-brief.sh: custom pause verb renders in every scaffold"
 }
 
+# The close verb is configurable exactly like the pause verb, and the fold that
+# drops an open key (status_open_decisions in bin/fm-classify-lib.sh) matches only
+# the configured value. A brief that hardcoded `resolved` would therefore require
+# workers to write a close that closes nothing, leaving every escalation counted
+# open - the failure the required-counterpart rule exists to prevent. Assert the
+# override reaches every scaffold that prescribes a close.
+test_resolve_verb_override_renders_all_brief_scaffolds() {
+  local home kind id brief
+  home="$TMP_ROOT/resolve-verb-home"
+  mkdir -p "$home/data"
+
+  for kind in ship staging scout secondmate standing-duty; do
+    id="brief-resolve-verb-$kind"
+    case "$kind" in
+      ship)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+        ;;
+      staging)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode local-only --staging-autonomy >/dev/null 2>&1
+        ;;
+      scout)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled \
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+        ;;
+      secondmate)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled FM_SECONDMATE_CHARTER='routed work' \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1
+        ;;
+      standing-duty)
+        FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=settled FM_SECONDMATE_CHARTER='routed work' \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects --standing-duty >/dev/null 2>&1
+        ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded under the close-verb override"
+    assert_no_grep 'resolved [key=' "$brief" \
+      "$kind brief still prescribes the default close verb the fold would ignore"
+  done
+
+  for kind in ship scout; do
+    brief="$home/data/brief-resolve-verb-$kind/brief.md"
+    assert_grep 'settled [key=product-choice]: {how it was decided or unblocked}' "$brief" \
+      "$kind brief did not render the configured close verb in its escalation close"
+  done
+  brief="$home/data/brief-resolve-verb-staging/brief.md"
+  assert_grep 'settled [key=evaluation]:' "$brief" \
+    "staging brief did not render the configured close verb for the evaluation gate"
+  brief="$home/data/brief-resolve-verb-secondmate/brief.md"
+  assert_grep 'settled [key=<work-slug>]' "$brief" \
+    "secondmate charter did not render the configured close verb for a keyed phase"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'append `settled: {how it was decided or unblocked}`' "$brief" \
+    "secondmate charter did not render the configured close verb for an answered decision"
+  brief="$home/data/brief-resolve-verb-standing-duty/brief.md"
+  assert_grep 'settled [key=<same key>]: <why>' "$brief" \
+    "standing-duty charter did not render the configured close verb for its finding close"
+  pass "fm-brief.sh: custom close verb renders in every scaffold that prescribes a close"
+}
+
 test_scout_and_secondmate_load_decision_hold_policy() {
   local home scout charter
   home="$TMP_ROOT/decision-policy-home"
@@ -1460,9 +1550,11 @@ test_pause_examples_name_pipeline_and_ci_waits() {
   local home brief label
   home="$TMP_ROOT/pause-examples-home"
   mkdir -p "$home/data"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-pause-s1 some-proj --mode no-mistakes >/dev/null 2>&1 \
+  FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=resolved \
+    "$ROOT/bin/fm-brief.sh" brief-pause-s1 some-proj --mode no-mistakes >/dev/null 2>&1 \
     || fail "ship scaffold for the pause examples exited non-zero"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-pause-s2 some-proj --scout >/dev/null 2>&1 \
+  FM_HOME="$home" FM_CLASSIFY_RESOLVE_VERB=resolved \
+    "$ROOT/bin/fm-brief.sh" brief-pause-s2 some-proj --scout >/dev/null 2>&1 \
     || fail "scout scaffold for the pause examples exited non-zero"
   for label in brief-pause-s1 brief-pause-s2; do
     brief="$home/data/$label/brief.md"
@@ -1472,6 +1564,10 @@ test_pause_examples_name_pipeline_and_ci_waits() {
       "$label: pause examples omitted a CI run"
     assert_grep "an upstream release, a rate-limit reset" "$brief" \
       "$label: pause examples lost their original external waits"
+    # A long gate the worker started here is the same declared wait: without it
+    # named, an 11-minute suite leaves `working:` last and reads as a wedge.
+    assert_grep "a long test gate you started in this worktree to finish" "$brief" \
+      "$label: pause examples omitted a long in-repo gate run"
     # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
     assert_grep 'the slug may use only letters, digits, `.`, `_`, and `-`, never spaces' "$brief" \
       "$label: status-reporting block did not state the key slug charset"
@@ -1485,6 +1581,13 @@ test_pause_examples_name_pipeline_and_ci_waits() {
       "$label: the daemon-error rule did not open with the keyed blocked form"
     assert_grep 'resolved [key=product-choice]: {how it was decided or unblocked}' "$brief" \
       "$label: the close instruction did not reuse the opener's key"
+    # The close is what keeps the open-decision count honest, so it must read as
+    # required rather than as a courtesy, and parallel escalations must not share
+    # a key - one `resolved` would then close a decision still genuinely open.
+    assert_grep 'has a required counterpart, not an optional' "$brief" \
+      "$label: the resolved close reads as optional rather than required"
+    assert_grep 'give each its own distinct key' "$brief" \
+      "$label: the close instruction did not require distinct keys per escalation"
     # A template a worker copies verbatim must itself be legal: <slug> is not.
     assert_no_grep '[key=<slug>]:' "$brief" \
       "$label: a copied status template still carries the illegal <slug> placeholder"
@@ -1772,6 +1875,7 @@ test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
+test_resolve_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_outward_write_cleanup_rule_reaches_both_scaffolds
 test_pause_examples_name_pipeline_and_ci_waits

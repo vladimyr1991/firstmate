@@ -86,7 +86,10 @@
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
-# blocked when firstmate must act.
+# blocked when firstmate must act. Every close a scaffold prescribes renders the
+# configured close verb (FM_CLASSIFY_RESOLVE_VERB, default "resolved") for the
+# same reason: the folds that count open decisions and open activities drop a key
+# only for a line carrying that configured verb.
 # Ship and scout briefs additionally key every blocked/needs-decision template
 # the crewmate copies, with the "[key=<slug>]" token between the verb and the
 # colon, so a second escalation cannot evict the first under the shared
@@ -119,6 +122,7 @@ esac
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
+RESOLVE_VERB=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
 
 resolve_directory_input() {
   local name=$1 path=$2 resolved
@@ -320,7 +324,7 @@ On startup and restart, run normal firstmate bootstrap and recovery through `bin
   # Standing-duty escalation shape (FR-15): finding doc in own data/, keyed status.
   # NFR-5: mid-session liveness is session-start-only.
   STANDING_ESCALATION_NOTE='
-When your standing duty finds something the main firstmate must act on, write a finding document under this home'\''s `data/` (for example `data/fleet-divergence/<YYYY-MM-DD>-<nn>.md`), then append one keyed line such as `needs-decision [key=fleet-divergence-<slug>]: <summary>; see <absolute path>` (or `blocked:` when you yourself are stuck). On a later cycle where that finding no longer holds, append `resolved [key=<same key>]: <why>`. Quiet cycles append nothing.
+When your standing duty finds something the main firstmate must act on, write a finding document under this home'\''s `data/` (for example `data/fleet-divergence/<YYYY-MM-DD>-<nn>.md`), then append one keyed line such as `needs-decision [key=fleet-divergence-<slug>]: <summary>; see <absolute path>` (or `blocked:` when you yourself are stuck). On a later cycle where that finding no longer holds, append `'"$RESOLVE_VERB"' [key=<same key>]: <why>`. Quiet cycles append nothing.
 Mid-session death of this agent is not auto-recovered until the next main firstmate session start; do not assume mid-session relaunch exists.'
 else
   OPERATING_INITIATIVE_BODY='You do not generate your own work.
@@ -375,8 +379,8 @@ A marked request requires one correlated answer after the work; it does not requ
 Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
 When a routed-work phase has a supervisor-actionable material change worth reporting under the rule above, give that reported phase a stable key.
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
-When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>]: {why it is no longer active}\`.
-When a decision you escalated is answered or a blocker clears and your domain resumes, append \`resolved: {how it was decided or unblocked}\` (keyed with \`[key=<slug>]\` if you opened it with one) so it is durably closed instead of resurfacing behind later unrelated events.
+When a keyed phase ends without another reportable state, append \`$RESOLVE_VERB [key=<work-slug>]: {why it is no longer active}\`.
+When a decision you escalated is answered or a blocker clears and your domain resumes, append \`$RESOLVE_VERB: {how it was decided or unblocked}\` (keyed with \`[key=<slug>]\` if you opened it with one) so it is durably closed instead of resurfacing behind later unrelated events.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.$STANDING_ESCALATION_NOTE
 
 # Definition of done
@@ -466,16 +470,22 @@ $SCOUT_SYNC
    FYI progress lines; firstmate reads your pane for that.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
-   run to finish, an upstream release, a rate-limit reset): firstmate then leaves your idle pane
-   alone and rechecks it on a long cadence instead of treating it as a possible wedge.
+   run to finish, a long test gate you started in this worktree to finish,
+   an upstream release, a rate-limit reset): firstmate then leaves your idle pane alone and rechecks
+   it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision [key=product-choice]: {summary of options}\` - the \`[key=...]\` token sits
    between the verb and the colon, never after it, or the fold silently files it under \`default\` -
-   and stop. Firstmate will reply with the decision. When firstmate replies or a blocker clears and
-   you resume, append \`resolved [key=product-choice]: {how it was decided or unblocked}\` with the same
-   key so the decision or blocker is durably closed and does not keep resurfacing.
+   and stop. Firstmate will reply with the decision. Every \`needs-decision\` and \`blocked\` line you
+   append has a required counterpart, not an optional courtesy: when firstmate replies
+   or a blocker clears and you resume, append
+   \`$RESOLVE_VERB [key=product-choice]: {how it was decided or unblocked}\`
+   with the same key so the decision or blocker is durably closed and does not keep resurfacing. An
+   escalation left unclosed keeps counting as open long after it was settled, and a real decision has
+   already been lost that way. When one task raises more than one escalation,
+   give each its own distinct key, so closing one never silently closes another that is still open.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked [key=daemon-error]: {the daemon error}\` and stop; only firstmate manages the daemon.
@@ -532,7 +542,7 @@ Delivery autonomy: staging-inclusive
 This task ships **local-only with standing staging autonomy**: no PR and no pipeline, but you land your own work along this project's git-flow without waiting for a go-ahead.
 Run the project's own test gate first and land only genuinely clean work; never land red or failing work.
 If this task touched the UI, stop before merging anything and append \`blocked [key=evaluation]: test gate green, UI touched, awaiting browser evaluation before merge\`, then wait.
-Only firstmate can spawn the independent browser evaluator, so that key stays open until firstmate answers \`resolved [key=evaluation]:\` and releases you to land.
+Only firstmate can spawn the independent browser evaluator, so that key stays open until firstmate answers \`$RESOLVE_VERB [key=evaluation]:\` and releases you to land.
 To land: merge \`fm/$ID\` -> \`develop\` -> \`staging\`, push both branches, and watch CI to a final result.
 If CI ends red you are not done: fix it forward along the same git-flow, or append \`blocked [key=staging-ci-red]: {the failing run}\` and stop.
 Close with the keyed line, never free prose:
@@ -559,7 +569,7 @@ EOF
 # Definition of done
 Delivery contract: mode=no-mistakes
 **\`done:\` on a no-mistakes ship task means a real PR exists with checks green (or the CI-cannot-run exception below) - a local commit plus local lint/test checks is NOT done, even if every local check passes.**
-CI-cannot-run exception: when the forge reports that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as \`done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head\`. Never report absent checks as green checks.
+CI-cannot-run exception: when the forge reports, at the moment you are about to write the \`done:\` line rather than when the task started, that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as \`done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head\`. That absence is a point-in-time observation about this PR right now, never a standing property of the project, so re-check it before you write the line. Never report absent checks as green checks.
 You report twice on this task, and only the second report is completion.
 The first is a HANDOFF, not a finish: when the work is implemented and committed on your branch, append \`done: implemented and committed; ready for /no-mistakes\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
@@ -631,13 +641,16 @@ If the top-level path is the primary checkout or not the worktree you were launc
 $SETUP_STEPS
 
 **Establish a test baseline before your first edit.** Run the project's own test gate the way its \`AGENTS.md\` or \`README.md\` documents it, before you change anything.
-A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited, and a gate run that selects zero tests is a no-op rather than a baseline.
-When the gate you chose selects nothing, run the project's documented nonempty gate instead or record that no executable baseline exists; never call a zero-selection result green evidence.
+A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited, and a gate run that selects zero tests is a no-op rather than a baseline, as is a check that has never executed a single run.
+When the gate you chose selects nothing, or the check you would cite has no run history at all, run the project's documented nonempty gate instead or record that no executable baseline exists; never call a zero-selection or never-executed result green evidence.
+A gate that is green before your change and green after it proves that the change did not break what is still asserted, never that what it was asserting is still there, so when your change removes or rewrites tests, say which coverage went with them.
 If the baseline is already red, treat that as inherited breakage: append \`blocked [key=red-baseline]: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
-If the gate runs long enough that you would otherwise sit silent, append one \`working:\` line first so supervision does not read the wait as a wedged pane.
+One narrow case is not inherited breakage: a baseline that fails in exactly the way this task was commissioned to fix is the task's starting condition, so record it as such in a \`working:\` line naming the gate and its failure rather than proceeding silently or stopping - any other failure in that run, including one merely adjacent to the fix, is still inherited breakage and still stops the task.
+If the gate will run longer than a few minutes, append one \`$PAUSED_VERB:\` line naming the gate you are waiting on, and a \`working:\` line when it returns, so supervision reads the wait as a wait rather than a wedged pane.
 When the project's test gate serves the working tree (for example a Vite dev server started by Playwright's \`webServer\`), "baseline before first edit" is a hard ordering constraint, not a nicety: edits made while the gate is running feed half-finished code into later specs and produce a red suite that looks exactly like inherited breakage.
 If that window was missed, stop editing, commit or stash the work, and re-measure from a clean tree rather than trusting a mid-edit run.
 To measure against the base revision, read it read-only with \`git show <base-sha>:<path> > /tmp/<scratch-file>\` and compare against that, or run the measurement in a second, clean worktree; prefer both because they leave the branch's working tree exactly as it is and need no restore at all.
+When the comparison spans many paths or a whole subtree, where a per-file \`git show\` gets unwieldy, extract the base revision with \`git archive <base-sha> [-- <paths>] | tar -x -C <scratch-dir>\` instead; it writes only inside that scratch directory and needs no restore either.
 Do not reach for \`git stash push -- <paths>\` here: on a clean tree it is a silent no-op, and a later \`git stash pop\` reporting "No stash entries found" comes too late, after the measurement may already have run against the branch under test.
 \`git checkout <base-sha> -- <paths>\` is the fallback when neither fits, and it mutates the working tree and the index: it stages what it wrote, resurrects every file your work deleted, and does not remove the files your work added under those paths, so what you then measure is base sources plus your own new files rather than a true base revision.
 Using it therefore costs a full restore before you resume - \`git restore --source=HEAD --staged --worktree -- <paths>\` for the tracked content, plus deleting any untracked file the measurement left behind - and skipping that lets your next \`git add -A\` commit base-revision files, including the components an approved removal was meant to delete, over your own mandated edits.
@@ -658,17 +671,22 @@ $RULE1
    turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
-   run to finish, an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves
-   your idle pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
+   run to finish, a long test gate you started in this worktree to finish,
+   an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves your idle
+   pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision [key=product-choice]: {summary of options}\` - the \`[key=...]\` token sits
    between the verb and the colon, never after it, or the fold silently files it under \`default\` -
-   and stop. Firstmate will apply the configured authority and reply with the decision. When
-   firstmate replies or a blocker clears and you resume, append
-   \`resolved [key=product-choice]: {how it was decided or unblocked}\` with the same key so the decision or
-   blocker is durably closed and does not keep resurfacing.
+   and stop. Firstmate will apply the configured authority and reply with the decision. Every
+   \`needs-decision\` and \`blocked\` line you append has a required counterpart, not an optional
+   courtesy: when firstmate replies or a blocker clears and you resume, append
+   \`$RESOLVE_VERB [key=product-choice]: {how it was decided or unblocked}\` with the same key so the decision or
+   blocker is durably closed and does not keep resurfacing. An escalation left unclosed keeps
+   counting as open long after it was settled, and a real decision has already been lost that way.
+   When one task raises more than one escalation, give each its own distinct key, so closing one
+   never silently closes another that is still open.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked [key=daemon-error]: {the daemon error}\` and stop; only firstmate manages the daemon.
