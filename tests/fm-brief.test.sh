@@ -914,7 +914,7 @@ test_no_mistakes_dod_states_what_done_requires() {
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks and braces must stay literal
   statement='**`done:` on a no-mistakes ship task means a real PR exists with checks green (or the CI-cannot-run exception below) - a local commit plus local lint/test checks is NOT done, even if every local check passes.**'
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks and braces must stay literal
-  exception='CI-cannot-run exception: when the forge reports that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as `done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head`. Never report absent checks as green checks.'
+  exception='CI-cannot-run exception: when the forge reports, at the moment you are about to write the `done:` line rather than when the task started, that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as `done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head`. That absence is a point-in-time observation about this PR right now, never a standing property of the project, so re-check it before you write the line. Never report absent checks as green checks.'
   home="$TMP_ROOT/done-clarity-home"
   mkdir -p "$home/data"
   id="brief-done-clarity-c1"
@@ -1047,6 +1047,68 @@ test_no_mistakes_dod_requires_verified_gate_claims() {
   pass "fm-brief.sh: no-mistakes DOD requires live gate claims to be verified or relayed unverified"
 }
 
+# Three PR-lifetime facts a worker could not derive from the rest of the brief.
+# Supersession: when the fix lands through someone else's PR, the open branch is
+# not behind, it is obsolete - force-updating it re-proposes landed work, and on
+# the source task that confusion cost three of four escalations. Job-green: the
+# done: contract said "checks green" without distinguishing the branch's own job
+# from the whole run, so a run reddened elsewhere read as "not done yet" forever.
+# Run id: two provider outages killed worker turns mid-run, and without the id in
+# the status log the run could only be found by hunting. Each is asserted in the
+# modes it applies to and refused in the modes it does not: local-only and scout
+# raise no PR, and only no-mistakes has a pipeline run to name.
+test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
+  local home brief
+  home="$TMP_ROOT/pr-lifetime-home"
+  mkdir -p "$home/data"
+  for spec in "plc-nm:--mode no-mistakes" "plc-dpr:--mode direct-PR" "plc-lo:--mode local-only"; do
+    # shellcheck disable=SC2086  # the mode flag pair must word-split
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "${spec%%:*}" some-proj ${spec#*:} >/dev/null 2>&1 \
+      || fail "scaffold for ${spec%%:*} exited non-zero"
+  done
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" plc-scout some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold for the PR-lifetime contracts exited non-zero"
+
+  # Supersession reaches both PR-bearing modes, with the no-force instruction and
+  # the fresh-branch remedy both intact.
+  for id in plc-nm plc-dpr; do
+    brief="$home/data/$id/brief.md"
+    assert_grep "your branch is superseded rather than merely behind" "$brief" \
+      "$id: PR brief lost the supersession contract"
+    assert_grep "never force it onto that landed state" "$brief" \
+      "$id: supersession contract lost its no-force instruction"
+    assert_grep "ship only that remainder from a fresh branch cut from the updated default branch" "$brief" \
+      "$id: supersession contract lost the fresh-branch remedy for unique work"
+  done
+  for id in plc-lo plc-scout; do
+    assert_no_grep "your branch is superseded rather than merely behind" "$home/data/$id/brief.md" \
+      "$id: the supersession contract leaked into a scaffold that raises no PR"
+  done
+
+  # Job-green and the run id belong to the pipeline mode alone.
+  brief="$home/data/plc-nm/brief.md"
+  assert_grep "Job-green is not run-green" "$brief" \
+    "no-mistakes DOD lost the job-level vs run-level distinction"
+  assert_grep "every failure is attributable outside your branch diff" "$brief" \
+    "the job-green case did not condition on failures outside the branch diff"
+  assert_grep "report that job-level result with its attribution evidence" "$brief" \
+    "the job-green case did not require attribution evidence with the report"
+  assert_grep "rather than waiting for a green run that will not come or calling the run green" "$brief" \
+    "the job-green case lost both failure modes it exists to prevent"
+  # shellcheck disable=SC2016  # single quotes are deliberate: backticks and braces stay literal
+  assert_grep 'append one `working: no-mistakes run {run-id}` line' "$brief" \
+    "no-mistakes DOD lost the run-id status line at run start"
+  assert_grep "re-attach with \`no-mistakes axi status\` instead of hunting for the run" "$brief" \
+    "the run-id line lost the recovery it exists for"
+  for id in plc-dpr plc-lo plc-scout; do
+    assert_no_grep "Job-green is not run-green" "$home/data/$id/brief.md" \
+      "$id: the job-green contract leaked into a scaffold with no pipeline run"
+    assert_no_grep "no-mistakes run {run-id}" "$home/data/$id/brief.md" \
+      "$id: the run-id line leaked into a scaffold with no pipeline run"
+  done
+  pass "fm-brief.sh: supersession, job-green, and the run id reach exactly their own modes"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -1092,8 +1154,33 @@ test_ship_baseline_and_no_placeholder_contract() {
       "$id ($mode): baseline contract lost the zero-selection carve-out"
     assert_grep "run the project's documented nonempty gate instead or record that no executable baseline exists" "$brief" \
       "$id ($mode): zero-selection carve-out lost its what-to-do-instead remedy"
-    assert_grep "never call a zero-selection result green evidence" "$brief" \
+    assert_grep "never call a zero-selection or never-executed result green evidence" "$brief" \
       "$id ($mode): zero-selection carve-out lost its prohibition on claiming green evidence"
+    # A check with no run history is the same no-op as a run that selects nothing:
+    # both look like a pass and assert nothing, so the carve-out must name both.
+    assert_grep "as is a check that has never executed a single run" "$brief" \
+      "$id ($mode): zero-selection carve-out did not extend to a never-executed check"
+    assert_grep "or the check you would cite has no run history at all" "$brief" \
+      "$id ($mode): the never-executed case lost its what-to-do-instead remedy"
+    # A task commissioned to fix the very failure the gate shows would otherwise
+    # stop itself on its own starting condition. The carve-out must stay narrow:
+    # it names only that failure, and every other one still stops the task.
+    assert_grep "a baseline that fails in exactly the way this task was commissioned to fix is the task's starting condition" "$brief" \
+      "$id ($mode): baseline contract lost the commissioned-failure starting condition"
+    assert_grep "is still inherited breakage and still stops the task" "$brief" \
+      "$id ($mode): the commissioned-failure carve-out lost its narrowing clause"
+    # Green-before and green-after says nothing about coverage the change deleted.
+    assert_grep "never that what it was asserting is still there" "$brief" \
+      "$id ($mode): baseline contract lost the removed-coverage limit of a green gate"
+    # A long gate run is a declared wait, not a wedge: pause for it, resume after.
+    assert_grep "If the gate will run longer than a few minutes, append one \`paused:\` line naming the gate you are waiting on" "$brief" \
+      "$id ($mode): the long-gate wait lost its declared pause"
+    assert_grep "and a \`working:\` line when it returns" "$brief" \
+      "$id ($mode): the long-gate pause lost its resume line"
+    # git archive extracts many paths at once into scratch and needs no restore,
+    # unlike the git checkout fallback the same paragraph warns about.
+    assert_grep "git archive <base-sha> [-- <paths>] | tar -x -C <scratch-dir>" "$brief" \
+      "$id ($mode): base-revision measurement lost the multi-path git archive route"
     assert_grep "Leave behind no placeholder or unimplemented code" "$brief" \
       "$id ($mode): brief lost the no-placeholder rule"
     assert_grep "an element a user can click and get nothing from is not done" "$brief" \
@@ -1472,6 +1559,10 @@ test_pause_examples_name_pipeline_and_ci_waits() {
       "$label: pause examples omitted a CI run"
     assert_grep "an upstream release, a rate-limit reset" "$brief" \
       "$label: pause examples lost their original external waits"
+    # A long gate the worker started here is the same declared wait: without it
+    # named, an 11-minute suite leaves `working:` last and reads as a wedge.
+    assert_grep "a long test gate you started in this worktree to finish" "$brief" \
+      "$label: pause examples omitted a long in-repo gate run"
     # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
     assert_grep 'the slug may use only letters, digits, `.`, `_`, and `-`, never spaces' "$brief" \
       "$label: status-reporting block did not state the key slug charset"
@@ -1485,6 +1576,13 @@ test_pause_examples_name_pipeline_and_ci_waits() {
       "$label: the daemon-error rule did not open with the keyed blocked form"
     assert_grep 'resolved [key=product-choice]: {how it was decided or unblocked}' "$brief" \
       "$label: the close instruction did not reuse the opener's key"
+    # The close is what keeps the open-decision count honest, so it must read as
+    # required rather than as a courtesy, and parallel escalations must not share
+    # a key - one `resolved` would then close a decision still genuinely open.
+    assert_grep 'has a required counterpart, not an optional' "$brief" \
+      "$label: the resolved close reads as optional rather than required"
+    assert_grep 'give each its own distinct key' "$brief" \
+      "$label: the close instruction did not require distinct keys per escalation"
     # A template a worker copies verbatim must itself be legal: <slug> is not.
     assert_no_grep '[key=<slug>]:' "$brief" \
       "$label: a copied status template still carries the illegal <slug> placeholder"
@@ -1763,6 +1861,7 @@ test_no_mistakes_dod_wording
 test_no_mistakes_dod_states_what_done_requires
 test_no_mistakes_dod_requires_verified_gate_claims
 test_ship_project_memory_wording
+test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to
 test_ship_baseline_and_no_placeholder_contract
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

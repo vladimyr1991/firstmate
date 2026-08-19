@@ -466,16 +466,22 @@ $SCOUT_SYNC
    FYI progress lines; firstmate reads your pane for that.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
-   run to finish, an upstream release, a rate-limit reset): firstmate then leaves your idle pane
-   alone and rechecks it on a long cadence instead of treating it as a possible wedge.
+   run to finish, a long test gate you started in this worktree to finish,
+   an upstream release, a rate-limit reset): firstmate then leaves your idle pane alone and rechecks
+   it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision [key=product-choice]: {summary of options}\` - the \`[key=...]\` token sits
    between the verb and the colon, never after it, or the fold silently files it under \`default\` -
-   and stop. Firstmate will reply with the decision. When firstmate replies or a blocker clears and
-   you resume, append \`resolved [key=product-choice]: {how it was decided or unblocked}\` with the same
-   key so the decision or blocker is durably closed and does not keep resurfacing.
+   and stop. Firstmate will reply with the decision. Every \`needs-decision\` and \`blocked\` line you
+   append has a required counterpart, not an optional courtesy: when firstmate replies
+   or a blocker clears and you resume, append
+   \`resolved [key=product-choice]: {how it was decided or unblocked}\`
+   with the same key so the decision or blocker is durably closed and does not keep resurfacing. An
+   escalation left unclosed keeps counting as open long after it was settled, and a real decision has
+   already been lost that way. When one task raises more than one escalation,
+   give each its own distinct key, so closing one never silently closes another that is still open.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked [key=daemon-error]: {the daemon error}\` and stop; only firstmate manages the daemon.
@@ -504,6 +510,7 @@ fi
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
 BRANCH_CMD="git checkout -b fm/$ID"
+SUPERSEDED_PR_NOTE="If the change you are shipping reaches the default branch through another PR while yours is still open, your branch is superseded rather than merely behind: never force it onto that landed state. Close your PR as superseded, and when part of your work is still unique, ship only that remainder from a fresh branch cut from the updated default branch."
 case "$MODE" in
   direct-PR)
     SETUP_DOCTOR=""
@@ -515,6 +522,7 @@ This task ships **direct-PR**: you raise the PR yourself, without the no-mistake
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+$SUPERSEDED_PR_NOTE
 EOF
     ;;
   local-only)
@@ -559,13 +567,16 @@ EOF
 # Definition of done
 Delivery contract: mode=no-mistakes
 **\`done:\` on a no-mistakes ship task means a real PR exists with checks green (or the CI-cannot-run exception below) - a local commit plus local lint/test checks is NOT done, even if every local check passes.**
-CI-cannot-run exception: when the forge reports that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as \`done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head\`. Never report absent checks as green checks.
+CI-cannot-run exception: when the forge reports, at the moment you are about to write the \`done:\` line rather than when the task started, that no CI checks are configured for this PR, say so explicitly and name the local gate you re-ran green against the pushed head, as \`done: PR {url} - no CI checks configured; {gate} re-run green on the pushed head\`. That absence is a point-in-time observation about this PR right now, never a standing property of the project, so re-check it before you write the line. Never report absent checks as green checks.
+Job-green is not run-green: judge checks green on the checks your own branch is answerable for, and when the run as a whole is red while every failure is attributable outside your branch diff, report that job-level result with its attribution evidence, as \`done: PR {url} - {job} green; run red on {failures} attributable outside this diff: {evidence}\`, rather than waiting for a green run that will not come or calling the run green.
+$SUPERSEDED_PR_NOTE
 You report twice on this task, and only the second report is completion.
 The first is a HANDOFF, not a finish: when the work is implemented and committed on your branch, append \`done: implemented and committed; ready for /no-mistakes\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
+When the run starts, append one \`working: no-mistakes run {run-id}\` line naming the id the pipeline just printed: if your turn dies mid-run, that recorded id is what lets firstmate or your replacement re-attach with \`no-mistakes axi status\` instead of hunting for the run.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 An active run commits into the pipeline's own worktree while your checkout stays at the head you submitted, so when a live finding asserts a fact about the pipeline head, do not treat your checkout as confirming or refuting it.
@@ -631,13 +642,16 @@ If the top-level path is the primary checkout or not the worktree you were launc
 $SETUP_STEPS
 
 **Establish a test baseline before your first edit.** Run the project's own test gate the way its \`AGENTS.md\` or \`README.md\` documents it, before you change anything.
-A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited, and a gate run that selects zero tests is a no-op rather than a baseline.
-When the gate you chose selects nothing, run the project's documented nonempty gate instead or record that no executable baseline exists; never call a zero-selection result green evidence.
+A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited, and a gate run that selects zero tests is a no-op rather than a baseline, as is a check that has never executed a single run.
+When the gate you chose selects nothing, or the check you would cite has no run history at all, run the project's documented nonempty gate instead or record that no executable baseline exists; never call a zero-selection or never-executed result green evidence.
+A gate that is green before your change and green after it proves that the change did not break what is still asserted, never that what it was asserting is still there, so when your change removes or rewrites tests, say which coverage went with them.
 If the baseline is already red, treat that as inherited breakage: append \`blocked [key=red-baseline]: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
-If the gate runs long enough that you would otherwise sit silent, append one \`working:\` line first so supervision does not read the wait as a wedged pane.
+One narrow case is not inherited breakage: a baseline that fails in exactly the way this task was commissioned to fix is the task's starting condition, so record it as such in a \`working:\` line naming the gate and its failure rather than proceeding silently or stopping - any other failure in that run, including one merely adjacent to the fix, is still inherited breakage and still stops the task.
+If the gate will run longer than a few minutes, append one \`$PAUSED_VERB:\` line naming the gate you are waiting on, and a \`working:\` line when it returns, so supervision reads the wait as a wait rather than a wedged pane.
 When the project's test gate serves the working tree (for example a Vite dev server started by Playwright's \`webServer\`), "baseline before first edit" is a hard ordering constraint, not a nicety: edits made while the gate is running feed half-finished code into later specs and produce a red suite that looks exactly like inherited breakage.
 If that window was missed, stop editing, commit or stash the work, and re-measure from a clean tree rather than trusting a mid-edit run.
 To measure against the base revision, read it read-only with \`git show <base-sha>:<path> > /tmp/<scratch-file>\` and compare against that, or run the measurement in a second, clean worktree; prefer both because they leave the branch's working tree exactly as it is and need no restore at all.
+When the comparison spans many paths or a whole subtree, where a per-file \`git show\` gets unwieldy, extract the base revision with \`git archive <base-sha> [-- <paths>] | tar -x -C <scratch-dir>\` instead; it writes only inside that scratch directory and needs no restore either.
 Do not reach for \`git stash push -- <paths>\` here: on a clean tree it is a silent no-op, and a later \`git stash pop\` reporting "No stash entries found" comes too late, after the measurement may already have run against the branch under test.
 \`git checkout <base-sha> -- <paths>\` is the fallback when neither fits, and it mutates the working tree and the index: it stages what it wrote, resurrects every file your work deleted, and does not remove the files your work added under those paths, so what you then measure is base sources plus your own new files rather than a true base revision.
 Using it therefore costs a full restore before you resume - \`git restore --source=HEAD --staged --worktree -- <paths>\` for the tracked content, plus deleting any untracked file the measurement left behind - and skipping that lets your next \`git add -A\` commit base-revision files, including the components an approved removal was meant to delete, over your own mandated edits.
@@ -658,17 +672,22 @@ $RULE1
    turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
-   run to finish, an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves
-   your idle pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
+   run to finish, a long test gate you started in this worktree to finish,
+   an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves your idle
+   pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision [key=product-choice]: {summary of options}\` - the \`[key=...]\` token sits
    between the verb and the colon, never after it, or the fold silently files it under \`default\` -
-   and stop. Firstmate will apply the configured authority and reply with the decision. When
-   firstmate replies or a blocker clears and you resume, append
+   and stop. Firstmate will apply the configured authority and reply with the decision. Every
+   \`needs-decision\` and \`blocked\` line you append has a required counterpart, not an optional
+   courtesy: when firstmate replies or a blocker clears and you resume, append
    \`resolved [key=product-choice]: {how it was decided or unblocked}\` with the same key so the decision or
-   blocker is durably closed and does not keep resurfacing.
+   blocker is durably closed and does not keep resurfacing. An escalation left unclosed keeps
+   counting as open long after it was settled, and a real decision has already been lost that way.
+   When one task raises more than one escalation, give each its own distinct key, so closing one
+   never silently closes another that is still open.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked [key=daemon-error]: {the daemon error}\` and stop; only firstmate manages the daemon.
