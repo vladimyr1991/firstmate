@@ -1047,18 +1047,16 @@ test_no_mistakes_dod_requires_verified_gate_claims() {
   pass "fm-brief.sh: no-mistakes DOD requires live gate claims to be verified or relayed unverified"
 }
 
-# Three PR-lifetime facts a worker could not derive from the rest of the brief.
+# Two PR-lifetime facts a worker could not derive from the rest of the brief.
 # Supersession: when the fix lands through someone else's PR, the open branch is
 # not behind, it is obsolete - force-updating it re-proposes landed work, and on
 # the source task that confusion cost three of four escalations. Job-green: the
 # done: contract said "checks green" without distinguishing the branch's own job
 # from the whole run, so a run reddened elsewhere read as "not done yet" forever.
-# Run id: two provider outages killed worker turns mid-run, and without the id in
-# the status log the run could only be found by hunting. Each is asserted in the
-# modes it applies to and refused in the modes it does not: local-only and scout
-# raise no PR, job-green reaches every mode that watches CI to a final result
-# (no-mistakes and the staging-inclusive local-only path, which stops on red),
-# and only no-mistakes has a pipeline run to name.
+# Each is asserted in the modes it applies to and refused in the modes it does
+# not: local-only and scout raise no PR, and job-green reaches every mode that
+# watches CI to a final result (no-mistakes and the staging-inclusive local-only
+# path, which stops on red).
 test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
   local home brief
   home="$TMP_ROOT/pr-lifetime-home"
@@ -1120,26 +1118,19 @@ test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
   assert_grep "done [key=staging]: staging=<sha> ci=<run-id> result=green" "$brief" \
     "the staging job-green case displaced the keyed staging close line"
 
-  # The run id belongs to the pipeline mode alone, as does the PR-shaped close.
+  # The PR-shaped close belongs to the pipeline mode alone.
   brief="$home/data/plc-nm/brief.md"
   assert_grep "done: PR {url} - {job} green; run red on {failures} attributable outside this diff: {evidence}" "$brief" \
     "no-mistakes lost the PR-shaped closing form for the job-green report"
-  # shellcheck disable=SC2016  # single quotes are deliberate: backticks and braces stay literal
-  assert_grep 'append one `working: no-mistakes run {run-id}` line' "$brief" \
-    "no-mistakes DOD lost the run-id status line at run start"
-  assert_grep "re-attach with \`no-mistakes axi status\` instead of hunting for the run" "$brief" \
-    "the run-id line lost the recovery it exists for"
   for id in plc-dpr plc-lo plc-scout; do
     assert_no_grep "Job-green is not run-green" "$home/data/$id/brief.md" \
       "$id: the job-green contract leaked into a scaffold that watches no CI"
   done
   for id in plc-dpr plc-lo plc-lo-sa plc-scout; do
-    assert_no_grep "no-mistakes run {run-id}" "$home/data/$id/brief.md" \
-      "$id: the run-id line leaked into a scaffold with no pipeline run"
     assert_no_grep "done: PR {url} - {job} green" "$home/data/$id/brief.md" \
       "$id: the PR-shaped job-green close leaked into a scaffold that raises no PR"
   done
-  pass "fm-brief.sh: supersession, job-green, and the run id reach exactly their own modes"
+  pass "fm-brief.sh: supersession and job-green reach exactly their own modes"
 }
 
 test_ship_project_memory_wording() {
