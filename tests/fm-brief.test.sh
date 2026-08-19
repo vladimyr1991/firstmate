@@ -1056,12 +1056,15 @@ test_no_mistakes_dod_requires_verified_gate_claims() {
 # Run id: two provider outages killed worker turns mid-run, and without the id in
 # the status log the run could only be found by hunting. Each is asserted in the
 # modes it applies to and refused in the modes it does not: local-only and scout
-# raise no PR, and only no-mistakes has a pipeline run to name.
+# raise no PR, job-green reaches every mode that watches CI to a final result
+# (no-mistakes and the staging-inclusive local-only path, which stops on red),
+# and only no-mistakes has a pipeline run to name.
 test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
   local home brief
   home="$TMP_ROOT/pr-lifetime-home"
   mkdir -p "$home/data"
-  for spec in "plc-nm:--mode no-mistakes" "plc-dpr:--mode direct-PR" "plc-lo:--mode local-only"; do
+  for spec in "plc-nm:--mode no-mistakes" "plc-dpr:--mode direct-PR" "plc-lo:--mode local-only" \
+    "plc-lo-sa:--mode local-only --staging-autonomy"; do
     # shellcheck disable=SC2086  # the mode flag pair must word-split
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "${spec%%:*}" some-proj ${spec#*:} >/dev/null 2>&1 \
       || fail "scaffold for ${spec%%:*} exited non-zero"
@@ -1080,21 +1083,44 @@ test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
     assert_grep "ship only that remainder from a fresh branch cut from the updated default branch" "$brief" \
       "$id: supersession contract lost the fresh-branch remedy for unique work"
   done
-  for id in plc-lo plc-scout; do
+  for id in plc-lo plc-lo-sa plc-scout; do
     assert_no_grep "your branch is superseded rather than merely behind" "$home/data/$id/brief.md" \
       "$id: the supersession contract leaked into a scaffold that raises no PR"
   done
 
-  # Job-green and the run id belong to the pipeline mode alone.
+  # Job-green belongs to every mode that watches CI to a final result, which is
+  # no-mistakes and the staging-inclusive local-only path. The shared sentence
+  # carries the distinction and its narrowing clause; only the closing form
+  # differs by mode.
+  for id in plc-nm plc-lo-sa; do
+    brief="$home/data/$id/brief.md"
+    assert_grep "Job-green is not run-green" "$brief" \
+      "$id: CI-watching DOD lost the job-level vs run-level distinction"
+    assert_grep "every failure is attributable outside your branch diff" "$brief" \
+      "$id: the job-green case did not condition on failures outside the branch diff"
+    assert_grep "report that job-level result with its attribution evidence" "$brief" \
+      "$id: the job-green case did not require attribution evidence with the report"
+    assert_grep "rather than waiting for a green run that will not come or calling the run green" "$brief" \
+      "$id: the job-green case lost both failure modes it exists to prevent"
+    assert_grep "only when you can name which failures sit outside your own diff and why" "$brief" \
+      "$id: the job-green case lost the clause keeping it narrow"
+    assert_grep "this is never a licence to land over red" "$brief" \
+      "$id: the job-green case lost its prohibition on landing over red"
+  done
+  # The staging path keeps its own red rule and keyed lines: the exception sits
+  # between them rather than replacing either.
+  brief="$home/data/plc-lo-sa/brief.md"
+  assert_grep "the one red the line above yields to" "$brief" \
+    "the staging job-green case did not stay an exception to the keyed red rule"
+  assert_grep "blocked [key=staging-ci-red]: {the failing run}" "$brief" \
+    "the staging job-green case weakened the keyed blocked form for every other red"
+  assert_grep "done [key=staging]: staging=<sha> ci=<run-id> result=green" "$brief" \
+    "the staging job-green case displaced the keyed staging close line"
+
+  # The run id belongs to the pipeline mode alone, as does the PR-shaped close.
   brief="$home/data/plc-nm/brief.md"
-  assert_grep "Job-green is not run-green" "$brief" \
-    "no-mistakes DOD lost the job-level vs run-level distinction"
-  assert_grep "every failure is attributable outside your branch diff" "$brief" \
-    "the job-green case did not condition on failures outside the branch diff"
-  assert_grep "report that job-level result with its attribution evidence" "$brief" \
-    "the job-green case did not require attribution evidence with the report"
-  assert_grep "rather than waiting for a green run that will not come or calling the run green" "$brief" \
-    "the job-green case lost both failure modes it exists to prevent"
+  assert_grep "done: PR {url} - {job} green; run red on {failures} attributable outside this diff: {evidence}" "$brief" \
+    "no-mistakes lost the PR-shaped closing form for the job-green report"
   # shellcheck disable=SC2016  # single quotes are deliberate: backticks and braces stay literal
   assert_grep 'append one `working: no-mistakes run {run-id}` line' "$brief" \
     "no-mistakes DOD lost the run-id status line at run start"
@@ -1102,9 +1128,13 @@ test_pr_lifetime_contracts_reach_only_the_modes_they_apply_to() {
     "the run-id line lost the recovery it exists for"
   for id in plc-dpr plc-lo plc-scout; do
     assert_no_grep "Job-green is not run-green" "$home/data/$id/brief.md" \
-      "$id: the job-green contract leaked into a scaffold with no pipeline run"
+      "$id: the job-green contract leaked into a scaffold that watches no CI"
+  done
+  for id in plc-dpr plc-lo plc-lo-sa plc-scout; do
     assert_no_grep "no-mistakes run {run-id}" "$home/data/$id/brief.md" \
       "$id: the run-id line leaked into a scaffold with no pipeline run"
+    assert_no_grep "done: PR {url} - {job} green" "$home/data/$id/brief.md" \
+      "$id: the PR-shaped job-green close leaked into a scaffold that raises no PR"
   done
   pass "fm-brief.sh: supersession, job-green, and the run id reach exactly their own modes"
 }
@@ -1139,7 +1169,10 @@ test_ship_baseline_and_no_placeholder_contract() {
   for id_mode in "brief-base-d1:no-mistakes" "brief-base-d2:direct-PR" "brief-base-d3:local-only"; do
     id=${id_mode%%:*}
     mode=${id_mode##*:}
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    # The long-gate assertion below reads the default pause verb literally, so
+    # pin it rather than inheriting an ambient FM_CLASSIFY_PAUSED_VERB.
+    FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+      "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
     brief="$home/data/$id/brief.md"
     assert_present "$brief" "$id: brief was not scaffolded"
     assert_grep "Establish a test baseline before your first edit." "$brief" \
