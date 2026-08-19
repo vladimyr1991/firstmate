@@ -117,7 +117,8 @@ Two ways this lies, both measured on 2026-08-19:
 
 A mobile finding measured at a width you did not confirm is not a finding.
 
-`emulate` persists for the whole browser session and does not reset between invocations, so restore a desktop viewport with `emulate --viewport` before moving to the next surface, or every surface after the first is judged on a mobile-emulated page with touch on and hover behaviour changed.
+Switching the emulated viewport reloads the page, so start each surface's pass with the `emulate` call for the viewport that pass needs and build any state the screenshot must show afterwards, because a modal opened before the switch is gone after it.
+An `emulate` call replaces the entire emulation state rather than merging into it, so every option you still want must be repeated on every call.
 
 Study the screenshots before writing a verdict. The point of this gate is that someone looks at the page; producing a verdict without having looked reproduces exactly the failure it exists to prevent.
 
@@ -143,8 +144,6 @@ That is measured rather than feared: injecting `duration={0}` into the component
 Sample the transition rather than watching it.
 Trigger the change, read the animating value two or three times inside the tween window - roughly 150-250ms into a 600ms tween - and require at least one reading strictly between the start and the end value.
 Take those samples in a single scripted session through the CLI's `run` subcommand, with the click, the wait, and the read in one script, because each separate invocation is its own process and cannot reliably land inside a 150-250ms window.
-If no read lands inside the tween window, report that you could not sample the transition and say so in the environment and blind-spots line, and never file "no observable intermediate state" for it.
-A missed sample is missing evidence rather than evidence of absence, and filing it as a defect is the exact error this row exists to prevent.
 A screenshot cannot evidence a transition, because a screenshot is a destination by construction, and "it looked smooth" is not a finding for the same reason "some buttons seem broken" is not.
 Where a project uses `prefers-reduced-motion` as its test seam, its interaction tests run with motion switched off, and this gate is then the only place the ordinary-motion path is observed at all.
 
