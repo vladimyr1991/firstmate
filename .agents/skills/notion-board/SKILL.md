@@ -130,7 +130,6 @@ That check runs only on a brief that carries a `linked_cards` line, so a brief m
 The PM never resolves that contradiction: it sees only what the brief says, has no view of live fleet state, and so cannot tell which figure is the true one or recompute either.
 On a block that contradicts itself it selects no card, dispatches nothing, leaves every eligible card at `Новая` for the next scan, and reports the contradiction with both figures and the list quoted, in its scout report and on the rolling status page, so firstmate can fix the brief that produced them.
 That report is never one of the silent cycles.
-The orphaned-status sweep runs that scan on a list that may be incomplete, so it reports unknown-not-orphaned for every card the list does not name and reports no divergence from that sweep at all, exactly as an incomplete cross-home snapshot does.
 
 The PM may select at most `4 - active_count` dispatchable cards from the eligibility sweep and records each selected card separately in its report.
 If the fleet is already at four, leave every `Новая` card untouched and end the scan without dispatching another worker.
