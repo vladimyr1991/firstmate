@@ -68,6 +68,23 @@ The project owns the lane math; in `parlino` it is `frontend/e2e/fixtures/ports.
 
 Shut the stand down when the evaluation ends, including on failure.
 
+**Which build you evaluate is part of the verdict.**
+Default to the project's dev server, because that is what its own test gate runs, and say so in the report.
+Build and serve the production bundle instead when the task's deliverable is one of these:
+
+- animation, transition, or anything else whose correctness is a matter of timing or frames;
+- bundle size, load behavior, or anything that a bundler transform could change;
+- a defect reported from the deployed stand rather than found locally;
+- an explicit instruction in the brief to evaluate the shipped artifact.
+
+In `parlino` that is `npm run build && npm run preview -- --port <free lane port>` from `frontend/`, on the same lane math and under the same never-kill-a-port rule as above.
+This costs a full production build plus a second server on every round, which is exactly why it is conditional rather than standing: a rule that makes every evaluation expensive gets worked around, and a worked-around rule protects nothing.
+
+Every evaluation this fleet has run to date used a vite dev server on a desktop Mac under CDP emulation.
+Nothing has ever exercised a production bundle and nothing has ever run on a real phone.
+That is not a defect in any one evaluation.
+It becomes one the moment a `pass` is read as coverage nobody had, which is what the environment line in the findings file exists to prevent.
+
 ## Driving the browser
 
 Use `chrome-devtools-axi`, a CLI, so this works from any harness with no MCP account binding.
@@ -80,7 +97,25 @@ The loop, per surface under test:
 2. `snapshot` to get the interactive elements and their uids - this is what makes the pass adaptive rather than a fixed script.
 3. For **every element the task added or changed**: `click` / `fill` / `press` it and observe what actually happened. A button that produces no navigation, no request, and no state change is a defect regardless of how it looks.
 4. `console` and `network` after the interactions - a clean-looking page throwing a `TypeError` on click, or firing a request that 404s, fails.
-5. `screenshot` the surface at desktop width, then `resize` to 375px and screenshot again.
+5. `screenshot` the surface at desktop width, then take the mobile viewport with `emulate --viewport "375x812x3,mobile,touch"` and screenshot again.
+
+**Verify the viewport you got, never the one you asked for.**
+Read it back before the mobile screenshot and put the number in your report:
+
+```sh
+chrome-devtools-axi eval "() => { return JSON.stringify({iw: innerWidth, dpr: devicePixelRatio}) }"
+```
+
+Two ways this lies, both measured on 2026-08-19:
+
+- `resize 375 812` prints `width: 375` and the page then reports `innerWidth: 500`.
+  macOS enforces a minimum window width, so `resize` cannot reach a phone width at all on a Mac and reports success anyway.
+  Two round-trips were spent on that before anyone printed `innerWidth`.
+  `emulate --viewport` sets CDP metrics rather than the OS window, which is why it works where `resize` does not.
+- `emulate --viewport "375x812x3,mobile"` reports `innerWidth: 981` on a page with no `<meta name="viewport">`, because mobile mode falls back to the 980px layout viewport.
+  That one is a real finding about the page rather than a tool failure, but it is still not the viewport you asked for, so the read-back catches it either way.
+
+A mobile finding measured at a width you did not confirm is not a finding.
 
 Study the screenshots before writing a verdict. The point of this gate is that someone looks at the page; producing a verdict without having looked reproduces exactly the failure it exists to prevent.
 
@@ -91,12 +126,22 @@ This table is the owner of what blocks. A finding in any row is blocking.
 | Criterion | Blocking failure |
 |---|---|
 | Functionality | An element does not do what it promises: a click with no effect, a form that does not submit, a control that changes nothing, a link to nowhere. |
+| Transition | Where the task's deliverable includes a transition, an animation, or motion: the change arrives instantly, or with no observable intermediate state. |
 | Console and network | Any console error, or any failed request, during an ordinary user path. |
 | Mobile | Horizontal scroll, overlap, clipped text, or an unreachable control at 375px. |
 | Design system | A new colour, shadow, or button style invented where the project already has a token or class for it; a broken CTA hierarchy. |
 
 The design-system row is judged against the project's own documented invariants, not against taste - read the project's `AGENTS.md` before scoring it.
 In `parlino` those are concrete and checkable: exactly one `.btn-accent` on the page, `.btn-lime` reserved for the demo call, `--text-graphite` and `--shadow-float` tokens, the bento grid tiling 4x3 with no holes, glass panels over the gradient rather than flat white, page height constant at rest, one shared `LandingModal`, illustrations as inline SVG in the page palette.
+
+The transition row is separate from functionality because every other row grades a destination.
+A control is scored for what it does, never for how it gets there, so a task whose whole deliverable is a transition can pass a gate that never sampled one.
+That is measured rather than feared: injecting `duration={0}` into the component under test - removing the animation outright - left 29 `parlino` tests green across desktop and mobile on 2026-08-19, and the evaluation passed too.
+
+Sample the transition rather than watching it.
+Trigger the change, read the animating value two or three times inside the tween window - roughly 150-250ms into a 600ms tween - and require at least one reading strictly between the start and the end value.
+A screenshot cannot evidence a transition, because a screenshot is a destination by construction, and "it looked smooth" is not a finding for the same reason "some buttons seem broken" is not.
+Where a project uses `prefers-reduced-motion` as its test seam, its interaction tests run with motion switched off, and this gate is then the only place the ordinary-motion path is observed at all.
 
 Report anything that is merely an opinion separately and mark it non-blocking. The gate is for defects, not preferences.
 
@@ -105,6 +150,10 @@ Report anything that is merely an opinion separately and mark it non-blocking. T
 Write `data/<task-id>/evaluation-<round>.md` - `<task-id>` being the id of the task you are running as, which for a round dispatched under the `eval-<origin-task-id>-r<N>` contract below is that round's own id and never the origin task's, so a round writes into exactly one directory and never two - and keep it specific enough to act on without re-deriving anything:
 
 - The verdict: `pass` or `fail`.
+- The environment: which build you drove, the host OS, the viewport you read back rather than the one you requested, and any CPU or network throttling applied.
+- What that environment could not establish.
+  Name the ones that apply from this list: real-device rendering and touch, the production bundle when you drove the dev server, GPU-poor or CPU-slow hardware, and any OS accessibility setting a real user may have on.
+  `prefers-reduced-motion` is the one that has already cost this fleet a landed complaint: the browser `chrome-devtools-axi` launches reports `no-preference` (measured 2026-08-19) and `emulate` has no flag to change it, so you always see the ordinary-motion path and never the reduce path a user may be on.
 - One entry per finding: what was interacted with, what was expected, what actually happened, which criterion it violates, and the screenshot path.
 - Absolute paths to every screenshot taken.
 - Non-blocking observations in their own clearly marked section.
