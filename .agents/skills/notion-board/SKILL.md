@@ -72,7 +72,7 @@ A title arriving as a row of this read is identity, which the PM may use to name
 What the narrowing leaves out is card BODY text, `Description` above all, because the read-proof needs rows rather than bodies and selecting prose with no `WHERE` clause would pull every stream's card text, `Финансы` and `Лигал` included, into the PM's turn carrying the weight the Boundaries section gives the captain's writing, for cards this role has no business reading at all.
 A card's body reaches the PM one card at a time through a free `fetch`, never in bulk from this read, and the only body it may take in to act on is that of a card the eligible set holds, fetched before the dispatchability test judges that card.
 What this narrows is bulk ingestion, never a single targeted `fetch` the rest of this file already calls for, such as the status-sync re-read of an active card before writing to it.
-`fetch` can serve renders hours stale, so it tells the PM what a selected card asks for and never witnesses what the board currently holds.
+A `fetch` render can lag, so a `fetch` is never the proof that the board was read this cycle: the witnessed read alone carries that proof.
 
 Derive both sets from the returned rows by byte-exact string comparison against the option strings in the table above:
 
@@ -83,7 +83,7 @@ That sweep selects nothing and only detects divergence; the status-sync section 
 
 Neither derived set may be believed unless the cycle came back witnessed, which this read's one witness anchors and the conditions below complete:
 
-- **W-1, the read-proof.** The read produced at least one row. Zero rows earns the single retry below, and it is CHECK FAILED only when that retry also comes back with no row - "nothing was read", never "nothing matched", and never a clean board.
+- **W-1, the read-proof.** The read produced at least one row, judged on the final attempt the rule below defines - "nothing was read", never "nothing matched", and never a clean board.
 
 This contract deliberately carries no check that the cards a task already links to appear among the returned rows, because a stored link keeps whatever host, slug, and query form it was handed, so a failed match cannot be told apart from a genuinely missing row, and a witness that halted the cycle on that ambiguity would stop all dispatch over a URL mismatch rather than over an unread board; storing a canonical page id at link time in `bin/fm-notion-link.sh` is what would make the check answerable, owed as `fm-notion-link-store-canonical-id`, and until it lands the absence of this check is never evidence that the linked cards were verified.
 
@@ -96,7 +96,8 @@ Every unwitnessed cycle is CHECK FAILED.
 A truncated read earns no retry, because repeating it returns the same truncation: `has_more: true` and a result of 200 rows or more mean the board outgrew this contract's assumption that it stays well under 200 rows, so say that explicitly and let firstmate revisit it.
 The one retry a zero-row or errored first attempt earns is the only use of the second call in the budget.
 Covering a zero-row result is a deliberate widening of a reserve the specification wrote for an errored call alone, stated here rather than left silent, because the fault this contract exists to close was a well-formed empty answer that succeeded on an immediate re-run, so one repeat is exactly what separates a transient fail-open from a board that genuinely returned nothing.
-It is strictly one attempt for the whole cycle, never a loop, never more than that reserved second call, and never a reason to report a healthy or a clean result.
+It is strictly one attempt for the whole cycle, never a loop, and never more than that reserved second call.
+Having retried is never itself what makes a cycle healthy or clean: a retry that also comes back with no row leaves the cycle unwitnessed, while a retry that returns rows and meets every other condition above leaves it witnessed and the cycle proceeds normally.
 
 On CHECK FAILED the cycle draws no conclusion at all from board content - no dispatch, no "the slot stays free", no "no divergence", and no silence.
 It reports the failed check, naming the error text or the row count that caused it, in the scout report and on the rolling status page, and ends there.
