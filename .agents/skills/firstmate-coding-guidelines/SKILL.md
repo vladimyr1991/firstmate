@@ -72,7 +72,7 @@ State the trigger as a condition ("load before X", "load on Y wake"), never as a
 
 Rewriting a skill's prose is a behavior change, so verify it as one rather than by reading the diff.
 `bin/fm-skill-compact-check.sh` refuses a rewrite that silently drops a pointer or a never/always/must/refuse/stop statement, and a materially smaller skill must also carry a scenario fixture in `tests/skill-scenarios/`, answered blind on a different vendor from the one that wrote the rewrite.
-A green set of `fm-skill-compact-check`, trigger, audience, lint, and changed-suite results proves only that no pointer or boundary statement vanished, never that the rewrite still means what it says - commit `aa6b1c0` carried an inverted step heading and a duplicate board read through all five of those green checks.
+A green set of `fm-skill-compact-check`, trigger, audience, lint, and changed-suite results proves only that no pointer or boundary statement vanished, never that the rewrite still means what it says - commit `aa6b1c0`, which landed on `main` squashed as commit `d47706e` (PR #50), carried an inverted step heading and a duplicate board read through all five of those green checks.
 Collapsing a rule stated three times into a rule stated once is an ordinary consolidation; genuinely retiring a stated safety boundary exits 3 and goes to the captain for merge regardless of diff size.
 [`docs/verification/skill-compaction.md`](../../../docs/verification/skill-compaction.md) owns the procedure and the active evidence.
 Briefs for tasks that touch firstmate's own tracked material should tell the crewmate to load this skill.
