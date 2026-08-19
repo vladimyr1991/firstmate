@@ -416,6 +416,30 @@ test_the_ceiling_terminates_a_child_that_keeps_progressing() {
 }
 
 
+test_a_child_that_exits_early_is_reported_as_an_exit_not_a_timeout() {
+  local dir state arm armout started elapsed status
+  dir=$(make_case confirm-early-exit)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  started=$(date +%s)
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=early-exit FM_ARM_CONFIRM_TIMEOUT=30
+  wait_for_exit "$STUB_ARM_PID" 250
+  status=$?
+  elapsed=$(( $(date +%s) - started ))
+  expect_code 3 "$status" "an early-exiting watcher's own status must propagate"
+  [ "$elapsed" -le 5 ] \
+    || fail "the arm burned the confirmation budget on a child that had already exited (${elapsed}s)"
+  grep -qF 'watcher: FAILED - stub refused to start' "$armout" \
+    || fail "the watcher's own failure line was not surfaced: $(cat "$armout")"
+  grep -q 'reason=nonzero-exit' "$state/.watch-cycle-exits.log" \
+    || fail "an early exit was not classified as an exit in the lifecycle ledger"
+  ! grep -q 'reason=confirmation-' "$state/.watch-cycle-exits.log" \
+    || fail "an early exit was misclassified as a confirmation timeout or ceiling"
+  pass "a watcher that exits early is reported as an exit without burning the budget"
+}
+
 test_a_non_numeric_ceiling_falls_back_to_the_default() {
   local dir state arm armout started elapsed status
   # A junk ceiling must behave like the default (three base budgets), not like a
@@ -450,4 +474,5 @@ test_default_budget_confirms_a_watcher_that_starts_past_the_old_budget
 test_confirmation_never_extends_for_a_child_that_shows_no_progress
 test_one_unchanging_progress_fact_grants_at_most_one_extension
 test_the_ceiling_terminates_a_child_that_keeps_progressing
+test_a_child_that_exits_early_is_reported_as_an_exit_not_a_timeout
 test_a_non_numeric_ceiling_falls_back_to_the_default

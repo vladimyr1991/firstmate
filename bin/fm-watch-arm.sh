@@ -588,7 +588,7 @@ while :; do
     owned_child_finished "$rc"
     exit $?
   fi
-  if [ "$child_done" -eq 0 ] && ! fm_pid_alive "$child"; then
+  if [ "$child_done" -eq 0 ] && ! child_running; then
     wait "$child"
     rc=$?
     child_done=1
