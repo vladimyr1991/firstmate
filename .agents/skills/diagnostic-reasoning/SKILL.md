@@ -53,7 +53,7 @@ Compare the final explanation against the proven path and show why the proposed 
 
 ## Scope and act on the result
 
-A diagnosis brief should ask for the reproduction, trigger/mask/symptom separation, divergent and proven path comparison, relevant history, smallest counterfactual, and disconfirming evidence in the report.
+A diagnosis brief should ask for the reproduction, trigger/mask/symptom separation, divergent and proven path comparison, relevant history, smallest counterfactual, disconfirming evidence, and, when the report came from a real device and the reproduction came back clean, the reporter's relevant environment settings in the report.
 A diagnostic report should distinguish observed facts from hypotheses and state any unresolved uncertainty that could change the recommended scope.
 Before acting on the report, verify that its claimed cause explains the end-user reproduction and the proven path without relying on an untested masking condition.
 If a load-bearing element is missing, route a focused follow-up investigation instead of treating confidence or implementation detail as proof.
