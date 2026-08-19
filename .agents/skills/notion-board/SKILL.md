@@ -94,7 +94,7 @@ A cycle is unwitnessed in every other case: the final attempt errored, or return
 Every unwitnessed cycle is CHECK FAILED.
 
 A truncated read earns no retry, because repeating it returns the same truncation: `has_more: true` and a result of 200 rows or more mean the board outgrew this contract's assumption that it stays well under 200 rows, so say that explicitly and let firstmate revisit it.
-The one retry those two branches earn is the only use of the second call in the budget.
+The one retry a zero-row or errored first attempt earns is the only use of the second call in the budget.
 Covering a zero-row result is a deliberate widening of a reserve the specification wrote for an errored call alone, stated here rather than left silent, because the fault this contract exists to close was a well-formed empty answer that succeeded on an immediate re-run, so one repeat is exactly what separates a transient fail-open from a board that genuinely returned nothing.
 It is strictly one attempt for the whole cycle, never a loop, never more than that reserved second call, and never a reason to report a healthy or a clean result.
 
