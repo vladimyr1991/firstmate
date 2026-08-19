@@ -83,14 +83,15 @@ That sweep selects nothing and only detects divergence; the status-sync section 
 
 Neither derived set may be believed unless the cycle came back witnessed, which this read's one witness anchors and the conditions below complete:
 
-- **W-1, the read-proof.** The read produced at least one row, judged on the final attempt the rule below defines - "nothing was read", never "nothing matched", and never a clean board.
+- **W-1, the read-proof.** The read produced at least one row, judged on the final attempt the definition below governs.
+  Zero rows means "nothing was read", never "nothing matched", and never a clean board.
 
 This contract deliberately carries no check that the cards a task already links to appear among the returned rows, because a stored link keeps whatever host, slug, and query form it was handed, so a failed match cannot be told apart from a genuinely missing row, and a witness that halted the cycle on that ambiguity would stop all dispatch over a URL mismatch rather than over an unread board; storing a canonical page id at link time in `bin/fm-notion-link.sh` is what would make the check answerable, owed as `fm-notion-link-store-canonical-id`, and until it lands the absence of this check is never evidence that the linked cards were verified.
 
 This section owns what witnessed and unwitnessed mean, and every other place in this file uses those terms rather than restating the rule.
 A first attempt that returns zero rows or fails with a tool error earns one retry of the same read, and no other outcome earns one, so both of those branches are judged on the final attempt rather than the first.
 A cycle is witnessed when that final attempt returned at least one row and none of the CHECK FAILED conditions occurred: a tool error, `has_more: true`, or a result of 200 rows or more.
-An absent `has_more` is not `has_more: true`, so a result that simply omits the field triggers nothing and witnesses the cycle on its rows alone.
+An absent `has_more` is not `has_more: true`, so a result that simply omits the field triggers nothing and decides nothing on its own.
 A cycle is unwitnessed in every other case: the final attempt errored, or returned zero rows, or reported `has_more: true`, or returned 200 rows or more.
 Every unwitnessed cycle is CHECK FAILED.
 
