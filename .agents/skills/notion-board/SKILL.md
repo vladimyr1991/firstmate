@@ -81,10 +81,9 @@ Derive both sets from the returned rows by byte-exact string comparison against 
 
 That sweep selects nothing and only detects divergence; the status-sync section below owns what its results mean and how they are reported.
 
-Neither derived set may be believed unless the cycle came back witnessed, which this read's one witness anchors and the conditions below complete:
-
-- **W-1, the read-proof.** The read produced at least one row, judged on the final attempt the definition below governs.
-  Zero rows means "nothing was read", never "nothing matched", and never a clean board.
+Neither derived set may be believed unless the cycle came back witnessed, which this read's one witness anchors and the conditions below complete.
+That witness is the **read-proof**: the read produced at least one row, judged on the final attempt the definition below governs.
+Zero rows means "nothing was read", never "nothing matched", and never a clean board.
 
 This contract deliberately carries no check that the cards a task already links to appear among the returned rows, because a stored link keeps whatever host, slug, and query form it was handed, so a failed match cannot be told apart from a genuinely missing row, and a witness that halted the cycle on that ambiguity would stop all dispatch over a URL mismatch rather than over an unread board; storing a canonical page id at link time in `bin/fm-notion-link.sh` is what would make the check answerable, owed as `fm-notion-link-store-canonical-id`, and until it lands the absence of this check is never evidence that the linked cards were verified.
 
@@ -125,6 +124,13 @@ Firstmate records that scan's `active_count` and remaining capacity in the PM br
 That same step records `linked_cards`, the card URL of every task it counted, so the brief carries the live linked-card list the orphaned-status sweep tests against and the PM never has to infer a task's terminality from the backlog.
 Write that line on every brief, using `linked_cards: none` when `active_count` is 0, because an explicit empty list means zero live links while a missing line means the list was never supplied.
 Only a brief with no `linked_cards` line at all leaves the sweep unarmed; `linked_cards: none` arms it exactly like a populated list, and on an idle fleet every card that sweep returns is then a divergence.
+
+`active_count` and `linked_cards` must correspond, and that correspondence is the PM's check on the capacity block it was handed: the list names exactly the tasks the count counted, so a list holding a different number of card URLs than `active_count` is a malformed block rather than a number to interpret.
+That check runs only on a brief that carries a `linked_cards` line, so a brief missing the line entirely is never a malformed block: it is the unarmed-sweep case above, where only the sweep's report is skipped while the read still stands for eligibility and the scan dispatches normally.
+The PM never resolves that contradiction: it sees only what the brief says, has no view of live fleet state, and so cannot tell which figure is the true one or recompute either.
+On a block that contradicts itself it selects no card, dispatches nothing, leaves every eligible card at `Новая` for the next scan, and reports the contradiction with both figures and the list quoted, in its scout report and on the rolling status page, so firstmate can fix the brief that produced them.
+That report is never one of the silent cycles.
+
 The PM may select at most `4 - active_count` dispatchable cards from the eligibility sweep and records each selected card separately in its report.
 If the fleet is already at four, leave every `Новая` card untouched and end the scan without dispatching another worker.
 Re-check capacity before every spawn in a multi-card handoff because another task may have started after the PM produced its report.
@@ -202,6 +208,8 @@ A `truncated` of true with homes reading `cross-home read deadline reached` answ
 A returned card is healthy and needs no mention only when that list names it, because the list holds exactly the cards a non-terminal task carries an active `notion_page=` link to.
 A returned card the list does not name is a divergence and is reported exactly as above, whether no link points at it at all or its only live link is held by a task that already reached a terminal status without being recycled.
 Bare link presence is not the test: `bin/fm-notion-link.sh` retires a link only on `--archive` at recycle step 3 below, so a task that ended without being recycled leaves an active `notion_page=` behind and its card is orphaned exactly like an unlinked one.
+A brief whose capacity block is malformed, in the sense "What the PM may take" defines, hands this sweep a list that may be short by as many entries as the contradiction implies, so its verdict is not evaluated on that scan.
+It reports unknown-not-orphaned for every card it returns that the list does not name and reports no divergence from this sweep at all, exactly as an incomplete cross-home snapshot rules, and the next scan reports normally once the brief's two figures correspond.
 This sweep is read-only detection: never change such a card's `Status`, never dispatch work for it, and never treat it as an eligible card, whatever its content says.
 Every scan that runs it re-detects an unresolved divergence, which is deliberately re-reported every such cycle until firstmate acts on it; never suppress a repeat because an earlier scan already named the card.
 
@@ -209,7 +217,9 @@ Every scan that runs it re-detects an unresolved divergence, which is deliberate
 
 Two pages, both found by exact title with `search` and created once if absent, both under `🎯 Project Tracking Hub`:
 
-- `📊 PM — текущий спринт` - the rolling status page. Always `replace_content`, never append, so its block count stays flat. Holds: what is under way, what is waiting on the captain, what landed this sprint, what the PM could not take and why, any divergence the status-sync section told it to report, and the failed check of any cycle the witnessed-read section ruled CHECK FAILED.
+- `📊 PM — текущий спринт` - the rolling status page. Always `replace_content`, never append, so its block count stays flat. Holds: what is under way, what is waiting on the captain, what landed this sprint, what the PM could not take and why, any divergence the status-sync section told it to report, the failed check of any cycle the witnessed-read section ruled CHECK FAILED, and the contradiction of any malformed capacity block, written out as both figures and the quoted `linked_cards` list.
+  Rewrite it only on a cycle that has something for it: a card dispatched or moved, a card the PM could not take, a divergence, a malformed capacity block, or a CHECK FAILED.
+  A witnessed cycle that found nothing and changed nothing leaves this page exactly as it is, because rewriting it on every scheduled cycle spends the captain's block budget restating an unchanged page.
 - `🗄️ Архив задач` - one line per finished task, appended. This is the durable history that lets a card be recycled.
 
 For every project's card, write the result into its body - what changed, the implementing branch name, landing commit hash, PR URL, and CI run - rather than creating a page per task.
@@ -267,8 +277,9 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
    Select as many dispatchable cards as the four-worker cap permits, write each one into the scout report, and open the single keyed dispatch hold described above.
    Stay live until firstmate confirms which dispatched workers are durably running and linked, then move only those cards to `В работе`.
 3. **Found nothing in a witnessed cycle? End the turn silently.**
+   Silently means no captain-facing update and no board write; the scout report and the `done:` status line the PM owes as an ordinary fleet worker are always written, whatever the cycle found.
    Around eleven checks run each weekday, so reporting "nothing new" every time trains the captain to stop reading reports and hides the one that matters.
-   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched, and a CHECK FAILED cycle is never one of the silent ones.
+   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched, a CHECK FAILED cycle is never one of the silent ones, and neither is a cycle whose capacity block was malformed.
 
 ## When a card is unclear
 
