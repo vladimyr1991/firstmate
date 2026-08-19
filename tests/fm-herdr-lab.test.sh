@@ -43,8 +43,11 @@ case "$1 ${2:-}" in
     fi
     ;;
   "server --session")
-    if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
-      "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY"
+    if [ -n "${FM_FAKE_HERDR_SERVER_GATE:-}" ]; then
+      printf '%s\n' "$$" > "$FM_FAKE_HERDR_SERVER_GATE.launched"
+      while [ ! -f "$FM_FAKE_HERDR_SERVER_GATE" ]; do
+        "$FM_FAKE_HERDR_REAL_SLEEP" 0.5
+      done
     fi
     printf '%s\n' running > "$state/$session"
     ;;
@@ -79,7 +82,7 @@ run_with_fake() {
     FM_FAKE_HERDR_STATE="$FAKE_STATE" \
     FM_FAKE_HERDR_LOG="$FAKE_LOG" \
     FM_FAKE_HERDR_REAL_SLEEP="$REAL_SLEEP" \
-    FM_FAKE_HERDR_SERVER_DELAY="${FM_FAKE_HERDR_SERVER_DELAY:-0}" \
+    FM_FAKE_HERDR_SERVER_GATE="${FM_FAKE_HERDR_SERVER_GATE:-}" \
     FM_FAKE_HERDR_FAST_POLL="${FM_FAKE_HERDR_FAST_POLL:-}" \
     FM_FAKE_HERDR_DELETE_FAIL="${FM_FAKE_HERDR_DELETE_FAIL:-}" \
     FM_HERDR_LAB_STATE_DIR="$TRIPWIRES" \
@@ -208,8 +211,11 @@ test_failed_delete_retains_tripwire() {
   pass "fm-herdr-lab: failed deletion retains ownership until absence is confirmed"
 }
 
+# The fake server is held by an explicit gate file rather than a wall-clock delay.
+# fm_herdr_lab_provision counts poll attempts and never reads a clock, so a timed
+# fixture would race the loop and decide this case on host load instead of behavior.
 test_timed_out_provision_cancels_late_launch() {
-  local name="fm-lab-late-launch-$$" status=0
+  local name="fm-lab-late-launch-$$" status=0 gate="$TMP_ROOT/late-launch-gate" launched_pid waited
   cat > "$FAKEBIN/sleep" <<'SH'
 #!/usr/bin/env bash
 if [ "${FM_FAKE_HERDR_FAST_POLL:-}" = 1 ]; then
@@ -219,18 +225,28 @@ exec "$FM_FAKE_HERDR_REAL_SLEEP" "$@"
 SH
   chmod +x "$FAKEBIN/sleep"
   : > "$FAKE_LOG"
-  FM_FAKE_HERDR_FAST_POLL=1 FM_FAKE_HERDR_SERVER_DELAY=30 \
+  rm -f "$gate" "$gate.launched"
+  FM_FAKE_HERDR_FAST_POLL=1 FM_FAKE_HERDR_SERVER_GATE="$gate" \
     run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "timed-out provision must fail"
+  assert_present "$gate.launched" \
+    "the fixture never launched a lab server for provisioning to time out on"
+  launched_pid=$(cat "$gate.launched")
+  ! kill -0 "$launched_pid" 2>/dev/null || fail "timed-out provision left its launch process alive"
   assert_present "$TRIPWIRES/$name.fleet-state.json" \
     "timed-out provision must retain its tripwire until teardown"
   run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after timed-out provision failed"
   assert_absent "$TRIPWIRES/$name.fleet-state.json" \
     "teardown after timed-out provision did not remove its tripwire"
-  "$REAL_SLEEP" 1.1
-  if [ -f "$FAKE_STATE/$name" ] && [ "$(cat "$FAKE_STATE/$name")" = running ]; then
-    fail "timed-out provision left a late-starting lab session after teardown"
-  fi
+  : > "$gate"
+  waited=0
+  while [ "$waited" -lt 20 ]; do
+    if [ -f "$FAKE_STATE/$name" ] && [ "$(cat "$FAKE_STATE/$name")" = running ]; then
+      fail "timed-out provision left a late-starting lab session after teardown"
+    fi
+    "$REAL_SLEEP" 0.1
+    waited=$((waited + 1))
+  done
   pass "fm-herdr-lab: timed-out provisioning cancels the launch before teardown"
 }
 
