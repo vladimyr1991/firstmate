@@ -4,11 +4,13 @@ import { resolve } from "node:path";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
 const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
-// Must exceed the arm's confirmation ceiling (FM_ARM_CONFIRM_MAX, default 135s
-// in bin/fm-watch-arm.sh). A slow but successful cold start must not time out
-// here on any platform, or the arm's own extension work is wasted and the
-// attempt is classified as a failure that never happened.
-const ARM_READY_TIMEOUT_DEFAULT_MS = 150000;
+// KNOWN GAP, deliberately left as it is; see the same comment in
+// .pi/extensions/fm-primary-pi-watch.ts. Neither default covers the arm's real
+// silent worst case of FM_ARM_CONFIRM_MAX plus one FM_ARM_CONFIRM_TIMEOUT (180s
+// at bin/fm-watch-arm.sh defaults), and raising them alone multiplies against
+// REARM_RETRY_LIMIT into a much longer degraded-delivery window. Closing this
+// needs an observable progress signal, which has its own specification.
+const ARM_READY_TIMEOUT_DEFAULT_MS = process.platform === "win32" ? 35000 : 12000;
 const ARM_READY_TIMEOUT_MS = positiveInteger("FM_OPENCODE_ARM_READY_TIMEOUT_MS", ARM_READY_TIMEOUT_DEFAULT_MS);
 const ARM_RETIRE_TIMEOUT_MS = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
 const REARM_RETRY_BASE_MS = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);

@@ -440,6 +440,37 @@ test_a_child_that_exits_early_is_reported_as_an_exit_not_a_timeout() {
   pass "a watcher that exits early is reported as an exit without burning the budget"
 }
 
+test_a_non_numeric_base_budget_falls_back_to_the_default() {
+  local dir state arm armout
+  # A junk base budget must fall back to the shipped default, not collapse the
+  # whole confirmation window. Before the base budget was sanitized, arithmetic
+  # and the ceiling comparison both read a non-numeric value as 0, which printed
+  # a shell error and left a one-second budget - a fixed budget far shorter than
+  # the 10s one this change exists to replace.
+  dir=$(make_case confirm-base-junk)
+  state="$dir/state"
+  arm=$(make_stub_arm_dir "$dir")
+  armout="$dir/arm.out"
+  run_stub_arm "$arm" "$state" "$armout" \
+    FM_STUB_MODE=never-advance FM_ARM_CONFIRM_TIMEOUT=not-a-number
+  # Well past the collapsed one-second budget, and far short of the 45s default.
+  local i=0
+  while [ "$i" -lt 80 ]; do
+    grep -q '^watcher: ' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! grep -q '^watcher: ' "$armout" 2>/dev/null \
+    || fail "a junk base budget collapsed the confirmation window: $(cat "$armout")"
+  ! grep -q 'integer expression expected\|integer expected' "$armout" 2>/dev/null \
+    || fail "a junk base budget reached an integer comparison: $(cat "$armout")"
+  is_live_non_zombie "$STUB_ARM_PID" \
+    || fail "the arm exited early under a junk base budget: $(cat "$armout")"
+  kill -TERM "$STUB_ARM_PID" 2>/dev/null || true
+  wait_for_exit "$STUB_ARM_PID" 80 >/dev/null
+  pass "a non-numeric base confirmation budget falls back to the default instead of collapsing"
+}
+
 test_a_non_numeric_ceiling_falls_back_to_the_default() {
   local dir state arm armout started elapsed status
   # A junk ceiling must behave like the default (three base budgets), not like a
@@ -476,3 +507,4 @@ test_one_unchanging_progress_fact_grants_at_most_one_extension
 test_the_ceiling_terminates_a_child_that_keeps_progressing
 test_a_child_that_exits_early_is_reported_as_an_exit_not_a_timeout
 test_a_non_numeric_ceiling_falls_back_to_the_default
+test_a_non_numeric_base_budget_falls_back_to_the_default

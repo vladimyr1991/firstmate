@@ -88,12 +88,20 @@ const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(exte
 const retryBaseMs = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const retryMaxMs = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const retryLimit = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
-// Must exceed the arm's confirmation ceiling (FM_ARM_CONFIRM_MAX, default 135s
-// in bin/fm-watch-arm.sh). Retiring the arm before it can finish confirming
-// would only move the "kill a slow but working process" defect one layer up:
-// this timeout SIGTERMs the arm, so a slow but successful cold start must not
-// reach it on any platform.
-const armReadyTimeoutMs = positiveInteger("FM_PI_ARM_READY_TIMEOUT_MS", 150000);
+// KNOWN GAP, deliberately left as it is. On timeout this SIGTERMs the arm
+// (retireArm below), and neither default covers the arm's real silent worst
+// case: an arm publishes nothing at all until it prints started/attached/FAILED,
+// and it can stay silent for FM_ARM_CONFIRM_MAX plus one FM_ARM_CONFIRM_TIMEOUT
+// (180s at bin/fm-watch-arm.sh defaults). Raising these numbers alone is not the
+// fix, because the wake is delivered only after restoreAfterActionableClose
+// resolves and that loop runs FM_WATCH_REARM_RETRY_LIMIT + 1 attempts, so a
+// larger per-attempt budget multiplies into a much longer degraded-delivery
+// window. Closing this properly needs a progress signal the adapter can actually
+// observe, which is a design question with its own specification.
+const armReadyTimeoutMs = positiveInteger(
+  "FM_PI_ARM_READY_TIMEOUT_MS",
+  process.platform === "win32" ? 35000 : 12000,
+);
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";

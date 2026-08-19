@@ -49,9 +49,14 @@
 # arm grants one further budget for each NEW piece of progress the child itself
 # published - the singleton lock naming THIS child, or a beacon mtime moved past
 # its value at fork - and never past the FM_ARM_CONFIRM_MAX ceiling. A child
-# that published nothing is terminated at the first deadline, and a child that
-# progressed and then stalled is terminated at the ceiling; the ceiling ALWAYS
+# that published nothing is terminated at the first deadline. A child that
+# progressed and then stalled is terminated one base budget after its LAST new
+# progress fact, usually well short of the ceiling; the ceiling is the separate
+# bound that terminates a child which keeps publishing new facts. It ALWAYS
 # terminates, so extension buys a slow start time and never an unbounded wait.
+# The arm prints nothing until one of the lines above, so its silent worst case
+# is CONFIRM_MAX plus one CONFIRM_TIMEOUT: a clean childless close falls through
+# wait_for_healthy_successor for one further base budget.
 # Both print the same FAILED line above; only the cycle ledger tells them apart,
 # through reason=confirmation-timeout versus reason=confirmation-ceiling.
 #
@@ -89,6 +94,10 @@ GRACE=${FM_GUARD_GRACE:-300}
 # watcher confirmed late is still fresh by the guard's definition.
 ARM_CONFIRM_DEFAULT=45
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
+# Sanitized like the ceiling below. Without this a non-numeric override makes
+# every later arithmetic and integer test read it as 0, collapsing the whole
+# confirmation budget to one second instead of failing visibly.
+case "$CONFIRM_TIMEOUT" in ''|*[!0-9]*|0) CONFIRM_TIMEOUT=$ARM_CONFIRM_DEFAULT ;; esac
 # Hard ceiling on total confirmation wall clock, measured from fork. Progress
 # extends the budget; this ceiling is what keeps extension from becoming an
 # unbounded wait, and it always terminates. A value below the base budget is
