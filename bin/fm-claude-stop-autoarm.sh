@@ -17,6 +17,11 @@
 #     the hook delegates guarded recovery to bin/fm-lock.sh and then re-verifies
 #     ownership. A live owner, missing lock, malformed lock, or unresolved
 #     ancestry remains inert, so a competing session never arms or rewakes.
+#     A legacy record this session owns has that ownership decided by ancestry
+#     alone, which Claude breaks whenever it re-hosts the session's process tree
+#     while the recorded pid stays alive. Before claiming anything, the hook
+#     therefore delegates a one-shot in-place backfill of its durable session id
+#     to bin/fm-lock.sh upgrade, whose outcome it discards.
 #   - AFK: while state/.afk exists the away daemon owns the watcher and triage;
 #     this hook exits 0 and NEVER rewakes the primary (checked again at
 #     translation time so a mid-cycle AFK transition is honored).
@@ -124,6 +129,18 @@ if [ "$RECOVER_SESSION_LOCK" -eq 1 ]; then
   CLAUDE_CODE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-$PAYLOAD_SESSION_ID}" \
     "$SCRIPT_DIR/fm-lock.sh" >/dev/null 2>&1 || exit 0
   fm_session_lock_owned_by_self "$STATE" "$PAYLOAD_SESSION_ID" || exit 0
+fi
+
+# --- legacy-record upgrade ----------------------------------------------------
+# This session owns the home and supervision is genuinely needed, so ownership is
+# provable right now - which is exactly what a legacy record stops being able to
+# prove the moment Claude re-hosts this session's process tree while the recorded
+# pid stays alive. Backfill the durable session id while it can still be proven,
+# delegating the write to the record's single writer. Every outcome is discarded:
+# an upgrade that cannot happen must never change this firing's arm, epoch,
+# banner, or exit code, and an idle or away home never reaches this line at all.
+if [ "$FM_LOCK_FORM" = legacy ]; then
+  "$SCRIPT_DIR/fm-lock.sh" upgrade "$PAYLOAD_SESSION_ID" >/dev/null 2>&1 || true
 fi
 
 # --- single-flight owner claim ------------------------------------------------
