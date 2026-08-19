@@ -278,7 +278,7 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
 3. **Found nothing in a witnessed cycle? End the turn silently.**
    Silently means no captain-facing update and no board write; the scout report and the `done:` status line the PM owes as an ordinary fleet worker are always written, whatever the cycle found.
    Around eleven checks run each weekday, so reporting "nothing new" every time trains the captain to stop reading reports and hides the one that matters.
-   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched, and a CHECK FAILED cycle is never one of the silent ones.
+   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched, a CHECK FAILED cycle is never one of the silent ones, and neither is a cycle whose capacity block was malformed.
 
 ## When a card is unclear
 
