@@ -28,6 +28,10 @@ The concise standing authority boundary remains always loaded in `AGENTS.md` sec
 7. Examine the causal theme across prior findings and fix rounds.
    Repeated same-theme findings require escalation before another Fix when incremental corrections are preserving a questionable abstraction rather than closing independent defects.
 8. When successive fixes are adding sentences that each patch one more side effect of the same prescribed command or mechanism, escalate to replace the mechanism rather than approving the next sentence; a mechanism needing a third caveat is the wrong mechanism, not an under-documented one.
+   Once that stop fires, the element is the clause that carries the stopped mechanism, and exactly three answers are legal: replace the mechanism, cut the element, or ship the element as it stands.
+   Adjusting the stopped mechanism once more is never a legal answer, and relaxing it, strengthening it, or re-specifying its matcher is that same illegal answer under another name; a later finding about something else in that element is a different defect and stays open to ordinary correction.
+   This clause narrows firstmate's own latitude in answering the stop and retires no prohibition stated anywhere in this skill.
+   Evidence: on task `fm-notion-witnessed-sweep` firstmate answered its own round-3 stop (`third-round-findings`) with exactly that illegal option, producing a fourth finding round (`fourth-round-findings`) that ended in the cut the round-3 evidence had already supported - one extra finding round of about 12.5 minutes, in a review of 11 cycles, 10 with findings, 4 firstmate-facing.
 9. Apply the existing stronger captain boundaries first.
    Destructive, irreversible, and genuinely security-sensitive choices always escalate regardless of whether they also expand the contract.
 
