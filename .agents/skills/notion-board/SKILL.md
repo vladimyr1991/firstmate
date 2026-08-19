@@ -30,7 +30,7 @@ Only a `claude`-harness agent can reach the connector at all; never route the PM
 The firstmate primary and implementation workers never scan the board or substitute for a PM whose spawn failed.
 
 `query_data_sources` and `query_database_view` are rate-limited on the captain's plan; `search` and `fetch` are not.
-A healthy cycle spends exactly ONE `query_data_sources` call - the witnessed read below, from which both sweeps are derived - and TWO per cycle remains the hard ceiling, the second reserved for that read's single retry, after an error or a zero-row result alike, and for nothing else.
+A healthy cycle spends exactly ONE `query_data_sources` call - the witnessed read below, from which both sweeps are derived - and TWO per cycle remains the hard ceiling, the second reserved for that read's single retry, deliberately covering a zero-row result as well as an error, and for nothing else.
 The call the second sweep used to spend is freed, not repurposed: do not add a new query use with it.
 Never issue a query per card, read individual cards with `fetch`, and never re-run the witnessed read inside the same cycle beyond that one permitted retry.
 
@@ -68,6 +68,7 @@ Diagnosis and probes: `data/fm-notion-orphan-sweep-diagnose-and-spec/report.md`.
 
 The column list is deliberately narrower than the one that report's specification asked for, and this is the one place this skill overrides it.
 It carries card identity and nothing more: `url` is the row identity W-2 compares, `Name` is what lets a report name the card it is about, and `Status`, `Stream`, and `Sprint` are the whole of what the two derived sets are predicated on.
+A title arriving as a row of this read is identity, which the PM may use to name a card in a report and for nothing else; the Boundaries rule that gives a card's title and description the weight of a captain instruction governs the card content the PM acts on, which reaches it only through the `fetch` below.
 What the narrowing leaves out is card BODY text, `Description` above all, because the read-proof needs rows rather than bodies and selecting prose with no `WHERE` clause would pull every stream's card text, `Финансы` and `Лигал` included, into the PM's turn carrying the weight the Boundaries section gives the captain's writing, for cards this role has no business reading at all.
 A card's body reaches the PM one card at a time through a free `fetch`, and only for a card the eligible set already holds, taken before the dispatchability test judges that card.
 `fetch` can serve renders hours stale, so it tells the PM what a selected card asks for and never witnesses what the board currently holds.
@@ -79,23 +80,26 @@ Derive both sets from the returned rows by byte-exact string comparison against 
 
 That sweep selects nothing and only detects divergence; the status-sync section below owns what its results mean and how they are reported.
 
-Neither derived set may be believed until both witnesses hold:
+No derived set may be believed until W-1 holds, and W-2 then runs over the same rows to say how much of that read it can account for:
 
-- **W-1, the read-proof.** The read produced at least one row. Zero rows earns the single retry below and is then CHECK FAILED - "nothing was read", never "nothing matched", and never a clean board.
-- **W-2, the completeness witness.** Every card in the cycle's `linked_cards` list, or in the standing PM's self-computed live-link set, appears among the returned rows.
+- **W-1, the read-proof.** The read produced at least one row. Zero rows earns the single retry below, and it is CHECK FAILED only when that retry also comes back with no row - "nothing was read", never "nothing matched", and never a clean board.
+- **W-2, the completeness witness.** Every card in the cycle's `linked_cards` list, or in the standing PM's self-computed live-link set, is matched against the returned rows.
   Match by page id, never by full URL string: from each side's URL discard the query string from the first `?` onward, take the LAST 32 hexadecimal characters of the path that remains, ignoring any dashes among them, and call the card present when those 32 characters equal a returned row's id compared case-insensitively.
   Anchor on the last 32 rather than on a hex run that measures exactly 32: this board's titles are Russian, so a slug is percent-encoded and its hex digits run right up to the id's dash, which makes the dash-ignored run 33 or 34 characters long and a rule reading "the run of 32" either match nothing or take the wrong leading 32.
-  Discarding the query string first is what keeps a trailing `?v=<view-id>` from supplying a different 32-hex id.
-  Differing hosts (`notion.so` against `notion.com`), differing slugs, and any query string therefore stop mattering, because a link is stored exactly as it was handed to `bin/fm-notion-link.sh` and every one of those forms is a valid URL for the same card.
-  Full-string equality would turn one link stored in a different but valid form into a permanent CHECK FAILED that halts all dispatch every cycle, where the contract before this one produced only a noisy false orphan line, and a witness that reliably halts the fleet is not a more reliable witness.
-  A linked URL carrying no 32-hex id names a card that cannot be located among the rows at all, so it is CHECK FAILED naming that link.
-  A linked card whose id is absent from the returned rows is CHECK FAILED with no exception and nothing to corroborate: the read is unfiltered over a collection whose cards are never deleted, only recycled into `♻️ Пул`, so a card someone still holds a live link to is still a row in it, and its absence can only mean the read came back incomplete.
+  That comparison answers the common forms - differing hosts (`notion.so` against `notion.com`), differing slugs, and a trailing `?v=<view-id>` all stop mattering - because a link is stored exactly as it was handed to `bin/fm-notion-link.sh` and every one of those forms is a valid URL for the same card.
+  It does not answer every form: a URL carrying the page id only inside a query parameter, or ending in a block fragment, yields some other id or none, and no further extraction rule is attempted here.
+  So an unmatched linked card, one whose stored URL no returned row answers to, is NOT CHECK FAILED.
+  Corroborate it with a free `fetch` of that stored URL and then write a loud unresolved-identity warning, naming the card and the stored URL, into the scout report and onto the rolling status page; `fetch` can serve renders hours stale, so it is only ever this corroborator and never the read-proof itself.
+  That warning is never silence and never a halt: the rest of the cycle proceeds on W-1's strength.
+  This is an INTERIM relaxation, in place until a card's canonical page id is stored beside its URL at the moment the card is linked, after which the comparison has an exact identity to match and W-2 can be made strict again.
+  It is here because the strict form turned a near-miss on a valid but differently-formed URL into a permanent every-cycle CHECK FAILED that halted all dispatch, which is a worse failure than the noisy false orphan line it replaced, and a witness that reliably halts the fleet is not a more reliable witness.
+  It relaxes only what an unmatched linked card costs: W-1 keeps its full strength, and a zero-row read is still CHECK FAILED after its single retry.
   When the brief carries no `linked_cards` line at all, W-2 cannot be answered: W-1 alone witnesses the read, the eligible set stands, and only the orphan report is skipped for that scan, exactly as the status-sync section says.
 
 CHECK FAILED also covers any tool error, `has_more: true`, and a result of 200 rows or more.
 The last two mean the read was truncated and the board outgrew this contract's assumption that it stays well under 200 rows, so say that explicitly and let firstmate revisit it.
 One retry of the same call is permitted, after an error and after a zero-row result alike, and it is the only use of the second call in the budget.
-A zero-row result earns that retry because the fault this contract exists to close was a well-formed empty answer that succeeded on an immediate re-run, so one repeat is exactly what separates a transient fail-open from a board that genuinely returned nothing.
+Covering a zero-row result is a deliberate widening of a reserve the specification wrote for an errored call alone, stated here rather than left silent, because the fault this contract exists to close was a well-formed empty answer that succeeded on an immediate re-run, so one repeat is exactly what separates a transient fail-open from a board that genuinely returned nothing.
 It is strictly one attempt, never a loop, never more than that reserved second call, and never a reason to report a healthy or a clean result: a second error or a second empty answer is final for the cycle and CHECK FAILED stands.
 
 On CHECK FAILED the cycle draws no conclusion at all from board content - no dispatch, no "the slot stays free", no "no divergence", and no silence.
@@ -178,11 +182,11 @@ A bare `done:` with staging prose in it is not that signal: firstmate does not r
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
 Never move a card the captain moved by hand in the meantime; re-read the card before writing and, if it has moved somewhere this table did not put it, leave it and report the divergence.
 Reporting a divergence means leaving the card exactly as it is, writing it into the PM's scout report, and listing it on the rolling status page - never a silent correction, because only firstmate decides what to do about one.
-Name the card on both surfaces by the `Name` and `url` the witnessed read returned in its own row, because a divergence firstmate cannot identify is not a divergence it can act on.
+Name the card on both surfaces, because a divergence firstmate cannot identify is not a divergence it can act on: on a sprint-check take the `Name` and `url` from the row the witnessed read already returned, and on an event wake, which runs no such read, take them from the card the re-read above just fetched, so naming never costs a `query_data_sources` call this wake was not given.
 
 The orphaned-status sweep - the active set derived from the witnessed read - finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
 Check every card in that set against the brief's `linked_cards` list, not against bare `notion_page=` notes in the backlog.
-Match them by the page-id rule W-2 owns, so a link the captain or a browser supplied in a different but valid URL form is never reported as an orphan.
+Match them by the page-id rule W-2 owns, and when that rule cannot match a stored URL to any row, the card belongs in W-2's unresolved-identity warning rather than in this sweep's divergence list, because a link the PM failed to identify is not evidence that no task holds the card.
 That is deliberately a stronger test than the bare-presence check that keeps the eligibility sweep from dispatching a card twice: presence proves a card was taken once, while the brief's list proves a task is still working it.
 If the brief carries no `linked_cards` line at all, skip this sweep for that scan and report no divergence from it: a test the PM cannot answer is not evidence that every active card is orphaned, and firstmate owns supplying the list.
 That skips only the orphan report, never the witnessed read itself, which still serves eligibility and still has to satisfy W-1.
