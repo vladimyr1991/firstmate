@@ -149,7 +149,7 @@ Firstmate reads that report, resolves each card's project independently through 
 For each card, firstmate takes delivery mode and yolo posture from the project's registry entry per `AGENTS.md` section 7 and classifies Ship or Scout by that section's deliverable rules.
 A card is ordinary intake, so a non-trivial ship card first passes the specification gate that `spec-gate` owns.
 Firstmate spawns that card's spec worker and binds the card to it with the same link step below, so a card's work never runs unlinked and the next scan cannot select the same card twice.
-Only a READY specification reaches an implementation brief; a card whose specification comes back BLOCKED is parked on its captain question, and the status table below moves it to `На ревью`.
+Only a READY specification reaches an implementation brief, and it reaches one only after the publish step below has put its statement on the card; a card whose specification comes back BLOCKED is parked on its captain question, and the status table below moves it to `На ревью`.
 For every selected card the gate has released, while capacity remains, it writes an implementation brief before spawning, carrying the project's real landing contract.
 For a project whose standing posture in `data/captain.md` grants staging-inclusive landing autonomy, scaffold that brief with `bin/fm-brief.sh <id> <repo> --mode local-only --staging-autonomy` so the contract, including the keyed staging line the sync step below depends on, is generated rather than hand-written over contradicting boilerplate.
 It spawns one implementation worker per card through `bin/fm-spawn.sh`, then binds that card:
@@ -167,6 +167,78 @@ If capacity closes or one spawn fails, firstmate lists only the successfully lin
 The PM re-reads every successfully linked card, leaves any card untouched if the captain moved it meanwhile, otherwise sets it to `В работе`, updates the rolling status page, and finishes its scan.
 An eligible card is not handled merely because its body already contains an asset, prompt, result, or earlier work note.
 Only a linked task and the status events in the table below prove lifecycle progress.
+
+## Publishing the statement into the card
+
+A card the captain wrote goes to `В работе` with its description untouched, so the finished work is the only evidence he ever gets that he was understood.
+This section is the single owner of the publish that fixes that: before the implementation worker for a card-linked task is spawned, the statement its specification gate produced is written into the card body, in the captain's own language, so he can check the understanding before the work exists rather than after it.
+`spec-gate` owns only where this step sits in the gate's order.
+
+The block is a SUMMARY of the specification and never the specification itself.
+It is written in Russian, in outcomes, and never names a branch, commit hash, pull-request URL, task id, worker, harness, or delivery mode; those belong to the result write the reporting section below owns, and `AGENTS.md` section 9 keeps them out of captain-facing text.
+It is at most 25 rendered lines and at most 1500 characters, and a republish replaces it in place, so repeated gate rounds can never grow a card on a block-limited plan.
+
+```markdown
+## Постановка (как понята)
+
+_Статус: готово к работе · 2026-08-20_
+
+**Задача:** <одно-два предложения: что делаем и для кого>
+**Зачем:** <наблюдаемый результат, по которому будет видно, что сделано>
+
+**Делаем:**
+- <пункт>
+
+**Не делаем:**
+- <пункт>
+
+**Готово, когда:**
+- <проверяемый признак>
+
+**Вопросы:** нет
+```
+
+| Field | Rule |
+|---|---|
+| Heading | Exactly `## Постановка (как понята)`, never varied, because the republish below matches on it. |
+| Status line | `_Статус: готово к работе · <YYYY-MM-DD>_` when the specification is READY and `_Статус: нужен ответ · <YYYY-MM-DD>_` when it is BLOCKED, dated the day of the publish. |
+| `Задача` | One or two sentences. |
+| `Зачем` | One sentence, observable. |
+| `Делаем` | Three to seven bullets, one line each; a single bullet is correct for a card the gate exempted as mechanical. |
+| `Не делаем` | One to three bullets, present even when short, because it is where a misunderstanding is most visible. |
+| `Готово, когда` | Two to five bullets, each checkable by the captain on the running product or on the board and never by reading code. |
+| `Вопросы` | `нет` when READY; when BLOCKED, at most five numbered one-sentence questions, each carrying the recommendation firstmate would act on if the answer were "use your recommendation". |
+
+Only a `claude`-harness turn can reach the connector at all, so firstmate publishes from its own turn, and the single documented fallback is a `claude`-harness worker handed the exact block text.
+Never brief a non-`claude` worker to perform this write.
+The spec worker supplies the text rather than firstmate re-deriving it: a card-linked spec worker's report ends with a `## Постановка для карточки` section holding the block ready to publish verbatim, and firstmate edits it only where its own interview changed the specification.
+
+Read the card with `notion-fetch` first, which is free and outside the rate-limited budget, then write once with `notion-update-page`:
+
+| Body as fetched | Call |
+|---|---|
+| no `## Постановка (как понята)` heading | `command: insert_content`, `position: {"type":"start"}`, carrying the block. |
+| already holds the block firstmate last wrote | `command: update_content`, one `content_updates` entry whose `old_str` is that block exactly as the fetch returned it. Never pass `replace_all_matches`, so a multiple match fails rather than guessing. |
+
+Never use `replace_content` on a card body here; it stays reserved to recycle step 4, which is the only whole-body replacement a card ever gets.
+The statement sits at the top of the body, above the result write, because the captain reads it before the work exists and re-reads it against the result afterwards.
+This publish adds no `query_data_sources` call to any cycle.
+
+Then re-read the card and confirm exactly one `## Постановка (как понята)` heading carrying the status line just written.
+Only then spawn the implementation worker and run the link step above, in the order that step already fixes.
+
+A card whose body the publish could not reach blocks that card's implementation dispatch.
+Retry the failed call once; if it fails again, spawn nothing for that card, leave the card exactly as it is, and report the blocker to the captain naming the card and the error.
+This is the one place a board write gates a dispatch, and it is deliberate: a statement the captain cannot see is the whole defect this step exists to fix.
+Every other task keeps dispatching on its own schedule, exactly as a BLOCKED specification already rules.
+
+If the body holds a block that does not match what firstmate last wrote, the captain edited it: never overwrite it.
+Leave the card, report the divergence on the same two surfaces and with the same `Name` and `url` naming the status-sync divergence rule below requires, and hold that card's dispatch as above.
+A multiple match is the same case and is never resolved by widening the call.
+
+When the specification comes back BLOCKED, publish the same block with `нужен ответ` and the questions in `Вопросы`, and let the status table below move the card to `На ревью` through the existing `needs-decision:` and `blocked:` rule rather than any new transition.
+Republish it in place with `готово к работе` and `Вопросы: нет` when the captain's answer returns the task to the gate.
+A task with no live `notion_page=` link has nothing to publish to, and the gate runs for it exactly as it does today.
 
 ## Status sync
 
