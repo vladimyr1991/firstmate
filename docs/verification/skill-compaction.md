@@ -44,6 +44,9 @@ fm-skill-compact-check: ok checked=26 changed=4 compacted=3 retired_boundaries=0
 
 `retired_boundaries=0`: no stated safety boundary was retired in any of the three, so none of this needed the captain-merge path.
 
+That output block is the run as it stood on 2026-08-11 and is left verbatim.
+The check has since renamed its per-skill `pointers=` and `boundaries=` fields to `baseline_pointers=` and `baseline_boundaries=`, added `boundaries_now=`, and added `inspected_boundaries=` and `uninspected_skills=` to the summary line, so a run today prints those names instead.
+
 Blind numbers are re-runs against the current (post-fix) skill text, same independence setup: prompts rendered from the compacted skill, answered by `codex exec` on `gpt-5.6-terra` (OpenAI Codex v0.147.0) from an empty scratch directory with `--skip-git-repo-check`. No scenario fixture was edited at any point; all three fixtures are byte-identical to the versions the control run used.
 
 - `secondmate-provisioning` 24/24: S16 now returns the control's answer verbatim - "pending config-reread generations are discarded or quarantined after cleanup failure" - confirming the restored branch is back in the reader-facing text.
@@ -91,6 +94,9 @@ Boundary matching pairs statements by keyword family and shared significant term
 It reliably catches deletion, which is the failure mode compaction causes.
 It does not prove that a surviving statement still *means* the same thing - that is the scenario suite's job, and no amount of string matching substitutes for it.
 
+The count itself is the other limit, and the check now states it rather than leaving it to be inferred: `inspected_boundaries=` is how many statements the boundary half looked at, and a zero for a skill means it looked at none of that skill's rules rather than that the skill is intact.
+Every such skill is named on stderr as `NOT COVERAGE`, and `bin/fm-skill-compact-check.sh --help` owns the full statement of what a green result does and does not assert.
+
 Only one of the two axes is machine-enforced.
 The check owns the size delta and refuses a material shrink that carries no fixture, but it cannot run the blind re-answer, because that needs a second vendor's model.
 So "the scenario suite passed 100%" is an agent-run result recorded here with its evidence, not something CI can assert - treat a compaction whose blind run was never done as unverified, however green the check is.
@@ -105,5 +111,6 @@ bin/fm-skill-compact-check.sh                      # all changed skills, both ax
 bin/fm-skill-compact-check.sh --skill fmx-respond  # one skill
 bin/fm-skill-compact-check.sh --prompt fmx-respond # blind re-answer prompt
 bin/fm-skill-compact-check.sh --prompt fmx-respond --baseline <ref>   # control prompt
-bash tests/fm-skill-compact-check.test.sh          # 22 behavior tests for the gate itself
+bin/fm-skill-compact-check.sh --coverage           # how much of each skill the boundary half inspects
+bash tests/fm-skill-compact-check.test.sh          # 33 behavior tests for the gate itself
 ```
