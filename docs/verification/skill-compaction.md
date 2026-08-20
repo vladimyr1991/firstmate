@@ -46,6 +46,10 @@ fm-skill-compact-check: ok checked=26 changed=4 compacted=3 retired_boundaries=0
 
 That output block is the run as it stood on 2026-08-11 and is left verbatim.
 The check has since renamed its per-skill `pointers=` and `boundaries=` fields to `baseline_pointers=` and `baseline_boundaries=`, added `boundaries_now=`, and added `inspected_boundaries=` and `uninspected_skills=` to the summary line, so a run today prints those names instead.
+`baseline_boundaries=` is also a different number from the `boundaries=` it replaced, and deliberately so: this is a recorded deviation from the specification, which named only `inspected_boundaries=`, `boundaries_now=` and the `--coverage` column as counts of distinct statements and left the baseline field as raw keyword-family tuples.
+Following that literally printed two numbers in two units side by side on one line, so subtracting `boundaries_now=` from `baseline_boundaries=` read as a loss that had not happened, and reporting real coverage is what this check exists to do.
+Both fields now count distinct statements; the per-family tuples are still what the survivorship comparison iterates.
+The 2026-08-11 `boundaries=` figures above are therefore tuple counts and do not line up with what a run prints today.
 
 Blind numbers are re-runs against the current (post-fix) skill text, same independence setup: prompts rendered from the compacted skill, answered by `codex exec` on `gpt-5.6-terra` (OpenAI Codex v0.147.0) from an empty scratch directory with `--skip-git-repo-check`. No scenario fixture was edited at any point; all three fixtures are byte-identical to the versions the control run used.
 
@@ -112,5 +116,5 @@ bin/fm-skill-compact-check.sh --skill fmx-respond  # one skill
 bin/fm-skill-compact-check.sh --prompt fmx-respond # blind re-answer prompt
 bin/fm-skill-compact-check.sh --prompt fmx-respond --baseline <ref>   # control prompt
 bin/fm-skill-compact-check.sh --coverage           # how much of each skill the boundary half inspects
-bash tests/fm-skill-compact-check.test.sh          # 33 behavior tests for the gate itself
+bash tests/fm-skill-compact-check.test.sh          # 39 behavior tests for the gate itself
 ```

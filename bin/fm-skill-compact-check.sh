@@ -244,8 +244,14 @@ BOUNDARY_FAMILIES = {
     # rewrite restate a rule in different words without tripping, and "Do not
     # X", "Never X", and "X cannot happen" are the same prohibition: split
     # across families, rewriting "Do not X" as "Never X" would be a false
-    # dropped-boundary failure. "must not" matches this family and the "must"
-    # family both, and is reported once by the existing duplicate suppression.
+    # dropped-boundary failure. That is also why the "must" family below
+    # excludes the "must" inside "must not": boundaries() emits one tuple per
+    # matching family and boundary_survives() demands a survivor for each, so a
+    # "must" tuple on a prohibition would demand a surviving "must" statement
+    # and turn the honest rewrite of "You must not X" into "Never X" into a
+    # reported loss. The duplicate suppression further down only collapses the
+    # message for a statement already judged lost; it cannot make a tuple
+    # survive.
     #
     # KNOWN BLIND SPOTS INTRODUCED BY THIS FOLD. Measured across the tracked
     # corpus, folding these spellings in adds 145 inspected statements and
@@ -289,7 +295,7 @@ BOUNDARY_FAMILIES = {
         r"may\s+not", r"must\s+not",
     ),
     "always": (r"always",),
-    "must": (r"must",),
+    "must": (r"must(?!\s+not\b)",),
     "refuse": (r"refuse", r"refuses", r"refused", r"refusing", r"refusal"),
     "stop": (r"stop", r"stops", r"stopped", r"stopping"),
 }
@@ -329,9 +335,15 @@ STOPWORDS = {
     "keep", "keeps", "kept", "left", "leave", "leaves", "like", "well", "long",
     "back", "down", "part", "case", "time", "line", "lines", "text", "thing",
     "things", "without", "within", "through", "against", "about", "above",
-    "below", "again", "already", "never", "always", "must", "refuse", "refuses",
-    "refused", "refusing", "refusal", "stop", "stops", "stopped", "stopping",
+    "below", "again", "already", "never", "always", "must", "cannot", "refuse",
+    "refuses", "refused", "refusing", "refusal", "stop", "stops", "stopped",
+    "stopping",
 }
+# Every boundary keyword is a stopword, so the keyword that made two statements
+# the same family cannot also count as content shared between them. "cannot" is
+# the only spelling folded into the never family that RE_TERM's four-character
+# minimum lets through; "do", "not", "don", "can", and "may" fall out on their
+# own, and "must" was already listed.
 
 RETIRE_RE = re.compile(r"^\s*-\s+retired-(pointer|boundary)\s+<<(.+?)>>\s*:\s*(\S.*?)\s*$")
 CONSOLIDATE_RE = re.compile(
@@ -792,7 +804,12 @@ def check_skill(skill: str, path: str) -> dict:
         "tokens": cur_tokens,
         "delta": delta,
         "baseline_pointers": len(base_pointers),
-        "baseline_boundaries": len(boundaries(base)),
+        # Distinct statements, on the same basis as boundaries_now, because the
+        # two are printed side by side and a reader subtracts them. Counting one
+        # in tuples and the other in statements would report an artifact of
+        # counting as a loss. The survivorship loop above still iterates the
+        # per-family tuples; only this reported number is deduplicated.
+        "baseline_boundaries": distinct_boundary_statements(base),
         "scenarios": scenarios,
         "retired_pointers": len(retired_pointers),
         "retired_boundaries": [subject for subject, _ in retired_boundaries],
@@ -884,7 +901,11 @@ def main() -> int:
         return 2
 
     if COVERAGE:
-        return report_coverage(selected)
+        try:
+            return report_coverage(selected)
+        except CheckError as exc:
+            print(f"fm-skill-compact-check: {exc}", file=sys.stderr)
+            return 1
 
     results = []
     try:

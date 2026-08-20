@@ -446,6 +446,107 @@ $(padding)"
   pass "a prohibition restated in a different spelling is one family, so rewording is not punished"
 }
 
+test_must_not_respelled_survives() {
+  local repo out
+  # "must not" is a prohibition, so it belongs to the never family alone. If the
+  # "must" family also claimed it, the statement would carry a second tuple that
+  # demands a surviving "must" statement of its own, and this honest reword would
+  # be reported as a dropped safety boundary.
+  repo=$(make_repo must-not-respelled "Run \`bin/fm-thing.sh\` first.
+You must not sweep another home endpoints.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+Never sweep another home endpoints.
+$(padding)"
+  out=$("$CHECK" --root "$repo" --baseline main) \
+    || fail "restating 'must not' as 'Never' was reported as a dropped boundary: $out"
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+Do not sweep another home endpoints.
+$(padding)"
+  out=$("$CHECK" --root "$repo" --baseline main) \
+    || fail "restating 'must not' as 'Do not' was reported as a dropped boundary: $out"
+  pass "a prohibition spelled 'must not' is one family, so rewording it is not a false failure"
+}
+
+test_must_not_deleted_is_still_a_loss() {
+  local repo
+  # The other half of the same fix: narrowing the "must" family must not stop a
+  # deleted "must not" prohibition from being reported.
+  repo=$(make_repo must-not-deleted "Run \`bin/fm-thing.sh\` first.
+You must not sweep another home endpoints.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+$(padding)"
+  run_expect_code 1 "sweep another home" "$CHECK" --root "$repo" --baseline main
+  pass "deleting a 'must not' prohibition is still refused"
+}
+
+test_a_plain_must_is_still_its_own_family() {
+  local repo
+  repo=$(make_repo plain-must "Run \`bin/fm-thing.sh\` first.
+You must sweep another home endpoints.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+$(padding)"
+  run_expect_code 1 "sweep another home" "$CHECK" --root "$repo" --baseline main
+  pass "excluding 'must not' from the must family leaves a plain 'must' obligation detected"
+}
+
+test_a_boundary_keyword_is_not_shared_content() {
+  local repo
+  # `cannot` is a family keyword, so two unrelated prohibitions must not count it
+  # as a significant term they share. If they did, the deletion below would be
+  # judged to survive on the strength of a keyword.
+  repo=$(make_repo keyword-not-content "Run \`bin/fm-thing.sh\` first.
+Sessions cannot share credentials.
+Sessions cannot exceed the quota.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+Sessions cannot exceed the quota.
+$(padding)"
+  run_expect_code 1 "Sessions cannot share credentials" "$CHECK" --root "$repo" --baseline main
+  pass "a boundary keyword is never counted as content shared between two statements"
+}
+
+test_baseline_and_current_boundary_counts_share_a_unit() {
+  local repo out
+  # One statement carrying two keyword families is one statement. The detail line
+  # prints baseline_boundaries beside boundaries_now, so a reader subtracts them;
+  # counting one in tuples and the other in statements would report a loss that
+  # did not happen.
+  repo=$(make_repo comparable-units "Run \`bin/fm-thing.sh\` first.
+Always confirm the endpoint, and never sweep another home.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+Always confirm the endpoint, and never sweep another home.
+One more routine sentence that carries no pointer and no boundary.
+$(padding)"
+  out=$("$CHECK" --root "$repo" --baseline main) \
+    || fail "an edit that preserved every boundary was refused: $out"
+  assert_contains "$out" "baseline_boundaries=1 boundaries_now=1" \
+    "the two boundary counts were not reported in the same unit"
+  pass "baseline_boundaries and boundaries_now count distinct statements on the same basis"
+}
+
+test_coverage_reports_an_unreadable_skill_actionably() {
+  local repo out rc
+  repo=$(make_repo coverage-unreadable "Run \`bin/fm-thing.sh\` first.
+$(padding)")
+  # Still tracked, gone from the working tree - a skill removed or renamed
+  # before staging.
+  rm "$repo/.agents/skills/demo/SKILL.md"
+  set +e
+  out=$("$CHECK" --root "$repo" --coverage 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || fail "an unreadable skill under --coverage did not exit 1: $out"
+  assert_contains "$out" "fm-skill-compact-check: cannot read .agents/skills/demo/SKILL.md" \
+    "--coverage did not explain which skill it could not read"
+  assert_not_contains "$out" "Traceback" \
+    "--coverage reported an unreadable skill as a Python traceback"
+  pass "--coverage reports an unreadable skill in one actionable line, like the normal path"
+}
+
 test_coverage_reports_the_working_tree() {
   local repo out
   repo=$(make_repo coverage-report "Run \`bin/fm-thing.sh\` first.
@@ -537,6 +638,12 @@ test_the_advisory_does_not_mask_a_real_loss
 test_baseline_and_working_tree_counts_are_distinguishable
 test_dropped_prohibition_fails
 test_prohibition_respelled_survives
+test_must_not_respelled_survives
+test_must_not_deleted_is_still_a_loss
+test_a_plain_must_is_still_its_own_family
+test_a_boundary_keyword_is_not_shared_content
+test_baseline_and_current_boundary_counts_share_a_unit
+test_coverage_reports_an_unreadable_skill_actionably
 test_coverage_reports_the_working_tree
 test_coverage_on_the_real_repository
 test_coverage_refuses_a_baseline
