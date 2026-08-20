@@ -577,6 +577,7 @@ Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
+A quiet step is not a transfer of that step - do not produce its artifact by hand, including opening the PR, while the run still owns it.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 An active run commits into the pipeline's own worktree while your checkout stays at the head you submitted, so when a live finding asserts a fact about the pipeline head, do not treat your checkout as confirming or refuting it.
 Verify such a claim from supported gate evidence; if it cannot be checked from that evidence, relay it as unverified instead of endorsing it, and do not make a scope decision that depends on it.
