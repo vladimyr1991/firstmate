@@ -996,7 +996,7 @@ test_no_mistakes_dod_states_what_done_requires() {
 # The remedy belongs with the gate-response guidance in the no-mistakes
 # definition of done, and nowhere else - the other modes run no pipeline.
 test_no_mistakes_dod_requires_verified_gate_claims() {
-  local home id brief mode
+  local home id brief mode quiet_rule
   home="$TMP_ROOT/gate-claim-home"
   mkdir -p "$home/data"
   id="brief-gate-claim-e1"
@@ -1022,12 +1022,21 @@ test_no_mistakes_dod_requires_verified_gate_claims() {
   assert_grep "belongs only to the documented post-abort path" "$brief" \
     "no-mistakes DOD lost the carve-out preserving the post-abort custody recovery"
 
+  # The never-rule that closes the gap a silent step opens: the rules say the
+  # pipeline owns the step, and none of them says "unless it stops responding".
+  quiet_rule="Never produce a pipeline step's artifact by hand, including opening the pull request, while the run still owns that step - a step that has stopped responding has not released it."
+  assert_grep "$quiet_rule" "$brief" \
+    "no-mistakes DOD lost the rule that a quiet step has not released its artifact"
+
   # It sits with the gate-response guidance, not as a free-floating section.
   grep -q '^Do not hand-edit, commit, or fix findings yourself while a run is active' "$brief" \
     || fail "the gate-response guidance the verification rule attaches to is missing"
   [ "$(grep -n 'do not treat your checkout as confirming or refuting it' "$brief" | cut -d: -f1)" \
     = "$(( $(grep -n '^Do not hand-edit, commit, or fix findings yourself while a run is active' "$brief" | cut -d: -f1) + 1 ))" ] \
     || fail "the finding-verification rule must follow the active-run gate-response guidance directly"
+  [ "$(grep -Fn -- "$quiet_rule" "$brief" | cut -d: -f1)" \
+    = "$(( $(grep -n '^Do not hand-edit, commit, or fix findings yourself while a run is active' "$brief" | cut -d: -f1) - 1 ))" ] \
+    || fail "the quiet-step rule must sit directly above the active-run gate-response guidance"
 
   # No pipeline runs in the other scaffolds, so the rule must not leak into them.
   # assert_present first: assert_no_grep on a file that was never written
@@ -1038,12 +1047,16 @@ test_no_mistakes_dod_requires_verified_gate_claims() {
     assert_present "$home/data/$id/brief.md" "$mode brief was not scaffolded"
     assert_no_grep "do not treat your checkout as confirming or refuting it" "$home/data/$id/brief.md" \
       "the live-finding verification rule leaked into the $mode brief"
+    assert_no_grep "$quiet_rule" "$home/data/$id/brief.md" \
+      "the quiet-step rule leaked into the $mode brief"
   done
   id="brief-gate-claim-e-scout"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
   assert_present "$home/data/$id/brief.md" "scout brief was not scaffolded"
   assert_no_grep "do not treat your checkout as confirming or refuting it" "$home/data/$id/brief.md" \
     "the live-finding verification rule leaked into the scout brief"
+  assert_no_grep "$quiet_rule" "$home/data/$id/brief.md" \
+    "the quiet-step rule leaked into the scout brief"
   pass "fm-brief.sh: no-mistakes DOD requires live gate claims to be verified or relayed unverified"
 }
 
