@@ -46,6 +46,7 @@ case "$1 ${2:-}" in
     if [ -n "${FM_FAKE_HERDR_SERVER_GATE:-}" ]; then
       printf '%s\n' "$$" > "$FM_FAKE_HERDR_SERVER_GATE.launched"
       while [ ! -f "$FM_FAKE_HERDR_SERVER_GATE" ]; do
+        [ -d "$state" ] || exit 0
         "$FM_FAKE_HERDR_REAL_SLEEP" 0.5
       done
     fi
