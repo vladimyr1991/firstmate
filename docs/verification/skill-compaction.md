@@ -116,5 +116,5 @@ bin/fm-skill-compact-check.sh --skill fmx-respond  # one skill
 bin/fm-skill-compact-check.sh --prompt fmx-respond # blind re-answer prompt
 bin/fm-skill-compact-check.sh --prompt fmx-respond --baseline <ref>   # control prompt
 bin/fm-skill-compact-check.sh --coverage           # how much of each skill the boundary half inspects
-bash tests/fm-skill-compact-check.test.sh          # 44 behavior tests for the gate itself
+bash tests/fm-skill-compact-check.test.sh          # 45 behavior tests for the gate itself
 ```

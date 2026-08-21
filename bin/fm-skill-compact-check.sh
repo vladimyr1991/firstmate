@@ -594,6 +594,18 @@ def frontmatter_statements(text: str) -> int:
     return 0
 
 
+def excluded_lines(text: str) -> int:
+    """Lines statement_lines() drops: headings, and every line inside a fence.
+
+    Reported beside the counted statements so the `statements` column can be
+    read for what it is. A heading can carry a rule - "## The generator never
+    evaluates itself" is one - and a dropped heading is both uninspected and
+    absent from the column, so its count belongs next to the column.
+    """
+    prose, code = split_regions(text)
+    return sum(1 for line in prose if line.strip().startswith("#")) + len(code)
+
+
 def working_counts(path: str) -> dict:
     """The working-tree aperture for one skill, independent of any baseline."""
     text = working_text(path)
@@ -602,6 +614,7 @@ def working_counts(path: str) -> dict:
         "wt_pointers": len(pointers(text)),
         "wt_statements": len(statement_lines(text)),
         "wt_frontmatter": frontmatter_statements(text),
+        "wt_excluded": excluded_lines(text),
     }
 
 
@@ -893,34 +906,39 @@ def report_aperture(results: list[dict], changed: list[dict]) -> None:
 def report_coverage(selected: list[tuple[str, str]]) -> int:
     """Print the working-tree aperture per skill, reading no git baseline.
 
-    The `statements` column is len(statement_lines(...)), which does not skip
-    YAML frontmatter, so keys like `name:` and `metadata:` are counted as
-    statements, along with any wrapped `description:` continuation lines. That
-    is DISCLOSED in the output below rather than repaired.
+    The `statements` column is len(statement_lines(...)). It is not a count of
+    everything a reader would call a statement: it counts YAML frontmatter
+    keys and their wrapped continuation lines, and it drops every heading and
+    every line inside a fenced block.
 
-    The disclosure quotes no remembered percentage. It counts the frontmatter
-    statements of the skills actually selected on this run and prints that,
-    because the share is not one number: measured across the 28 tracked skills
-    at the time of writing it ran from 1.7% to 25.0%, median 11.9%, since a
-    fixed handful of frontmatter lines is a far larger share of a 28-statement
-    skill than of a 294-statement one. A single band would have been wrong for
-    almost every row, and a guard quoting an unsupported figure about its own
-    coverage is the exact defect this check exists to end.
+    So the run reports the COMPOSITION of that column - counted statements, how
+    many of them are frontmatter, and how many lines were dropped as headings
+    or fenced code - and asserts nothing about what the composition means. It
+    draws no conclusion about whether the column runs high or low, and quotes
+    no percentage.
 
-    Not repaired, because statement_lines() is shared with the survivorship
-    path: excluding frontmatter would also stop inspecting any prohibition
-    written there, and no existing detected loss may become undetected. The
-    direction of the error is what settles it: counting frontmatter makes the
-    DENOMINATOR larger, so any share read off these columns comes out LOWER
-    than the truth. It understates. An error that leans away from the danger
-    cannot make anyone trust this guard for more than it inspected, so it is
-    worth saying out loud and not worth risking detection to correct.
+    That is deliberate, and it is the third design of this disclosure. The
+    first quoted a fixed percentage the corpus did not support. The second
+    measured the frontmatter but still declared which way the column erred,
+    which the columns do not settle either: the dropped headings are the same
+    order of magnitude as the counted frontmatter and pull the other way. Both
+    failed the same way, by asserting a derived interpretation of the column
+    instead of reporting what was counted. A count cannot be wrong like that,
+    and it does not go stale when the corpus moves.
+
+    Reported rather than repaired, because statement_lines() is shared with the
+    survivorship path. Excluding frontmatter there would also stop inspecting
+    any prohibition written inside frontmatter, and no existing detected loss
+    may become undetected. That line is absolute, which is why the composition
+    is published instead of the function being changed.
     """
     rows = []
     frontmatter = 0
+    excluded = 0
     for name, path in selected:
         counts = working_counts(path)
         frontmatter += counts["wt_frontmatter"]
+        excluded += counts["wt_excluded"]
         rows.append((name, counts["wt_boundaries"], counts["wt_pointers"], counts["wt_statements"]))
 
     width = max([len("skill")] + [len(r[0]) for r in rows])
@@ -935,20 +953,18 @@ def report_coverage(selected: list[tuple[str, str]]) -> int:
             wo=len([r for r in rows if r[1] == 0]),
         )
     )
-    total_statements = sum(r[3] for r in rows)
-    share = (100.0 * frontmatter / total_statements) if total_statements else 0.0
     print(
-        "fm-skill-compact-check: the statements column counts every prose line, "
-        "including YAML frontmatter; on this run that is {fm} of {total} counted "
-        "statements ({share:.1f}%), and it is a far larger share of a short skill "
-        "than of a long one.".format(
-            fm=frontmatter, total=total_statements, share=share
+        "fm-skill-compact-check: statements composition: {total} counted, of "
+        "which {fm} are YAML frontmatter lines; a further {ex} heading and "
+        "fenced-code lines were not counted at all.".format(
+            total=sum(r[3] for r in rows), fm=frontmatter, ex=excluded
         )
     )
     print(
-        "fm-skill-compact-check: that inflates the denominator, so any share of "
-        "a skill read off these columns UNDERSTATES what was inspected - this "
-        "report never claims more coverage than the guard actually has."
+        "fm-skill-compact-check: statement_lines() is shared with the "
+        "survivorship path, so this composition is reported rather than "
+        "changed - dropping frontmatter here would also stop inspecting any "
+        "prohibition written inside frontmatter."
     )
     return 0
 
