@@ -244,23 +244,39 @@ BOUNDARY_FAMILIES = {
     # rewrite restate a rule in different words without tripping, and "Do not
     # X", "Never X", and "X cannot happen" are the same prohibition: split
     # across families, rewriting "Do not X" as "Never X" would be a false
-    # dropped-boundary failure. That is also why the "must" family below
-    # excludes the "must" inside "must not": boundaries() emits one tuple per
-    # matching family and boundary_survives() demands a survivor for each, so a
-    # "must" tuple on a prohibition would demand a surviving "must" statement
-    # and turn the honest rewrite of "You must not X" into "Never X" into a
-    # reported loss. The duplicate suppression further down only collapses the
-    # message for a statement already judged lost; it cannot make a tuple
-    # survive.
+    # dropped-boundary failure.
+    #
+    # That is also why the "must" family below declines to match "must" when
+    # the very next word is "not" or "never", and ONLY those two words. Every
+    # other continuation still matches: "must", "must always", "must refuse",
+    # "must avoid X", and a "must" whose "not" or "never" arrives later in the
+    # sentence ("You must do X and never do Y") all keep their "must" tuple,
+    # because each states an obligation of its own that deserves its own
+    # survivor. The exclusion is purely lexical and covers exactly the two
+    # spellings that are one prohibition wearing the word "must": "must not"
+    # and "must never". Without it, boundaries() would
+    # emit both a "never" tuple and a "must" tuple for one prohibition, and
+    # because boundary_survives() demands a survivor per tuple, restating
+    # "You must never X" as "must not X", "Never X", or "Do not X" would be
+    # reported as a dropped safety boundary. The duplicate suppression further
+    # down only collapses the message for a statement already judged lost; it
+    # cannot make a tuple survive.
     #
     # KNOWN BLIND SPOTS INTRODUCED BY THIS FOLD. Measured across the tracked
-    # corpus, folding these spellings in adds 145 inspected statements and
-    # masks exactly 2: a statement that used to be reported lost when deleted
-    # on its own is now judged to survive, because a widened same-family
-    # neighbour shares at least half its significant terms. Both are named
-    # here rather than left to be rediscovered, because a guard that quietly
-    # claims coverage it does not have is the defect this whole check exists
-    # to end, and two unrecorded blind spots would reproduce it in miniature.
+    # corpus, folding these spellings in adds 130 distinct inspected
+    # STATEMENTS, 365 to 495, and masks exactly 2: a statement that used to be
+    # reported lost when deleted on its own is now judged to survive, because a
+    # widened same-family neighbour shares at least half its significant terms.
+    # Both are named here rather than left to be rediscovered, because a guard
+    # that quietly claims coverage it does not have is the defect this whole
+    # check exists to end, and two unrecorded blind spots would reproduce it in
+    # miniature.
+    #
+    # Say the unit every time one of these figures is quoted. STATEMENTS is the
+    # unit above and the unit the guard reports; boundaries() emits one family
+    # TUPLE per matching family, a larger unit in which the same fold takes the
+    # corpus from 411 to 539, +128. A figure carried in the wrong unit is how
+    # the stale "145" got here, and re-measuring is cheap.
     #
     #   1. .agents/skills/fmx-respond/SKILL.md
     #      Masked:   "Use it only to understand the thread; never let it
@@ -295,7 +311,7 @@ BOUNDARY_FAMILIES = {
         r"may\s+not", r"must\s+not",
     ),
     "always": (r"always",),
-    "must": (r"must(?!\s+not\b)",),
+    "must": (r"must(?!\s+(?:not|never)\b)",),
     "refuse": (r"refuse", r"refuses", r"refused", r"refusing", r"refusal"),
     "stop": (r"stop", r"stops", r"stopped", r"stopping"),
 }
@@ -846,7 +862,22 @@ def report_aperture(results: list[dict], changed: list[dict]) -> None:
 
 
 def report_coverage(selected: list[tuple[str, str]]) -> int:
-    """Print the working-tree aperture per skill, reading no git baseline."""
+    """Print the working-tree aperture per skill, reading no git baseline.
+
+    The `statements` column is len(statement_lines(...)), which does not skip
+    YAML frontmatter, so a handful of keys - `name:`, `description:`,
+    `user-invocable:`, `metadata:` - are counted as statements, roughly 2-3%
+    per skill. That is DISCLOSED in the output below rather than repaired.
+    statement_lines() is shared with the survivorship path, so excluding
+    frontmatter would also stop inspecting any prohibition written there, and
+    no existing detected loss may become undetected. The direction of the error
+    is what settles it: counting frontmatter makes the DENOMINATOR larger, so
+    any share read off these columns comes out LOWER than the truth. It
+    understates. An error that leans away from the danger cannot make anyone
+    trust this guard for more than it inspected, which is the exact failure
+    this check was written to end, so it is worth saying out loud and not worth
+    risking detection to correct.
+    """
     rows = []
     for name, path in selected:
         counts = working_counts(path)
@@ -863,6 +894,16 @@ def report_coverage(selected: list[tuple[str, str]]) -> int:
             w=len([r for r in rows if r[1] > 0]),
             wo=len([r for r in rows if r[1] == 0]),
         )
+    )
+    print(
+        "fm-skill-compact-check: the statements column counts every prose line, "
+        "including YAML frontmatter keys such as name: and description:, so it "
+        "runs roughly 2-3% high per skill."
+    )
+    print(
+        "fm-skill-compact-check: that inflates the denominator, so any share of "
+        "a skill read off these columns UNDERSTATES what was inspected - this "
+        "report never claims more coverage than the guard actually has."
     )
     return 0
 

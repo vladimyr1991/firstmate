@@ -481,6 +481,58 @@ $(padding)"
   pass "deleting a 'must not' prohibition is still refused"
 }
 
+test_must_never_respelled_survives() {
+  local repo out
+  # "must never" is the same prohibition as "must not", so it must not carry a
+  # second "must" tuple demanding a surviving "must" statement of its own. The
+  # tracked corpus spells nine boundaries this way, including
+  # ".agents/skills/stow/SKILL.md", so a "must" tuple here is a live
+  # false-failure surface, not a hypothetical one.
+  repo=$(make_repo must-never-respelled "Run \`bin/fm-thing.sh\` first.
+You must never sweep another home endpoints.
+$(padding)")
+  local reword
+  for reword in "You must not sweep another home endpoints." \
+    "Never sweep another home endpoints." \
+    "Do not sweep another home endpoints."; do
+    rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+$reword
+$(padding)"
+    out=$("$CHECK" --root "$repo" --baseline main) \
+      || fail "restating 'must never' as '$reword' was reported as a dropped boundary: $out"
+  done
+  pass "a prohibition spelled 'must never' is one family, so rewording it is not a false failure"
+}
+
+test_must_never_deleted_is_still_a_loss() {
+  local repo
+  # The other half: excluding "must never" from the must family must not stop a
+  # deleted "must never" prohibition from being reported.
+  repo=$(make_repo must-never-deleted "Run \`bin/fm-thing.sh\` first.
+You must never sweep another home endpoints.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+$(padding)"
+  run_expect_code 1 "sweep another home" "$CHECK" --root "$repo" --baseline main
+  pass "deleting a 'must never' prohibition is still refused"
+}
+
+test_a_separate_must_beside_a_never_still_needs_a_survivor() {
+  local repo
+  # The reason the exclusion is lexical rather than "any statement carrying the
+  # never family". This statement holds two genuinely separate rules, and its
+  # "must" half deserves its own survivor: dropping the obligation and keeping
+  # only the prohibition is a real loss and is still reported.
+  repo=$(make_repo must-beside-never "Run \`bin/fm-thing.sh\` first.
+You must confirm the endpoint, and never sweep another home.
+$(padding)")
+  rewrite_skill "$repo" "Run \`bin/fm-thing.sh\` first.
+Never sweep another home.
+$(padding)"
+  run_expect_code 1 "confirm the endpoint" "$CHECK" --root "$repo" --baseline main
+  pass "a 'must' obligation stated beside a 'never' prohibition keeps its own tuple"
+}
+
 test_a_plain_must_is_still_its_own_family() {
   local repo
   repo=$(make_repo plain-must "Run \`bin/fm-thing.sh\` first.
@@ -559,6 +611,21 @@ $(padding)")
   pass "--coverage reports each skill's working-tree aperture and totals it"
 }
 
+test_coverage_discloses_its_inflated_statement_column() {
+  local out
+  # The statements column counts YAML frontmatter keys, so its denominator is
+  # a little too large. That is disclosed where the number is printed, not only
+  # in a code comment, and the disclosure names the DIRECTION: an inflated
+  # denominator understates coverage, so this report can never be read as
+  # claiming more than the guard inspected.
+  out=$("$CHECK" --coverage) || fail "--coverage failed against the repository: $out"
+  assert_contains "$out" "including YAML frontmatter keys" \
+    "--coverage did not disclose what its statements column counts"
+  assert_contains "$out" "UNDERSTATES what was inspected" \
+    "--coverage did not state which direction its statement count errs in"
+  pass "--coverage discloses its inflated statement denominator, and which way it errs"
+}
+
 test_coverage_on_the_real_repository() {
   local out
   out=$("$CHECK" --coverage) || fail "--coverage failed against the repository: $out"
@@ -588,7 +655,8 @@ test_folded_family_can_mask_a_near_duplicate_prohibition() {
   # The blind spot the fold introduces, pinned as behavior rather than left in
   # a report. Two spellings of one prohibition are one family, so deleting the
   # `never` line is judged a survival, not a loss. Measured across the tracked
-  # corpus this masks exactly two statements against 145 gained, and both are
+  # corpus this masks exactly two statements against 130 distinct statements
+  # gained, and both are
   # named in bin/fm-skill-compact-check.sh beside BOUNDARY_FAMILIES. If this
   # test starts failing, the fold stopped masking and that comment is stale.
   repo=$(make_repo folded-family-masking "Run \`bin/fm-thing.sh\` first.
@@ -640,11 +708,15 @@ test_dropped_prohibition_fails
 test_prohibition_respelled_survives
 test_must_not_respelled_survives
 test_must_not_deleted_is_still_a_loss
+test_must_never_respelled_survives
+test_must_never_deleted_is_still_a_loss
+test_a_separate_must_beside_a_never_still_needs_a_survivor
 test_a_plain_must_is_still_its_own_family
 test_a_boundary_keyword_is_not_shared_content
 test_baseline_and_current_boundary_counts_share_a_unit
 test_coverage_reports_an_unreadable_skill_actionably
 test_coverage_reports_the_working_tree
+test_coverage_discloses_its_inflated_statement_column
 test_coverage_on_the_real_repository
 test_coverage_refuses_a_baseline
 test_help_says_a_zero_is_not_coverage
