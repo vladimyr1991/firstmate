@@ -69,6 +69,12 @@ write_fixture() {  # <repo> [scenario-count]
   } > "$repo/tests/skill-scenarios/demo.md"
 }
 
+# The excluded-line count --coverage publishes for <repo>, as a bare number.
+excluded_count() {
+  "$CHECK" --root "$1" --coverage \
+    | sed -n 's/.*a further \([0-9][0-9]*\) heading and fenced-code lines.*/\1/p'
+}
+
 # A body long enough that removing one line is not a 5%% shrink, so pointer and
 # boundary tests are not confounded by the compaction fixture requirement.
 padding() {
@@ -630,17 +636,35 @@ test_coverage_reports_the_composition_of_its_statement_column() {
 }
 
 test_coverage_states_no_direction_for_its_statement_column() {
-  local out
-  # The stop that produced the composition report: no verdict about the column
-  # running high or low may come back, in any wording. Two rounds of findings
-  # were spent on a directional claim that the columns do not support, because
-  # the frontmatter it counts and the headings it drops push opposite ways.
+  local out lowered total frontmatter excluded
+  # Two rounds of findings were spent on a directional claim the columns do not
+  # support, because the frontmatter the column counts and the headings it
+  # drops push opposite ways. This guards the replacement, and its real scope is
+  # narrow and worth stating plainly: it catches the three directional TERMS
+  # named below, in any casing, and nothing else. A word list cannot be
+  # exhaustive, so this does not prove no verdict can return in some unlisted
+  # phrasing - it proves these three cannot, including the exact sentence that
+  # was removed and its mirror image.
+  #
+  # The positive half below is the stronger half. Whatever else the line says,
+  # it must carry all three composition counts, so the report cannot quietly
+  # stop publishing what it counted.
   out=$("$CHECK" --coverage) || fail "--coverage failed against the repository: $out"
-  assert_not_contains "$out" "UNDERSTATE" "--coverage claimed a direction for its statement count"
-  assert_not_contains "$out" "understate" "--coverage claimed a direction for its statement count"
-  assert_not_contains "$out" "overstate" "--coverage claimed a direction for its statement count"
-  assert_not_contains "$out" "inflate" "--coverage claimed its statement count is inflated"
-  pass "--coverage asserts no direction or magnitude for a column whose composition it publishes"
+  lowered=$(printf '%s' "$out" | tr '[:upper:]' '[:lower:]')
+  assert_not_contains "$lowered" "understate" "--coverage claimed a direction for its statement count"
+  assert_not_contains "$lowered" "overstate" "--coverage claimed a direction for its statement count"
+  assert_not_contains "$lowered" "inflate" "--coverage claimed its statement count is inflated"
+
+  total=$(printf '%s' "$out" | sed -n 's/.*statements composition: \([0-9][0-9]*\) counted.*/\1/p')
+  frontmatter=$(printf '%s' "$out" | sed -n 's/.*of which \([0-9][0-9]*\) are YAML frontmatter lines.*/\1/p')
+  excluded=$(printf '%s' "$out" | sed -n 's/.*a further \([0-9][0-9]*\) heading and fenced-code lines.*/\1/p')
+  [ -n "$total" ] && [ "$total" -gt 0 ] \
+    || fail "--coverage published no counted-statement total: $out"
+  [ -n "$frontmatter" ] && [ "$frontmatter" -gt 0 ] \
+    || fail "--coverage published no frontmatter count: $out"
+  [ -n "$excluded" ] && [ "$excluded" -gt 0 ] \
+    || fail "--coverage published no excluded-line count: $out"
+  pass "--coverage publishes all three composition counts and none of three named directional terms"
 }
 
 test_coverage_counts_the_frontmatter_it_discloses() {
@@ -661,6 +685,42 @@ $(padding)")
   [ "$((two - one))" -eq 3 ] \
     || fail "adding 3 frontmatter keys moved the disclosed count by $((two - one)), not 3"
   pass "--coverage counts the frontmatter of the skills it selected instead of quoting a figure"
+}
+
+test_coverage_counts_headings_and_fenced_code_separately() {
+  local repo base headings fenced
+  # The excluded count is the half of the composition report that answers why
+  # no direction can be stated, so it is pinned per term rather than as a
+  # total. The two fixtures below move ONE term each, by different amounts, so
+  # an implementation that dropped either term - or that counted one twice -
+  # cannot pass by arithmetic accident. Four headings and three fenced-code
+  # lines; the ``` markers themselves belong to neither region and are counted
+  # in neither.
+  repo=$(make_repo coverage-excluded-counted "Never skip the check.
+$(padding)")
+  base=$(excluded_count "$repo")
+
+  rewrite_skill "$repo" "## First heading
+## Second heading
+## Third heading
+## Fourth heading
+Never skip the check.
+$(padding)"
+  headings=$(excluded_count "$repo")
+  [ "$((headings - base))" -eq 4 ] \
+    || fail "adding 4 headings moved the excluded count by $((headings - base)), not 4"
+
+  rewrite_skill "$repo" "Never skip the check.
+\`\`\`
+alpha beta gamma
+delta epsilon zeta
+eta theta iota
+\`\`\`
+$(padding)"
+  fenced=$(excluded_count "$repo")
+  [ "$((fenced - base))" -eq 3 ] \
+    || fail "adding 3 fenced-code lines moved the excluded count by $((fenced - base)), not 3"
+  pass "--coverage counts dropped headings and dropped fenced-code lines, each on its own"
 }
 
 test_coverage_on_the_real_repository() {
@@ -757,6 +817,7 @@ test_coverage_reports_the_working_tree
 test_coverage_reports_the_composition_of_its_statement_column
 test_coverage_states_no_direction_for_its_statement_column
 test_coverage_counts_the_frontmatter_it_discloses
+test_coverage_counts_headings_and_fenced_code_separately
 test_coverage_on_the_real_repository
 test_coverage_refuses_a_baseline
 test_help_says_a_zero_is_not_coverage
