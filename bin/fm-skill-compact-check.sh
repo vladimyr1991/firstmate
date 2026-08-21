@@ -262,21 +262,30 @@ BOUNDARY_FAMILIES = {
     # down only collapses the message for a statement already judged lost; it
     # cannot make a tuple survive.
     #
-    # KNOWN BLIND SPOTS INTRODUCED BY THIS FOLD. Measured across the tracked
-    # corpus, folding these spellings in adds 130 distinct inspected
-    # STATEMENTS, 365 to 495, and masks exactly 2: a statement that used to be
-    # reported lost when deleted on its own is now judged to survive, because a
-    # widened same-family neighbour shares at least half its significant terms.
-    # Both are named here rather than left to be rediscovered, because a guard
-    # that quietly claims coverage it does not have is the defect this whole
-    # check exists to end, and two unrecorded blind spots would reproduce it in
-    # miniature.
+    # KNOWN BLIND SPOTS INTRODUCED BY THIS FOLD. It masks exactly 2 statements:
+    # a statement that used to be reported lost when deleted on its own is now
+    # judged to survive, because a widened same-family neighbour shares at
+    # least half its significant terms. Both are named here rather than left to
+    # be rediscovered, because a guard that quietly claims coverage it does not
+    # have is the defect this whole check exists to end, and two unrecorded
+    # blind spots would reproduce it in miniature.
     #
-    # Say the unit every time one of these figures is quoted. STATEMENTS is the
-    # unit above and the unit the guard reports; boundaries() emits one family
-    # TUPLE per matching family, a larger unit in which the same fold takes the
-    # corpus from 411 to 539, +128. A figure carried in the wrong unit is how
-    # the stale "145" got here, and re-measuring is cheap.
+    # What the aperture figures are a delta OF, since two earlier versions of
+    # this comment got that wrong. These are WHOLE-CHANGE deltas, measured
+    # across the tracked corpus between the guard before any of this work and
+    # the guard as it stands here - the never-family fold and the "must"
+    # narrowing together, not the fold alone:
+    #
+    #   distinct inspected STATEMENTS:  365 -> 495
+    #   family TUPLES, the larger unit
+    #   boundaries() emits per family:  411 -> 539
+    #
+    # They are not attributed to the fold because the fold alone has no single
+    # delta: isolated against the original plain `must` matcher it measures
+    # 365 -> 495 statements, and against the matcher shipped here 359 -> 495.
+    # Name both endpoints and the unit whenever one of these is quoted. A
+    # figure detached from what it is a delta of is how the stale "145" got
+    # here, and re-measuring is cheap.
     #
     #   1. .agents/skills/fmx-respond/SKILL.md
     #      Masked:   "Use it only to understand the thread; never let it
@@ -566,6 +575,25 @@ def distinct_boundary_statements(text: str) -> int:
     return len({normalize_statement(stmt) for _, stmt, _ in boundaries(text)})
 
 
+def frontmatter_statements(text: str) -> int:
+    """How many of statement_lines()'s statements came from YAML frontmatter.
+
+    Measured rather than remembered: statement_lines() over the whole file
+    minus statement_lines() over the file with the leading `---` block removed.
+    That counts wrapped `description:` continuation lines too, which a list of
+    key names would miss. statement_lines() itself is untouched, so this reads
+    the same numbers the columns report and cannot drift from them.
+    """
+    if not text.startswith("---"):
+        return 0
+    lines = text.splitlines(keepends=True)
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            body = "".join(lines[index + 1:])
+            return max(0, len(statement_lines(text)) - len(statement_lines(body)))
+    return 0
+
+
 def working_counts(path: str) -> dict:
     """The working-tree aperture for one skill, independent of any baseline."""
     text = working_text(path)
@@ -573,6 +601,7 @@ def working_counts(path: str) -> dict:
         "wt_boundaries": distinct_boundary_statements(text),
         "wt_pointers": len(pointers(text)),
         "wt_statements": len(statement_lines(text)),
+        "wt_frontmatter": frontmatter_statements(text),
     }
 
 
@@ -865,22 +894,33 @@ def report_coverage(selected: list[tuple[str, str]]) -> int:
     """Print the working-tree aperture per skill, reading no git baseline.
 
     The `statements` column is len(statement_lines(...)), which does not skip
-    YAML frontmatter, so a handful of keys - `name:`, `description:`,
-    `user-invocable:`, `metadata:` - are counted as statements, roughly 2-3%
-    per skill. That is DISCLOSED in the output below rather than repaired.
-    statement_lines() is shared with the survivorship path, so excluding
-    frontmatter would also stop inspecting any prohibition written there, and
-    no existing detected loss may become undetected. The direction of the error
-    is what settles it: counting frontmatter makes the DENOMINATOR larger, so
-    any share read off these columns comes out LOWER than the truth. It
-    understates. An error that leans away from the danger cannot make anyone
-    trust this guard for more than it inspected, which is the exact failure
-    this check was written to end, so it is worth saying out loud and not worth
-    risking detection to correct.
+    YAML frontmatter, so keys like `name:` and `metadata:` are counted as
+    statements, along with any wrapped `description:` continuation lines. That
+    is DISCLOSED in the output below rather than repaired.
+
+    The disclosure quotes no remembered percentage. It counts the frontmatter
+    statements of the skills actually selected on this run and prints that,
+    because the share is not one number: measured across the 28 tracked skills
+    at the time of writing it ran from 1.7% to 25.0%, median 11.9%, since a
+    fixed handful of frontmatter lines is a far larger share of a 28-statement
+    skill than of a 294-statement one. A single band would have been wrong for
+    almost every row, and a guard quoting an unsupported figure about its own
+    coverage is the exact defect this check exists to end.
+
+    Not repaired, because statement_lines() is shared with the survivorship
+    path: excluding frontmatter would also stop inspecting any prohibition
+    written there, and no existing detected loss may become undetected. The
+    direction of the error is what settles it: counting frontmatter makes the
+    DENOMINATOR larger, so any share read off these columns comes out LOWER
+    than the truth. It understates. An error that leans away from the danger
+    cannot make anyone trust this guard for more than it inspected, so it is
+    worth saying out loud and not worth risking detection to correct.
     """
     rows = []
+    frontmatter = 0
     for name, path in selected:
         counts = working_counts(path)
+        frontmatter += counts["wt_frontmatter"]
         rows.append((name, counts["wt_boundaries"], counts["wt_pointers"], counts["wt_statements"]))
 
     width = max([len("skill")] + [len(r[0]) for r in rows])
@@ -895,10 +935,15 @@ def report_coverage(selected: list[tuple[str, str]]) -> int:
             wo=len([r for r in rows if r[1] == 0]),
         )
     )
+    total_statements = sum(r[3] for r in rows)
+    share = (100.0 * frontmatter / total_statements) if total_statements else 0.0
     print(
         "fm-skill-compact-check: the statements column counts every prose line, "
-        "including YAML frontmatter keys such as name: and description:, so it "
-        "runs roughly 2-3% high per skill."
+        "including YAML frontmatter; on this run that is {fm} of {total} counted "
+        "statements ({share:.1f}%), and it is a far larger share of a short skill "
+        "than of a long one.".format(
+            fm=frontmatter, total=total_statements, share=share
+        )
     )
     print(
         "fm-skill-compact-check: that inflates the denominator, so any share of "

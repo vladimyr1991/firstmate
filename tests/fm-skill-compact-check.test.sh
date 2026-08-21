@@ -619,11 +619,33 @@ test_coverage_discloses_its_inflated_statement_column() {
   # denominator understates coverage, so this report can never be read as
   # claiming more than the guard inspected.
   out=$("$CHECK" --coverage) || fail "--coverage failed against the repository: $out"
-  assert_contains "$out" "including YAML frontmatter keys" \
+  assert_contains "$out" "including YAML frontmatter" \
     "--coverage did not disclose what its statements column counts"
   assert_contains "$out" "UNDERSTATES what was inspected" \
     "--coverage did not state which direction its statement count errs in"
   pass "--coverage discloses its inflated statement denominator, and which way it errs"
+}
+
+test_coverage_counts_the_frontmatter_it_discloses() {
+  local repo one two
+  # The disclosure must COUNT the frontmatter of the skills selected on this
+  # run rather than recite a remembered percentage, because there is no single
+  # percentage to recite: the same handful of frontmatter lines is a small
+  # share of a long skill and a large one of a short skill. Two fixtures that
+  # differ ONLY in how many frontmatter keys they carry separate a guard that
+  # measures from one that quotes: the disclosed count must rise by exactly the
+  # three keys added, with the prose untouched.
+  repo=$(make_repo coverage-frontmatter-counted "Never skip the check.
+$(padding)")
+  one=$("$CHECK" --root "$repo" --coverage | sed -n 's/.*frontmatter; on this run that is \([0-9][0-9]*\) of .*/\1/p')
+  printf -- '---\nname: demo\ndescription: fixture\nuser-invocable: false\nmetadata:\n  internal: true\n  owner: fixture\n---\n\nNever skip the check.\n%s\n' \
+    "$(padding)" > "$repo/.agents/skills/demo/SKILL.md"
+  two=$("$CHECK" --root "$repo" --coverage | sed -n 's/.*frontmatter; on this run that is \([0-9][0-9]*\) of .*/\1/p')
+  [ -n "$one" ] && [ -n "$two" ] \
+    || fail "--coverage did not print a frontmatter count it had measured"
+  [ "$((two - one))" -eq 3 ] \
+    || fail "adding 3 frontmatter keys moved the disclosed count by $((two - one)), not 3"
+  pass "--coverage counts the frontmatter of the skills it selected instead of quoting a band"
 }
 
 test_coverage_on_the_real_repository() {
@@ -717,6 +739,7 @@ test_baseline_and_current_boundary_counts_share_a_unit
 test_coverage_reports_an_unreadable_skill_actionably
 test_coverage_reports_the_working_tree
 test_coverage_discloses_its_inflated_statement_column
+test_coverage_counts_the_frontmatter_it_discloses
 test_coverage_on_the_real_repository
 test_coverage_refuses_a_baseline
 test_help_says_a_zero_is_not_coverage
