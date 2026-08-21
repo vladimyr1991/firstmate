@@ -315,6 +315,37 @@ BOUNDARY_FAMILIES = {
     #      only way to refuse this case would be to leave every statement in
     #      the corpus at the narrower aperture. That trade was declined
     #      deliberately; deleting that one line alone will not be reported.
+    #
+    # WHAT THE FOLD AND THE "must" NARROWING REMOVE, WITH THE RECIPE. The
+    # false failures this work retires have been stated three ways in this
+    # branch's commit record - "seven statements in six skills", corrected to
+    # "six in five", then measured by a review as "seven in five" - so the
+    # figure is recorded here with the method that produced it rather than as
+    # a fourth bare total a reader has to take on trust.
+    #
+    # METHOD: restate every "must not" prohibition in the tracked corpus as
+    # "do not", which changes a spelling and removes no rule, then run each
+    # guard as `--baseline HEAD --skill <name>`, one skill at a time because
+    # a whole-corpus run stops at the first skill it fails. This matcher is
+    # case-insensitive, so "must NOT" is the same spelling to it and is
+    # restated with the rest. Counts below are statements REPORTED lost, not
+    # restatements made: secondmate-provisioning carries four "must not"
+    # spellings and write-implementation-spec two, and in each the remainder
+    # already survived through a same-family neighbour.
+    #
+    #   guard at 07f2640 -> the guard as it stands here
+    #     decision-hold-lifecycle      1 -> 0
+    #     harness-adapters             1 -> 0
+    #     image-generation             1 -> 0
+    #     process-event-sources        1 -> 0
+    #     secondmate-provisioning      3 -> 0
+    #     write-implementation-spec    1 -> 0
+    #     TOTAL     8 statements in 6 skills -> 0, exit 1 each -> exit 0 each
+    #
+    # Restating only the lowercase "must not" and leaving image-generation's
+    # "must NOT" untouched reproduces the review's 7 in 5 exactly; that
+    # variant reads the corpus more narrowly than this matcher does, so 8 in
+    # 6 is the figure this fold retires.
     "never": (
         r"never", r"do\s+not", r"don['\u2019]t", r"cannot", r"can\s+not",
         r"may\s+not", r"must\s+not",
