@@ -75,11 +75,14 @@ A prose diff shows those as "shorter and still reads fine".
 
 The scenario suite caught what the check structurally cannot.
 In `harness-adapters`, collapsing the per-concern watcher section dropped the *reason* Codex uses a bounded foreground checkpoint - that it cannot reason while a foreground tool call is running.
-That sentence contains no pointer and no never/always/must/refuse/stop keyword, so nothing deterministic could flag it; scenario S36 asks "why", and the answer changed.
+That sentence contains no pointer, and when this was measured no boundary keyword family reached it, so nothing deterministic could flag it; scenario S36 asks "why", and the answer changed.
 Restored, and re-verified.
 
+The `never` family has since widened to fold `cannot` alongside `never`, so deleting that clause today is reported as a dropped boundary and this particular example no longer demonstrates the gap.
+What closed is the one example, not the class: the next such loss is whatever the current families still miss, and `bin/fm-skill-compact-check.sh --help` owns the current family list rather than a second copy here.
+
 The scenario suite also caught, then nearly lost, a real miss in `secondmate-provisioning`: the compaction dropped the "or quarantined after cleanup failure" branch from a reader-facing answer.
-That sentence carries no pointer and no never/always/must/refuse/stop keyword, so the deterministic check could not see it either.
+That sentence carries no pointer and no boundary keyword in any family, then or now, so the deterministic check could not see it either and still cannot.
 The scenario suite did detect it - S16's answer changed - but the first comparison of control vs. blind was polarity-based, and both the control and blind answers happened to begin with "No", so the divergence was missed and the compaction was first reported as a clean 24/24.
 The true pre-fix figure was 23/24.
 The pipeline's own review step caught the miss, the branch was restored, and the re-run above is the genuine 24/24.
