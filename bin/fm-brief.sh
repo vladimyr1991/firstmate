@@ -53,6 +53,10 @@
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
+# bin/fm-spawn.sh also reads the numbered branch step inside the generated
+# `# Setup` section and freezes that step's first backticked command's
+# origin/<ref> argument as the dispatch-time ship base the lessons-learned retro
+# counts commits against, so that step's shape is a contract too.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # --sync-base <branch> adds a mandatory base-sync step as the brief's first numbered
 # Setup step, for projects whose task worktrees come from a shared pool. A pooled

@@ -92,7 +92,9 @@ A preference noticed during live work goes to the task record or the captain-pre
 
 1. Confirm landing.
 2. Run the script's `collect` command while the task's volatile records still exist.
-   When the project ships from a branch its default ref lags behind, record that ship base as `base=<ref>` in `state/<id>.meta` first, or the collected `commits` count measures the branch against the wrong base; the collected `commit_base` always names the ref that was used.
+   `bin/fm-spawn.sh` freezes the dispatch-time ship base to `base=<sha>` in `state/<id>.meta`, but only when the primary command on the brief's numbered branch step, the first backticked one, carries an explicit `origin/<ref>` argument, which the generated brief emits for the `--staging-autonomy` shape.
+   Every other brief shape records no base and falls back to the first resolvable default-branch ref, so the collected `commits` count measures the branch against the wrong base whenever the project ships from a branch its default ref lags behind; the collected `commit_base` always names the ref that was used.
+   The figure that would be right counts from the commit that ship base pointed at when the task was dispatched, and a branch name cannot serve, because `collect` resolves a ref long after dispatch and reads an empty range once the task has landed onto its own ship base, recording `commits=0` for work it really did.
 3. Read the collected facts, then answer every draft prompt above from the work itself.
 4. Order an independent cross-vendor audit when the facts show real struggle.
 5. Route each surviving lesson through the decision tree, choosing improve over create.
