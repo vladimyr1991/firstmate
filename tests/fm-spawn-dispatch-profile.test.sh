@@ -699,6 +699,90 @@ advance_branch() {  # <worktree> <message>
     commit -q --allow-empty -m "$2"
 }
 
+# Fill the scaffolded brief's `{TASK}` placeholder the way firstmate does before
+# dispatch, so author-supplied task text is exercised in its real position above
+# the `# Setup` section.
+fill_task_text() {  # <home> <id> <task text>
+  local brief=$1/data/$2/brief.md task=$3 tmp
+  tmp="$brief.filled"
+  awk -v task="$task" '$0 == "{TASK}" { print task; filled = 1; next } { print }
+    END { exit filled ? 0 : 1 }' "$brief" > "$tmp" \
+    || fail "brief for $2 carried no {TASK} placeholder to fill"
+  mv "$tmp" "$brief"
+}
+
+# A numbered task line that quotes a branch command, i.e. the strongest form of
+# the collision: it defeats a bare leading-number anchor, so only a scan bounded
+# to the brief's own `# Setup` section can reject it.
+DECOY_TASK_STEP="1. The superseded brief said: create your branch: \`git checkout -b fm/decoy origin/decoy\` - do not do that."
+
+test_task_text_quoting_a_branch_command_cannot_supply_the_ship_base() {
+  local rec id out status base_sha decoy_sha
+  id=profile-ship-base-decoy-z20
+  rec=$(make_spawn_case profile-ship-base-decoy claude "$id")
+  read_case_record "$rec"
+  scaffold_brief "$HOME_DIR" "$id" ship-base-decoy-proj --mode local-only --staging-autonomy
+  fill_task_text "$HOME_DIR" "$id" "$DECOY_TASK_STEP"
+
+  base_sha=$(git -C "$WT_DIR" rev-parse HEAD)
+  seed_remote_ref "$WT_DIR" develop "$base_sha"
+  advance_branch "$WT_DIR" "a commit the decoy ref points at"
+  decoy_sha=$(git -C "$WT_DIR" rev-parse HEAD)
+  seed_remote_ref "$WT_DIR" decoy "$decoy_sha"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --mode local-only --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should succeed with a branch command quoted in the task text (got: $out)"
+  assert_grep "base=$base_sha" "$HOME_DIR/state/$id.meta" \
+    "meta did not record the ship base from the brief's own numbered setup step"
+  assert_no_grep "base=$decoy_sha" "$HOME_DIR/state/$id.meta" \
+    "task text quoting a branch command froze an unrelated ref as the task's ship base"
+  pass "a branch command quoted in the task text never becomes the recorded ship base"
+}
+
+test_sync_base_alternative_is_not_taken_as_the_ship_base() {
+  local rec id out status
+  id=profile-ship-base-syncalt-z22
+  rec=$(make_spawn_case profile-ship-base-syncalt claude "$id")
+  read_case_record "$rec"
+  # This shape's branch step names origin/develop only as the CONDITIONAL
+  # alternative, after a primary command that branches from the worktree's own
+  # base, so no ship base is recorded and the retro stays on its default-ref
+  # fallback. That boundary is what .agents/skills/lessons-learned/SKILL.md
+  # step 2 tells the retro worker to expect.
+  scaffold_brief "$HOME_DIR" "$id" ship-base-syncalt-proj --mode no-mistakes --sync-base develop
+  seed_remote_ref "$WT_DIR" develop "$(git -C "$WT_DIR" rev-parse HEAD)"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "sync-base spawn should succeed (got: $out)"
+  assert_no_grep "base=" "$HOME_DIR/state/$id.meta" \
+    "the conditional --sync-base alternative was recorded as the task's ship base"
+  pass "a conditional --sync-base alternative is not recorded as the ship base"
+}
+
+test_task_text_cannot_introduce_a_base_where_the_brief_names_none() {
+  local rec id out status
+  id=profile-ship-base-decoy-only-z21
+  rec=$(make_spawn_case profile-ship-base-decoy-only claude "$id")
+  read_case_record "$rec"
+  scaffold_brief "$HOME_DIR" "$id" ship-base-decoy-only-proj --mode no-mistakes
+  fill_task_text "$HOME_DIR" "$id" "$DECOY_TASK_STEP"
+
+  # origin/decoy resolves, so only the anchoring keeps it out of the metadata.
+  seed_remote_ref "$WT_DIR" decoy "$(git -C "$WT_DIR" rev-parse HEAD)"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "plain no-mistakes spawn should succeed (got: $out)"
+  assert_no_grep "base=" "$HOME_DIR/state/$id.meta" \
+    "task text introduced a base= for a brief whose branch step names no origin ref"
+  pass "task text cannot introduce a base= that the brief's branch step never named"
+}
+
 test_staging_autonomy_brief_records_the_dispatch_time_ship_base_sha() {
   local rec id out status base_sha recorded
   id=profile-ship-base-z17
@@ -796,5 +880,8 @@ test_active_dispatch_profile_does_not_block_secondmate_launch
 test_staging_autonomy_brief_records_the_dispatch_time_ship_base_sha
 test_unresolvable_ship_base_omits_the_key_entirely
 test_brief_without_a_remote_ship_base_records_no_base
+test_sync_base_alternative_is_not_taken_as_the_ship_base
+test_task_text_quoting_a_branch_command_cannot_supply_the_ship_base
+test_task_text_cannot_introduce_a_base_where_the_brief_names_none
 
 echo "# all fm-spawn-dispatch-profile tests passed"

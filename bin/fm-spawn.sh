@@ -1732,9 +1732,15 @@ fi
 # moment that commit is knowable, so it is resolved and frozen to a SHA here.
 # The ship base itself is not re-derived: it comes from the brief's own branch
 # command, which bin/fm-brief.sh emits as `git checkout -b fm/<id> origin/<base>`
-# for a project that ships from a branch its default ref lags behind. The first
-# backticked command on that setup step is the primary one, ahead of any
-# conditional --sync-base alternative that follows it on the same line.
+# for the --staging-autonomy shape. The scan is anchored to the NUMBERED branch
+# step inside the brief's own `# Setup` section, because the author-supplied
+# `# Task` text sits above that section and can itself quote a branch command -
+# routine in this repo, where tasks are written about fm-brief and fm-spawn
+# themselves - and matching it would silently freeze an unrelated ref as this
+# task's ship base. The first backticked command on that step is the primary
+# one, ahead of any conditional --sync-base alternative that follows it on the
+# same line, so a brief whose primary command names no `origin/<ref>` argument
+# records no base at all and leaves the retro on its default-ref fallback.
 # `base=` is written ONLY when that ref resolves in this worktree. An absent or
 # unresolvable base omits the key entirely rather than writing an empty, guessed,
 # or placeholder value: bin/fm-retro.sh distinguishes `none` (the metadata
@@ -1744,7 +1750,8 @@ fi
 # that advances between here and that fetch leaves this SHA an ancestor of the
 # real branch point, which over-counts by whatever landed in that window.
 SHIP_BASE_SHA=
-BRANCH_STEP_LINE=$(grep -m 1 'reate your branch: `' "$BRIEF" 2>/dev/null) || BRANCH_STEP_LINE=
+BRANCH_STEP_LINE=$(sed -n '/^# Setup$/,/^# /p' "$BRIEF" 2>/dev/null \
+  | grep -m 1 '^[0-9][0-9]*\. .*reate your branch: `') || BRANCH_STEP_LINE=
 if [ -n "$BRANCH_STEP_LINE" ]; then
   SHIP_BASE_CMD=${BRANCH_STEP_LINE#*\`}
   SHIP_BASE_CMD=${SHIP_BASE_CMD%%\`*}
