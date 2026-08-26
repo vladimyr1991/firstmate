@@ -755,8 +755,8 @@ test_sync_base_alternative_is_not_taken_as_the_ship_base() {
   # This shape's branch step names origin/develop only as the CONDITIONAL
   # alternative, after a primary command that branches from the worktree's own
   # base, so no ship base is recorded and the retro stays on its default-ref
-  # fallback. That boundary is what .agents/skills/lessons-learned/SKILL.md
-  # step 2 tells the retro worker to expect.
+  # fallback. That primary-command boundary is the one
+  # .agents/skills/lessons-learned/SKILL.md step 2 states.
   scaffold_brief "$HOME_DIR" "$id" ship-base-syncalt-proj --mode no-mistakes --sync-base develop
   seed_remote_ref "$WT_DIR" develop "$(git -C "$WT_DIR" rev-parse HEAD)"
 
