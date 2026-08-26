@@ -99,9 +99,18 @@
 # worktree, and otherwise the first resolvable default-branch ref. Either way the
 # ref actually used is published as `commit_base`, so a project that ships from a
 # branch the default ref lags behind reads as a large count with a visible reason
-# instead of a wrong number. Recording `base=origin/develop` for such a project is
-# what turns that proxy into the real number: without it a feature branch cut from
-# develop counts every develop commit the default ref has not caught up with.
+# instead of a wrong number. What turns that proxy into the real number is
+# recording the SHA that ship base pointed at WHEN THE TASK WAS DISPATCHED, and
+# not the branch name. Without any base, a feature branch cut from develop counts
+# every develop commit the default ref has not caught up with. With
+# `base=origin/develop`, the ref is resolved HERE, long after dispatch: a task that
+# has already landed onto its own ship base measures an empty range and records
+# `commits=0` for work it really did - the durable-record invariant's
+# self-flattering direction, reached through base resolution rather than through
+# the `unknown`/`0` distinction consequence 1 guards. This script cannot close that
+# hole alone, because it runs only between landing and teardown; the dispatch-time
+# SHA has to reach `base=` from outside, and
+# .agents/skills/lessons-learned/SKILL.md owns that instruction.
 # `recorded_base` publishes what the metadata itself said - the raw `base=` value,
 # `none` when the metadata records no base, `unknown` when the metadata was gone -
 # so a recorded base that did not resolve here stays distinguishable from no

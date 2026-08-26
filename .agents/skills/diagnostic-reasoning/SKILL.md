@@ -48,6 +48,9 @@ Do not treat the most recent nearby change as causal without evidence.
 
 Identify the smallest counterfactual that should change the outcome if the leading explanation is true.
 Change one condition at a time where practical, and record whether the symptom appears, disappears, or remains unchanged.
+A counterfactual that leaves the outcome unchanged has two candidate explanations rather than one: the check is weak, or the counterfactual was ineffective against it.
+Separate them by asking whether the fixture, input, or scenario under test can express the difference the counterfactual makes at all, and settle that question before doubting the check.
+When it cannot, construct the case where the two behaviors genuinely disagree and re-run the counterfactual there.
 Seek disconfirming evidence deliberately: name what observation would falsify the leading explanation, run that check when feasible, and retain contradictory results instead of explaining them away.
 Compare the final explanation against the proven path and show why the proposed causal boundary accounts for both the failure and the success.
 
