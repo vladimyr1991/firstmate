@@ -673,6 +673,100 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   pass "active crew-dispatch profile does not block secondmate launches"
 }
 
+# Dispatch-time ship base recorded as `base=` in state/<id>.meta.
+#
+# bin/fm-retro.sh counts a task's commits against that value and resolves it only
+# after the task has landed, so a recorded branch NAME measures an empty range and
+# reports commits=0 for real work. These cases scaffold the brief with the real
+# bin/fm-brief.sh and then run the real spawn, so the branch command the brief
+# emits and the base the spawn records are exercised as one contract rather than
+# against a hand-copied approximation of the brief's prose.
+scaffold_brief() {  # <home> <id> <project> [brief flags...]
+  local home=$1 id=$2 proj=$3
+  shift 3
+  rm -rf "${home:?}/data/${id:?}"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" "$@" >/dev/null 2>&1 \
+    || fail "fm-brief.sh could not scaffold a brief for $id"
+}
+
+# refs/remotes/origin/<name> in the task worktree, pointed at <sha>.
+seed_remote_ref() {  # <worktree> <name> <sha>
+  git -C "$1" update-ref "refs/remotes/origin/$2" "$3"
+}
+
+advance_branch() {  # <worktree> <message>
+  git -C "$1" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "$2"
+}
+
+test_staging_autonomy_brief_records_the_dispatch_time_ship_base_sha() {
+  local rec id out status base_sha recorded
+  id=profile-ship-base-z17
+  rec=$(make_spawn_case profile-ship-base claude "$id")
+  read_case_record "$rec"
+  scaffold_brief "$HOME_DIR" "$id" ship-base-proj --mode local-only --staging-autonomy
+
+  # The ship base must differ from the worktree's own HEAD, or recording HEAD
+  # (or the branch tip the task later lands) would pass by coincidence.
+  base_sha=$(git -C "$WT_DIR" rev-parse HEAD)
+  seed_remote_ref "$WT_DIR" develop "$base_sha"
+  advance_branch "$WT_DIR" "work on top of the ship base"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --mode local-only --yolo off)
+  status=$?
+  expect_code 0 "$status" "staging-autonomy spawn should succeed (got: $out)"
+  assert_grep "base=$base_sha" "$HOME_DIR/state/$id.meta" \
+    "meta did not record the commit origin/develop pointed at at dispatch"
+  assert_no_grep "base=origin/" "$HOME_DIR/state/$id.meta" \
+    "meta recorded a ref name, which collect re-resolves after the task has landed"
+  recorded=$(sed -n 's/^base=//p' "$HOME_DIR/state/$id.meta")
+  [ "$recorded" != "$(git -C "$WT_DIR" rev-parse HEAD)" ] \
+    || fail "meta recorded the task branch tip rather than its ship base"
+  pass "a staging-autonomy brief's ship base is frozen to its dispatch-time SHA"
+}
+
+test_unresolvable_ship_base_omits_the_key_entirely() {
+  local rec id out status
+  id=profile-ship-base-unresolved-z18
+  rec=$(make_spawn_case profile-ship-base-unresolved claude "$id")
+  read_case_record "$rec"
+  scaffold_brief "$HOME_DIR" "$id" ship-base-unresolved-proj --mode local-only --staging-autonomy
+
+  # No refs/remotes/origin/develop here: the brief names a ship base this
+  # worktree cannot resolve.
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --mode local-only --yolo off)
+  status=$?
+  expect_code 0 "$status" "an unresolvable ship base must not fail the spawn (got: $out)"
+  assert_present "$HOME_DIR/state/$id.meta" "spawn wrote no metadata at all"
+  # bin/fm-retro.sh reads an absent key as `none` and a present one as a real
+  # record, so an empty or placeholder base= would be a false claim of a record.
+  assert_no_grep "base=" "$HOME_DIR/state/$id.meta" \
+    "meta recorded a base that does not resolve, erasing retro's none/unresolved distinction"
+  pass "a ship base that does not resolve at dispatch omits base= rather than guessing"
+}
+
+test_brief_without_a_remote_ship_base_records_no_base() {
+  local rec id out status
+  id=profile-ship-base-plain-z19
+  rec=$(make_spawn_case profile-ship-base-plain claude "$id")
+  read_case_record "$rec"
+  scaffold_brief "$HOME_DIR" "$id" ship-base-plain-proj --mode local-only
+
+  # origin/develop resolves here, but this brief branches from the worktree's own
+  # default base, so there is no ship base to record and none may be invented.
+  seed_remote_ref "$WT_DIR" develop "$(git -C "$WT_DIR" rev-parse HEAD)"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --mode local-only --yolo off)
+  status=$?
+  expect_code 0 "$status" "plain local-only spawn should succeed (got: $out)"
+  assert_no_grep "base=" "$HOME_DIR/state/$id.meta" \
+    "meta invented a ship base the brief never named"
+  pass "a brief that names no remote ship base records no base="
+}
+
 test_no_profile_keeps_claude_profile_defaults
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
@@ -699,5 +793,8 @@ test_claude_forwards_firstmate_config_dir_when_set
 test_claude_omits_config_dir_prefix_when_unset
 test_non_claude_harness_ignores_config_dir
 test_active_dispatch_profile_does_not_block_secondmate_launch
+test_staging_autonomy_brief_records_the_dispatch_time_ship_base_sha
+test_unresolvable_ship_base_omits_the_key_entirely
+test_brief_without_a_remote_ship_base_records_no_base
 
 echo "# all fm-spawn-dispatch-profile tests passed"

@@ -1722,6 +1722,44 @@ elif [ "$KIND" = scout ]; then
   YOLO=
 fi
 
+# Dispatch-time ship base, for the lessons-learned retro's `commits` proxy.
+# bin/fm-retro.sh counts the task branch against the `base=` recorded here, and it
+# resolves that value between confirmed landing and teardown - long after this
+# moment. A branch NAME therefore cannot be recorded: once the task has landed
+# onto its own ship base, `origin/<base>..HEAD` is empty and a task that did real
+# work reads as `commits=0`. Only the immutable commit the ship base pointed at
+# WHEN THE TASK WAS DISPATCHED still measures the work, and dispatch is the last
+# moment that commit is knowable, so it is resolved and frozen to a SHA here.
+# The ship base itself is not re-derived: it comes from the brief's own branch
+# command, which bin/fm-brief.sh emits as `git checkout -b fm/<id> origin/<base>`
+# for a project that ships from a branch its default ref lags behind. The first
+# backticked command on that setup step is the primary one, ahead of any
+# conditional --sync-base alternative that follows it on the same line.
+# `base=` is written ONLY when that ref resolves in this worktree. An absent or
+# unresolvable base omits the key entirely rather than writing an empty, guessed,
+# or placeholder value: bin/fm-retro.sh distinguishes `none` (the metadata
+# records no base) from a recorded base that did not resolve there, and a
+# placeholder would collapse that distinction into a false claim of a record.
+# The count stays a proxy: the worker fetches before branching, so a ship base
+# that advances between here and that fetch leaves this SHA an ancestor of the
+# real branch point, which over-counts by whatever landed in that window.
+SHIP_BASE_SHA=
+BRANCH_STEP_LINE=$(grep -m 1 'reate your branch: `' "$BRIEF" 2>/dev/null) || BRANCH_STEP_LINE=
+if [ -n "$BRANCH_STEP_LINE" ]; then
+  SHIP_BASE_CMD=${BRANCH_STEP_LINE#*\`}
+  SHIP_BASE_CMD=${SHIP_BASE_CMD%%\`*}
+  case "$SHIP_BASE_CMD" in
+    *" checkout -b "*" origin/"*)
+      SHIP_BASE_REF="origin/${SHIP_BASE_CMD##*" origin/"}"
+      SHIP_BASE_REF=${SHIP_BASE_REF%% *}
+      if [ -n "$WT" ] && [ -d "$WT" ]; then
+        SHIP_BASE_SHA=$(git -C "$WT" rev-parse --verify --quiet "$SHIP_BASE_REF^{commit}" 2>/dev/null) \
+          || SHIP_BASE_SHA=
+      fi
+      ;;
+  esac
+fi
+
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 {
@@ -1729,6 +1767,7 @@ META_WINDOW=$T
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
+  [ -z "$SHIP_BASE_SHA" ] || echo "base=$SHIP_BASE_SHA"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"

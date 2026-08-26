@@ -109,8 +109,8 @@
 # self-flattering direction, reached through base resolution rather than through
 # the `unknown`/`0` distinction consequence 1 guards. This script cannot close that
 # hole alone, because it runs only between landing and teardown; the dispatch-time
-# SHA has to reach `base=` from outside, and
-# .agents/skills/lessons-learned/SKILL.md owns that instruction.
+# SHA reaches `base=` from outside, written by bin/fm-spawn.sh as it records the
+# task's metadata at dispatch.
 # `recorded_base` publishes what the metadata itself said - the raw `base=` value,
 # `none` when the metadata records no base, `unknown` when the metadata was gone -
 # so a recorded base that did not resolve here stays distinguishable from no

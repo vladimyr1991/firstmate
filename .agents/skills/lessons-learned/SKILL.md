@@ -92,9 +92,8 @@ A preference noticed during live work goes to the task record or the captain-pre
 
 1. Confirm landing.
 2. Run the script's `collect` command while the task's volatile records still exist.
-   When the project ships from a branch its default ref lags behind, record that ship base in `state/<id>.meta` first as `base=<sha>` - the immutable commit the branch pointed at when this task was dispatched - or the collected `commits` count measures the branch against the wrong base; the collected `commit_base` always names the ref that was used.
-   A branch name such as `origin/develop` is not good enough, because `collect` resolves it long after dispatch: once the task has landed onto its own ship base, that range is empty and a task that did real work records `commits=0`.
-   `bin/fm-retro.sh` cannot supply the SHA itself, since it runs only between landing and teardown, so the dispatch-time commit has to be recorded while it is still known.
+   When the project ships from a branch its default ref lags behind, the base that measures the work is the commit that ship base pointed at when the task was dispatched, and `bin/fm-spawn.sh` freezes it to `base=<sha>` in `state/<id>.meta` at that moment; the collected `commit_base` always names the ref that was used.
+   A branch name cannot serve, because `collect` resolves it long after dispatch: once the task has landed onto its own ship base that range is empty, and a task that did real work records `commits=0`.
 3. Read the collected facts, then answer every draft prompt above from the work itself.
 4. Order an independent cross-vendor audit when the facts show real struggle.
 5. Route each surviving lesson through the decision tree, choosing improve over create.
