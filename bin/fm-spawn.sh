@@ -1737,7 +1737,10 @@ fi
 # `# Task` text sits above that section and can itself quote a branch command -
 # routine in this repo, where tasks are written about fm-brief and fm-spawn
 # themselves - and matching it would silently freeze an unrelated ref as this
-# task's ship base. The first backticked command on that step is the primary
+# task's ship base. That text can also quote the `# Setup` heading itself, so the
+# LAST such section in the brief is the one scanned, never the first: the
+# generated `# Setup` always follows the task text, so the last section is always
+# the brief's own. The first backticked command on that step is the primary
 # one, ahead of any conditional --sync-base alternative that follows it on the
 # same line, so a brief whose primary command names no `origin/<ref>` argument
 # records no base at all and leaves the retro on its default-ref fallback.
@@ -1750,8 +1753,12 @@ fi
 # that advances between here and that fetch leaves this SHA an ancestor of the
 # real branch point, which over-counts by whatever landed in that window.
 SHIP_BASE_SHA=
-BRANCH_STEP_LINE=$(sed -n '/^# Setup$/,/^# /p' "$BRIEF" 2>/dev/null \
-  | grep -m 1 '^[0-9][0-9]*\. .*reate your branch: `') || BRANCH_STEP_LINE=
+BRANCH_STEP_LINE=$(awk '
+  /^# Setup$/ { in_setup = 1; step = ""; next }
+  /^# / { in_setup = 0; next }
+  in_setup && step == "" && /^[0-9]+\. .*reate your branch: `/ { step = $0 }
+  END { if (step != "") print step }
+' "$BRIEF" 2>/dev/null) || BRANCH_STEP_LINE=
 if [ -n "$BRANCH_STEP_LINE" ]; then
   SHIP_BASE_CMD=${BRANCH_STEP_LINE#*\`}
   SHIP_BASE_CMD=${SHIP_BASE_CMD%%\`*}

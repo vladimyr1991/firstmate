@@ -716,6 +716,12 @@ fill_task_text() {  # <home> <id> <task text>
 # to the brief's own `# Setup` section can reject it.
 DECOY_TASK_STEP="1. The superseded brief said: create your branch: \`git checkout -b fm/decoy origin/decoy\` - do not do that."
 
+# The same decoy step, preceded by the brief's own `# Setup` heading quoted in the
+# task text. This is the form a first-match section scan cannot reject: the quoted
+# heading opens a section of its own above the brief's, so only selecting the LAST
+# `# Setup` section keeps the decoy out of the recorded ship base.
+DECOY_TASK_SETUP_SECTION="# Setup\\n$DECOY_TASK_STEP"
+
 test_task_text_quoting_a_branch_command_cannot_supply_the_ship_base() {
   local rec id out status base_sha decoy_sha
   id=profile-ship-base-decoy-z20
@@ -758,6 +764,7 @@ test_sync_base_alternative_is_not_taken_as_the_ship_base() {
     --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "sync-base spawn should succeed (got: $out)"
+  assert_present "$HOME_DIR/state/$id.meta" "spawn wrote no metadata at all"
   assert_no_grep "base=" "$HOME_DIR/state/$id.meta" \
     "the conditional --sync-base alternative was recorded as the task's ship base"
   pass "a conditional --sync-base alternative is not recorded as the ship base"
@@ -778,9 +785,36 @@ test_task_text_cannot_introduce_a_base_where_the_brief_names_none() {
     --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "plain no-mistakes spawn should succeed (got: $out)"
+  assert_present "$HOME_DIR/state/$id.meta" "spawn wrote no metadata at all"
   assert_no_grep "base=" "$HOME_DIR/state/$id.meta" \
     "task text introduced a base= for a brief whose branch step names no origin ref"
   pass "task text cannot introduce a base= that the brief's branch step never named"
+}
+
+test_task_text_quoting_the_setup_heading_cannot_supply_the_ship_base() {
+  local rec id out status base_sha decoy_sha
+  id=profile-ship-base-decoy-heading-z23
+  rec=$(make_spawn_case profile-ship-base-decoy-heading claude "$id")
+  read_case_record "$rec"
+  scaffold_brief "$HOME_DIR" "$id" ship-base-decoy-heading-proj --mode local-only --staging-autonomy
+  fill_task_text "$HOME_DIR" "$id" "$DECOY_TASK_SETUP_SECTION"
+
+  base_sha=$(git -C "$WT_DIR" rev-parse HEAD)
+  seed_remote_ref "$WT_DIR" develop "$base_sha"
+  advance_branch "$WT_DIR" "a commit the decoy ref points at"
+  decoy_sha=$(git -C "$WT_DIR" rev-parse HEAD)
+  seed_remote_ref "$WT_DIR" decoy "$decoy_sha"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --mode local-only --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should succeed with a Setup section quoted in the task text (got: $out)"
+  assert_present "$HOME_DIR/state/$id.meta" "spawn wrote no metadata at all"
+  assert_grep "base=$base_sha" "$HOME_DIR/state/$id.meta" \
+    "meta did not record the ship base from the brief's own numbered setup step"
+  assert_no_grep "base=$decoy_sha" "$HOME_DIR/state/$id.meta" \
+    "a Setup heading quoted in the task text froze an unrelated ref as the task's ship base"
+  pass "a Setup section quoted in the task text never becomes the recorded ship base"
 }
 
 test_staging_autonomy_brief_records_the_dispatch_time_ship_base_sha() {
@@ -846,6 +880,7 @@ test_brief_without_a_remote_ship_base_records_no_base() {
     --mode local-only --yolo off)
   status=$?
   expect_code 0 "$status" "plain local-only spawn should succeed (got: $out)"
+  assert_present "$HOME_DIR/state/$id.meta" "spawn wrote no metadata at all"
   assert_no_grep "base=" "$HOME_DIR/state/$id.meta" \
     "meta invented a ship base the brief never named"
   pass "a brief that names no remote ship base records no base="
@@ -883,5 +918,6 @@ test_brief_without_a_remote_ship_base_records_no_base
 test_sync_base_alternative_is_not_taken_as_the_ship_base
 test_task_text_quoting_a_branch_command_cannot_supply_the_ship_base
 test_task_text_cannot_introduce_a_base_where_the_brief_names_none
+test_task_text_quoting_the_setup_heading_cannot_supply_the_ship_base
 
 echo "# all fm-spawn-dispatch-profile tests passed"
