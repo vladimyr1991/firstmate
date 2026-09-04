@@ -162,7 +162,9 @@ This is a product guarantee rather than a defect, so unbounded-consumption work 
 Neither half is a finding: nothing here was reproduced, and this file's own rule forbids opening a finding that was not.
 Establish coverage with the enumeration method above, which will tell you which login-free surfaces the limiter reaches and which it does not.
 Then read the limiter itself and ask which value it keys a client on, whether that value is one the client can set such as `X-Forwarded-For`, whether its counters are shared across processes or held per process, and whether it returns early outside prod.
-A client-settable key and a per-process counter each change what the limit actually bounds, and both have to be established against the deployed stand rather than argued from the source.
+The source is the right and sufficient place for all four, since a counter held in process memory is visible as process-local state rather than as a shared store and needs no traffic to see.
+A client-settable key and a per-process counter each change what the limit actually bounds, so establish both by reading, and take against the deployed stand only observations that do not require exceeding the limit.
+Driving traffic past the limit to settle the counter question is resource-exhaustion testing and is forbidden by the active-check boundary above, so where a property cannot be established without crossing that line, record exactly what stayed unproven and what proving it would take and hand the decision to firstmate.
 
 ## Keeping this skill current
 
@@ -192,7 +194,7 @@ Signs that a revision is already overdue, each of them observable rather than fe
 
 - A primary source's page names an edition identifier that differs from the one in the table.
 - A check's search key returns nothing, or returns so much that it no longer locates a surface.
-- Two consecutive quiet daily reviews over a product area that did ship changes, which means the map is pointing at the wrong question rather than that the area is clean.
+- Two consecutive quiet daily reviews over a product area that did ship changes, after which re-read that area's checks to establish whether they still reach what shipped or the area was genuinely clean.
 - A row whose class no longer attaches to anything its checks can find.
 
 A revision to this file edits firstmate's shared tracked material, so it is not a self-service edit.
