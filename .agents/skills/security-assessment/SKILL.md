@@ -107,11 +107,8 @@ Every path below is relative to the parlino repository root and was read there o
 The ref is part of the address rather than decoration, because parlino's `main` is a stale release line (`13e9eb0`, tag `v0.12.0`, 2026-07-29) on which `voice_ai_workers/refusal.py`, `voice_platform/test_quota_grace.py`, and `voice_shared/niches.py` do not resolve at all.
 A reader who opens the default branch instead will hit dead pointers that say nothing about whether the map is wrong, so resolve every path below against `develop`.
 
-One rule governs every cell of the table, and it is the rule this map has been most likely to break.
-A class earns its place in a row only when the named code demonstrates it at that ref, so state the class the code shows and never the one the shape merely suggests, because a plausible category attached to code that does not carry it sends the specialist to the wrong question.
-The same test governs a reachability grade and a condition that would attach a class later: a grade must match what the code actually gates, and a condition must name an observable that can genuinely fire rather than one the design already rules out.
-It governs the Where-to-look column just as strictly, and that is the half most often missed: a path earns its place only when opening it shows the row's class, so resolving is not the test and a file that merely sits near the subject is a wrong pointer rather than a harmless one.
-When a row's class is real but the path that carries it is elsewhere, move the pointer to the code that demonstrates it rather than keeping the familiar name, and when a path carries no class in this map at the pinned ref, leave it unlisted instead of relocating it to whichever row it fits least badly.
+One rule governs every cell of a row, and it is the rule this map has been most likely to break: the named code at the pinned ref must demonstrate what the cell claims, whether that is the class the row names, the reachability grade, a condition that would attach a class later, or the path in the Where-to-look column, so a grade must match what the code actually gates, a condition must name an observable that can genuinely fire rather than one the design already rules out, and a path must show the row's class when opened rather than merely resolve.
+Anything that fails the test is removed or restated as a condition that can genuinely fire: move a pointer to the code that carries the class rather than keeping the familiar name, and leave a path unlisted when it carries no class here rather than relocating it to whichever row it fits least badly.
 
 | Shape | Class that attaches | Where to look |
 |---|---|---|
@@ -173,8 +170,10 @@ Everything the route does after a valid state, the code exchange and the connect
 Grade a callback finding by the half it lands in and do not flatten it in either direction, because calling the whole route anonymous overstates its reach while calling the whole route state-bearing understates it.
 
 Three further groups sit beside the whole set and must not be folded into it, because each is a different question.
-The operator and portal audio routes also arrive without the header, since a native `<audio>` element cannot send one, but each still demands a valid JWT in a `token` query parameter - the operator's through `_require_operator_for_audio` in `voice_platform/api/calls.py`, the portal user's through `decode_token` and `_resolve_tenant_id` in `voice_platform/api/portal.py`.
-The worker data plane authenticates by `X-API-Key` rather than by an `Authorization` header, so `voice_platform/api/sip.py`, `voice_platform/api/ingest.py`, and `agents.snapshot_router` are credential-bearing and belong with the worker-identity question rather than with the anonymous surface.
+The operator and portal audio routes also arrive without the header, since a native `<audio>` element cannot send one, but they do not share one grade and must not be given one.
+The portal route demands a valid JWT unconditionally: `portal_audio` in `voice_platform/api/portal.py` takes `token` as a required parameter, decodes it inline and refuses with 401, with no environment escape.
+The operator route only accepts a JWT in that parameter rather than demanding one: `_require_operator_for_audio` in `voice_platform/api/calls.py` rewrites `token` into an `Authorization` header and delegates to `require_operator`, so it carries the same environment-conditional fail-open as every other `require_operator` caller, which the environment-conditional row above owns.
+The worker data plane is credential-bearing under a prod configuration rather than unconditionally, and belongs with the worker-identity question rather than with the anonymous surface: `voice_platform/api/sip.py` and `voice_platform/api/ingest.py` take `require_worker`, which has that same non-prod escape, and `agents.snapshot_router` takes `require_operator_or_worker`, which accepts the worker token or falls back to the operator and admin check rather than requiring `X-API-Key`.
 `/dev/join` and `/dev/sip-token` in `voice_platform/api/devpage.py` sit inside the `if not settings.is_prod` guard in `voice_platform/main.py` and are not mounted in prod at all, and `GET /health`, defined inline in `create_app`, is public but returns a static status object with no I/O and no state.
 
 None of the six is a finding: they are places to look, and the actual downstream effect of each has to be established before anything is written up.
@@ -207,7 +206,7 @@ Signs that a revision is already overdue, each of them observable rather than fe
 - A mapped path resolves differently at the tip of that ref than at the commit named there, which dates the map by its subject rather than by its calendar date.
 - Two consecutive quiet daily reviews over a product area that did ship changes, which means the map is pointing at the wrong place rather than that the area is clean.
 - A finding that had to ship without element 4, which means its shape row has no verification entry point yet.
-- A class named in a row that the named code does not demonstrate at the map's ref, or a stated condition that the product's design makes impossible to observe.
+- Any cell of a row that fails the rule stated at the head of the shape map, observed while reading the code the row names.
 
 A revision to this file edits firstmate's shared tracked material, so it is not a self-service edit.
 Route it through the normal delivery path with `firstmate-coding-guidelines` loaded, and expect the captain to hold the merge.
