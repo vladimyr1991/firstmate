@@ -58,10 +58,11 @@ A check that writes into a live outward-facing surface must remove what it wrote
 Prefer a non-writing probe wherever the surface offers one.
 
 Before probing any surface, establish what that surface causes our own application to do.
-Reaching a third party through our own application is still an act directed at that third party, so probing our surface in order to see what the provider does, repeating a probe to observe its rate, capacity or failure behaviour, and choosing a surface because it reaches a provider are the forbidden act wearing our application as a costume, and each of them stays unconditionally forbidden.
-What is not that act is our application's own ordinary single call: where a probe of our surface causes the outbound call our application would make anyway in normal operation, keep it to the minimum that answers the question about our surface, prefer a surface that does not relay wherever one answers the same question, and never repeat it to observe rate or capacity, which is the resource-exhaustion prohibition reaching through the relay.
+Reaching a third party through our own application in order to reach, measure or stress that third party is an act directed at it, so probing our surface to see what the provider does, repeating a probe to observe the provider's rate, capacity or failure behaviour, and choosing a surface because it reaches a provider are the forbidden act wearing our application as a costume, and the rule above forbids each of them with no conditions.
+Our application's own ordinary single call falls outside that category by construction, since a probe of our surface that causes the outbound call our application would make anyway in normal operation is our application working rather than an act aimed at the provider.
+The restraints that still bind on such a probe are to keep it to the minimum that answers the question about our surface, to prefer a surface that does not relay wherever one answers the same question, and not to repeat it, since repetition to observe rate or capacity is the resource-exhaustion prohibition above reaching through the relay.
 Where such a probe would write something a person can see, the teardown rule above applies and you must be able to remove what was written.
-Where you cannot remove it, the probe is not run: record what stayed unproven and what proving it would take, and hand the decision to firstmate.
+Where you cannot remove it, the probe is not run, and the rule above on what stays unproven applies.
 
 ## What makes a finding a finding
 
@@ -170,7 +171,7 @@ Establish coverage with the enumeration method above, which will tell you which 
 Then read the limiter itself and ask which value it keys a client on, whether that value is one the client can set such as `X-Forwarded-For`, whether its counters are shared across processes or held per process, and whether it returns early outside prod.
 The source is the right and sufficient place for all four, since a counter held in process memory is visible as process-local state rather than as a shared store and needs no traffic to see.
 A client-settable key and a per-process counter each change what the limit actually bounds, so establish both by reading, and take against the deployed stand only observations that do not require exceeding the limit.
-Driving traffic past the limit to settle the counter question is resource-exhaustion testing and is forbidden by the active-check boundary above, so where a property cannot be established without crossing that line, record exactly what stayed unproven and what proving it would take and hand the decision to firstmate.
+Driving traffic past the limit to settle the counter question is resource-exhaustion testing and is forbidden by the active-check boundary above, so a property that cannot be established without crossing that line falls under the rule above on what stays unproven.
 
 ## Keeping this skill current
 
