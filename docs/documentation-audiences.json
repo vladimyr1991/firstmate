@@ -212,6 +212,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/security-assessment/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/spec-gate/SKILL.md",
       "audience": "agent-runtime"
     },
