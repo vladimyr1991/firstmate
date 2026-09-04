@@ -103,11 +103,13 @@ Physical security, social engineering, and offensive action against third partie
 This is the part worth reading.
 Restating the ten entries of either list in the agent's own words is worthless, because the specialist already knows them and such a restatement carries no route into our code.
 The value is the mapping below.
-Every path below is relative to the parlino repository root and was read there on 2026-09-04.
+Every path below is relative to the parlino repository root and was read there on 2026-09-04 at `develop`, commit `27644cd9fee528bc0a641ab7339cd975d9774030`, whose tip is dated 2026-09-02 and titled "Merge demo calendar seeder".
+The ref is part of the address rather than decoration, because parlino's `main` is a stale release line (`13e9eb0`, tag `v0.12.0`, 2026-07-29) on which `voice_ai_workers/refusal.py`, `voice_platform/test_quota_grace.py`, and `voice_shared/niches.py` do not resolve at all.
+A reader who opens the default branch instead will hit dead pointers that say nothing about whether the map is wrong, so resolve every path below against `develop`.
 
 | Shape | Class that attaches | Where to look |
 |---|---|---|
-| Multi-tenancy and data separation | Broken access control; horizontal privilege escalation across tenants | `voice_platform/api/deps.py` (`OperatorScope.may_touch_tenant`, `require_operator`, `require_worker`, `require_operator_or_worker`), `voice_platform/api/portal.py` (`_resolve_tenant_id`, `_get_tenant_call`), `voice_platform/api/calls.py` |
+| Multi-tenancy and data separation | Broken access control; horizontal privilege escalation across tenants | `voice_platform/api/deps.py` (`OperatorScope.may_touch_tenant`, `scoped_tenant`, `require_operator`, `require_worker`, `require_operator_or_worker`), `voice_platform/api/portal.py` (`_resolve_tenant_id`, `_get_tenant_call`), `voice_platform/api/calls.py` |
 | Environment-conditional auth | Mishandling of exceptional conditions; fail-open under an unexpected configuration | The `settings.is_prod` branches in `voice_platform/api/deps.py` and `voice_platform/ratelimit.py`, pinned by `voice_platform/test_security.py` |
 | Voice, recordings, transcripts | Sensitive information disclosure; broken object-level authorization on media | `voice_platform/api/calls.py` (`audio_router`, `_require_operator_for_audio`), `voice_platform/api/portal.py` (`portal_audio`), `recordings_root` in `voice_platform/settings.py`, `voice_ai_workers/telemetry/audio_tap.py`, `voice_ai_workers/memory/store.py` |
 | Agent tool calling | Excessive agency; improper output handling; tool abuse | `voice_ai_workers/agent.py` (`end_call` and its `evaluate_end_call` veto, `search_knowledge_base`, `_make_handoff_tool`), the `tools` field of `AgentSpecPayload` in `voice_shared/spec.py` |
@@ -116,15 +118,12 @@ Every path below is relative to the parlino repository root and was read there o
 | Public landing and pilot form | Unauthenticated write surface; injection into a downstream channel; abuse of a billed resource | `voice_platform/api/pilot_requests.py`, `voice_platform/api/tokens.py`, `voice_platform/ratelimit.py`, `voice_platform/notify.py` |
 | Operator and client screens | Token handling in the browser; authorization enforced only in the UI | `frontend/src/auth.jsx`, `frontend/src/api.js`, `frontend/src/components/ui.jsx` |
 | Telephony and channels | Untrusted inbound identity; provisioning against an external provider | `voice_platform/api/sip.py`, `voice_platform/api/channels.py`, `voice_platform/sip_providers.py`, `voice_platform/sip_provision.py` |
+| Calendar integration and booking | Stored third-party OAuth refresh and access tokens at rest; an unauthenticated callback whose only guard is a signed and fresh state; open redirect through the return-to value; cross-tenant reach into another tenant's calendar; excessive agency at the booking handoff | `voice_platform/api/integrations.py` (`connect`, `callback`, `disconnect`, `test_google_connection`, `oauth_state_claims`, `_revoke_best_effort`), `create_oauth_state`, `decode_oauth_state` and `safe_oauth_return_to` in `voice_platform/auth.py`, `voice_platform/crypto.py` (`PLATFORM_ENCRYPTION_KEY`, `SecretsUnavailable`, `SecretDecryptionError`), `voice_platform/integrations/store.py` (`set_refresh_token`, `set_access_token`), `voice_platform/integrations/calendar_google.py`, `voice_platform/integrations/calendar_provider.py`, `voice_platform/api/booking.py`, `voice_platform/scheduling/` (`booking_config.py`, `booking_errors.py`, `slot_id.py`, `store.py`), the `IntegrationConnection` model in `voice_platform/db/models.py`, the `GOOGLE_OAUTH_*` block in `.env.example` |
 | Usage limits | Unbounded consumption | `voice_platform/quota.py`, `voice_platform/plans.py` |
 | Secrets | Credential exposure through logs, images, and CI | `.env.example`, `deploy/push.sh`, `.github/workflows/deploy.yml`, the httpx log-level suppression in `voice_platform/main.py`'s `create_app` |
 | Dependencies | Software supply chain failures | `uv.lock`, `frontend/package-lock.json`, the model download in `voice_ai_workers/kb/embedder.py`, and the absence of any dependency-alerting workflow beside `deploy.yml` |
 
-Calendar integration has no row on purpose.
-Searching the tree on 2026-09-04 found the word only in `PRD/` and in one landing copy asset under `frontend/src/assets/launch/`, and no calendar client, credential, or booking tool in the product code.
-It is roadmap rather than surface, so it earns a row on the day a booking tool is registered in `voice_ai_workers/agent.py` or a calendar credential appears in configuration, and not before.
-
-Four of the rows above need a sentence the table cannot hold.
+Five of the rows above need a sentence the table cannot hold.
 
 **The prompt-injection seam is narrower than it looks, and that is where to start.**
 Visitor-controlled `lang` and `niche` reach the demo agent's prompt as LiveKit dispatch metadata through `TokenRequest` in `voice_platform/api/tokens.py`, and both are pinned to an enumerated regex there before `voice_shared/niches.py` mixes the visitor context into the prompt.
@@ -138,8 +137,16 @@ A defect that is "caught by a guardrail" is still reachable.
 `voice_platform/quota.py` admits once and never re-checks mid-call, and the overrun is recorded as real usage so the next call is refused instead.
 That is a documented product guarantee pinned by `voice_platform/test_quota_grace.py`, so unbounded-consumption work belongs at the admission points rather than in a proposal to cut live calls off.
 
-**The rate limiter covers two of the three anonymous surfaces.**
-`rate_limit` is called from the login route in `voice_platform/api/auth_routes.py` and the visitor token mint in `voice_platform/api/tokens.py`, while the unauthenticated `POST /api/public/pilot-request` in `voice_platform/api/pilot_requests.py` bounds field length only.
+**The calendar row is where our code holds someone else's credential, and nothing in it has been reproduced.**
+`voice_platform/api/integrations.py` splits its routes across two routers on purpose: everything on `router` is an ordinary operator endpoint, while `/callback` sits on `callback_router` because it is entered by a browser Google redirected, which carries no `Authorization` header, so its only authentication is the signature and freshness of the `state` minted at connect time.
+Credentials reach the database through `voice_platform/integrations/store.py` and nowhere else, encrypted under `PLATFORM_ENCRYPTION_KEY` by `voice_platform/crypto.py`, and `calendar_google.py` is the only module in that package allowed to know Google.
+Read those as the design's own claims and check them, rather than assuming either the claim or its breach.
+
+**The rate limiter covers two of the four entry points that reach the platform without an `Authorization` header.**
+`rate_limit` has exactly two call sites: the login route in `voice_platform/api/auth_routes.py` and the visitor token mint in `voice_platform/api/tokens.py`.
+The two it does not cover are the unauthenticated `POST /api/public/pilot-request` in `voice_platform/api/pilot_requests.py`, which bounds field length only, and the Google OAuth callback in `voice_platform/api/integrations.py`, which is guarded by the signed `state` alone.
+Those two are not one shape and must not be graded together: the pilot form is anonymous, while the callback carries a minted credential outside the header.
+Count the audio routes apart from all four: `audio_router` in `voice_platform/api/calls.py` and `portal_audio` in `voice_platform/api/portal.py` also arrive without the header, because an `<audio>` element cannot send one, but each still demands a valid JWT in a `token` query parameter - the operator's through `_require_operator_for_audio`, the portal user's through `decode_token` and `_resolve_tenant_id`.
 That asymmetry is a place to look, not a finding: establish the actual downstream effect before writing one.
 The limiter's key is the second thing to look at, separately from its coverage.
 `_client_ip` in `voice_platform/ratelimit.py` takes the first value of the request's own `X-Forwarded-For` header, the counters are per process rather than shared, and the whole limiter returns early when the environment is not prod - three properties whose consequences have to be established against the deployed stand rather than argued from the source.
@@ -151,20 +158,21 @@ Treat the file as having two halves with different lifetimes.
 **Permanent.** The authority rule, the active-check prohibitions, the four elements of a finding, and the split between the development half and the security half.
 These change only by a captain decision, never by a standards release.
 
-**Perishable.** The editions table is bound to whichever revision of each standard is current, and the shape map is bound to the product's code as it stood on the date stated above.
+**Perishable.** The editions table is bound to whichever revision of each standard is current, and the shape map is bound to the product's code as it stood at the ref and commit stated above, not merely on that date.
 Both are wrong the moment their subject moves, and neither announces it.
 
 Revise on any of these conditions, not on intention:
 
 - On the first stand check of each calendar quarter, reopen every primary URL in the editions table and rewrite its `Checked` date; a row whose date is more than one quarter old is stale by definition and may not be cited until it is re-verified.
-- When the daily review of landed work touches any path named in the shape map, correct that row in the same pass, before writing the day's line.
+- When the daily review of landed work touches any path named in the shape map, correct that row in the same pass and re-stamp the ref and commit at the head of the map, before writing the day's line.
 - When a finding fits no row of the shape map, the map is missing a shape: add the row in the same pass that files the finding.
 - When an active check needs a technique the source in force does not cover, record which source fell short and what was used instead.
 
 Signs that a revision is already overdue, each of them observable rather than felt:
 
 - A primary source's page names an edition identifier that differs from the one in the table.
-- A path in the shape map no longer resolves, or `git log --follow` shows it moved.
+- A path in the shape map no longer resolves at the ref and commit named at the head of the map, or `git log --follow` shows it moved.
+- A mapped path resolves differently at the tip of that ref than at the commit named there, which dates the map by its subject rather than by its calendar date.
 - Two consecutive quiet daily reviews over a product area that did ship changes, which means the map is pointing at the wrong place rather than that the area is clean.
 - A finding that had to ship without element 4, which means its shape row has no verification entry point yet.
 
