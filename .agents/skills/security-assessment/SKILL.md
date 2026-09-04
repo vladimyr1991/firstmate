@@ -57,6 +57,11 @@ Write down exactly what stayed unproven and what proving it would take, and hand
 A check that writes into a live outward-facing surface must remove what it wrote, in the check's own teardown rather than from memory: capture the evidence, delete, then re-probe to confirm it is gone.
 Prefer a non-writing probe wherever the surface offers one.
 
+Before probing any surface, establish what that surface causes our own application to do.
+A probe that makes our application call a third party or post into a live channel is an action against that third party or that channel, and it carries the same restraint as sending the request there directly: prefer a surface that does not relay, keep the volume to the minimum that answers the question, and never repeat it to observe rate or capacity behaviour.
+Where such a probe would write something a person can see, the teardown rule above applies and you must be able to remove what was written.
+Where you cannot remove it, the probe is not run: record what stayed unproven and what proving it would take, and hand the decision to firstmate.
+
 ## What makes a finding a finding
 
 Do not open a finding that was neither reproduced against the running application nor demonstrated in the code.
@@ -88,7 +93,7 @@ A claim about what a standard says, without the date it was checked, is a claim 
 | Source | Edition in force | Checked | What we take from it |
 |---|---|---|---|
 | [OWASP Top 10](https://owasp.org/Top10/2025/) (web) | 2025 | 2026-09-04 | The platform's HTTP surface. A01 Broken Access Control is the lens for tenant separation; A03 Software Supply Chain Failures is new in 2025 and widens 2021's vulnerable-components entry to the whole ecosystem; A10 Mishandling of Exceptional Conditions is new in 2025 and is the lens for the fail-open seams the environment-conditional row below says how to find. |
-| [OWASP Top 10 for LLM Applications](https://genai.owasp.org/llm-top-10/) | 2025, released 2025-03-12 | 2026-09-04 | The voice agent, and the more important of the two lists for this product. LLM01 Prompt Injection, LLM02 Sensitive Information Disclosure, LLM06 Excessive Agency, LLM07 System Prompt Leakage, LLM08 Vector and Embedding Weaknesses, and LLM10 Unbounded Consumption are the entries the map below attaches to product shapes, and each row's own checks are what establish whether that surface is present at your ref. |
+| [OWASP GenAI LLM Top 10](https://genai.owasp.org/resource/owasp-genai-llm-top-10-2026/) | 2026, published 2026-08-03 | 2026-09-04 | The voice agent, and the more important of the two lists for this product. Its own resource page calls it the latest community-driven guide to the most critical security risks facing applications powered by large language models, and states that it introduces updated rankings and expanded threat coverage. The 2026 entry identifiers could not be established from either reachable page and must come from the document itself before any single identifier is cited, and because the edition changes rankings the 2025 numbering may not carry over. Note the trap that produced the earlier error in this row: as of the same check date the project's own landing page at https://genai.owasp.org/llm-top-10/ still presents the 2025 edition as current and still lists the LLM01:2025 through LLM10:2025 identifiers, so that landing page lags its own project's newest release. |
 | [OWASP ASVS](https://owasp.org/www-project-application-security-verification-standard/) | 5.0.0, released 2025-05-30 | 2026-09-04 | Source for element 4 of a finding. Use it to derive the verification step, not as an audit checklist to walk end to end. |
 | [OWASP WSTG](https://owasp.org/www-project-web-security-testing-guide/) | 4.2 stable, released 2020-12-03; 5.0 in development | 2026-09-04 | Procedure for the active check against our stand. This is the oldest source we lean on, so treat its technique list as a floor and not as coverage. |
 | [OWASP Agentic AI - Threats and Mitigations](https://genai.owasp.org/resource/agentic-ai-threats-and-mitigations/) | Published 2025-02-17, first guide of the Agentic Security Initiative | 2026-09-04 | Tool-calling threat modelling. Two things could not be established from the landing page and must come from the whitepaper itself before being cited: its version, and its threat identifiers, which the page does not enumerate. |
@@ -108,9 +113,9 @@ A shape and the class that attaches to it are durable, while a path, a line numb
 The third column therefore says how to find the surface and what to ask of it, keyed on route strings and path prefixes, dependency and decorator symbols, settings keys, and function or helper names, all of which move far more slowly than the files that hold them.
 Run each search in the parlino repository at the ref you are actually reviewing, and read a search that returns nothing as an answer rather than as a broken pointer: either the surface moved, in which case the key tells you what to look for next, or it no longer exists, which is itself worth knowing.
 
-Element 4 of a finding is found the same way and never assumed.
-Search the test suite for the guard's own symbol - the dependency, the settings key, or the function the branch sits in - and read what the match actually asserts rather than trusting a file whose name sounds right.
-When nothing in the suite names it, that is the answer: the cell has no verification anchor at your ref, and the finding ships saying so.
+Element 4 is composed by the specialist and never assumed: it is the probe or test that goes red against the defect as it stands and green once the fix lands, so an existing passing test is not element 4 and a suite that names nothing never excuses a finding from carrying one.
+What the suite establishes is the context for composing it, so search the test suite for the guard's own symbol - the dependency, the settings key, or the function the branch sits in - and read what the match actually asserts rather than trusting a file whose name sounds right.
+When nothing in the suite names it, that answers that question alone: the guard is unpinned at your ref, which is worth saying in the finding and tells you where the probe you compose belongs.
 
 Two questions come up often enough to deserve a stated method rather than a stored answer, because a stored count is wrong on the day a route is added.
 
@@ -159,7 +164,7 @@ Re-check by reading the quota module's admission function and the test that pins
 This is a product guarantee rather than a defect, so unbounded-consumption work belongs at the admission points and never in a proposal to cut a live call off.
 
 **The rate limiter is a place to look, and its key is a separate question from its coverage.**
-Neither half is a finding: nothing here was reproduced, and this file's own rule forbids opening a finding that was not.
+Neither half is a finding yet, because nothing here has been reproduced or demonstrated, which is what "What makes a finding a finding" above requires.
 Establish coverage with the enumeration method above, which will tell you which login-free surfaces the limiter reaches and which it does not.
 Then read the limiter itself and ask which value it keys a client on, whether that value is one the client can set such as `X-Forwarded-For`, whether its counters are shared across processes or held per process, and whether it returns early outside prod.
 The source is the right and sufficient place for all four, since a counter held in process memory is visible as process-local state rather than as a shared store and needs no traffic to see.
@@ -184,7 +189,8 @@ Revise on any of these conditions, not on intention.
 Each names an act the specialist completes alone in the pass it fires: verify, then record the concrete correction and route it through the delivery path named at the end of this section.
 The edit lands when that change is merged, which is not the specialist's to grant, so no condition below asks for a landed edit as its same-pass obligation and none of them is discharged by intending to get to it.
 
-- On the first stand check of each calendar quarter, reopen every primary URL in the editions table and route the `Checked` dates that re-reading establishes; a row whose date is more than one quarter old is stale by definition and may not be cited until it has been re-verified, whether or not the re-stamp has landed.
+- When a row of the editions table is about to be cited and its `Checked` date is more than a quarter old, reopen that row's primary source first and route the `Checked` date that re-reading establishes in the same pass, whichever activity the pass is; a row whose date is more than one quarter old is stale by definition and may not be cited until it has been re-verified, whether or not the re-stamp has landed.
+- When re-verifying an edition, look for a newer release resource published under that project rather than reading its landing page alone, since a landing page can lag its own project's newest release.
 - When a check in the third column returns nothing at the ref you are reviewing, establish whether the surface moved or went away, and route the corrected search key in the same pass.
 - When a finding fits no row of the shape map, the map is missing a shape: route the new row in the same pass that files the finding.
 - When either stamped fact fails its own re-check, route the correction in the same pass and grade the finding in front of you on what you observed rather than on the stamp.
@@ -193,6 +199,7 @@ The edit lands when that change is merged, which is not the specialist's to gran
 Signs that a revision is already overdue, each of them observable rather than felt:
 
 - A primary source's page names an edition identifier that differs from the one in the table.
+- A project's landing page names an older edition than one of that project's own release resources.
 - A check's search key returns nothing, or returns so much that it no longer locates a surface.
 - Two consecutive quiet daily reviews over a product area that did ship changes, after which re-read that area's checks to establish whether they still reach what shipped or the area was genuinely clean.
 - A row whose class no longer attaches to anything its checks can find.
