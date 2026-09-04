@@ -189,11 +189,13 @@ These change only by a captain decision, never by a standards release.
 **Perishable.** The editions table is bound to whichever revision of each standard is current, and the shape map is bound to the product's code as it stood at the ref and commit stated above, not merely on that date.
 Both are wrong the moment their subject moves, and neither announces it.
 
-Revise on any of these conditions, not on intention:
+Revise on any of these conditions, not on intention.
+Each one names an act the specialist completes alone in the pass it fires: verify, then record the concrete correction and route it through the delivery path named at the end of this section.
+The edit lands when that change is merged, which is not the specialist's to grant, so no condition below asks for a landed edit as its same-pass obligation and none of them is discharged by intending to get to it.
 
-- On the first stand check of each calendar quarter, reopen every primary URL in the editions table and rewrite its `Checked` date; a row whose date is more than one quarter old is stale by definition and may not be cited until it is re-verified.
-- When the daily review of landed work touches any path named in the shape map, correct that row in the same pass and re-stamp the ref and commit at the head of the map, before writing the day's line.
-- When a finding fits no row of the shape map, the map is missing a shape: add the row in the same pass that files the finding.
+- On the first stand check of each calendar quarter, reopen every primary URL in the editions table and route the `Checked` dates that re-reading establishes; a row whose date is more than one quarter old is stale by definition and may not be cited until it has been re-verified, whether or not the re-stamp has landed.
+- When the daily review of landed work touches any path named in the shape map, verify that row against the current ref in the same pass and, if it diverged, route the correction carrying the row, the path, and the new ref and commit, before writing the day's line.
+- When a finding fits no row of the shape map, the map is missing a shape: route the new row in the same pass that files the finding.
 - When an active check needs a technique the source in force does not cover, record which source fell short and what was used instead.
 
 Signs that a revision is already overdue, each of them observable rather than felt:
