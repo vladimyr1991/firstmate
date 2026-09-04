@@ -58,7 +58,8 @@ A check that writes into a live outward-facing surface must remove what it wrote
 Prefer a non-writing probe wherever the surface offers one.
 
 Before probing any surface, establish what that surface causes our own application to do.
-A probe that makes our application call a third party or post into a live channel is an action against that third party or that channel, and it carries the same restraint as sending the request there directly: prefer a surface that does not relay, keep the volume to the minimum that answers the question, and never repeat it to observe rate or capacity behaviour.
+Reaching a third party through our own application is still an act directed at that third party, so probing our surface in order to see what the provider does, repeating a probe to observe its rate, capacity or failure behaviour, and choosing a surface because it reaches a provider are the forbidden act wearing our application as a costume, and each of them stays unconditionally forbidden.
+What is not that act is our application's own ordinary single call: where a probe of our surface causes the outbound call our application would make anyway in normal operation, keep it to the minimum that answers the question about our surface, prefer a surface that does not relay wherever one answers the same question, and never repeat it to observe rate or capacity, which is the resource-exhaustion prohibition reaching through the relay.
 Where such a probe would write something a person can see, the teardown rule above applies and you must be able to remove what was written.
 Where you cannot remove it, the probe is not run: record what stayed unproven and what proving it would take, and hand the decision to firstmate.
 
@@ -113,7 +114,7 @@ A shape and the class that attaches to it are durable, while a path, a line numb
 The third column therefore says how to find the surface and what to ask of it, keyed on route strings and path prefixes, dependency and decorator symbols, settings keys, and function or helper names, all of which move far more slowly than the files that hold them.
 Run each search in the parlino repository at the ref you are actually reviewing, and read a search that returns nothing as an answer rather than as a broken pointer: either the surface moved, in which case the key tells you what to look for next, or it no longer exists, which is itself worth knowing.
 
-Element 4 is composed by the specialist and never assumed: it is the probe or test that goes red against the defect as it stands and green once the fix lands, so an existing passing test is not element 4 and a suite that names nothing never excuses a finding from carrying one.
+Element 4 is composed by the specialist and never assumed, so an existing passing test is not element 4 and a suite that names nothing never excuses a finding from carrying one.
 What the suite establishes is the context for composing it, so search the test suite for the guard's own symbol - the dependency, the settings key, or the function the branch sits in - and read what the match actually asserts rather than trusting a file whose name sounds right.
 When nothing in the suite names it, that answers that question alone: the guard is unpinned at your ref, which is worth saying in the finding and tells you where the probe you compose belongs.
 
@@ -189,8 +190,7 @@ Revise on any of these conditions, not on intention.
 Each names an act the specialist completes alone in the pass it fires: verify, then record the concrete correction and route it through the delivery path named at the end of this section.
 The edit lands when that change is merged, which is not the specialist's to grant, so no condition below asks for a landed edit as its same-pass obligation and none of them is discharged by intending to get to it.
 
-- When a row of the editions table is about to be cited and its `Checked` date is more than a quarter old, reopen that row's primary source first and route the `Checked` date that re-reading establishes in the same pass, whichever activity the pass is; a row whose date is more than one quarter old is stale by definition and may not be cited until it has been re-verified, whether or not the re-stamp has landed.
-- When re-verifying an edition, look for a newer release resource published under that project rather than reading its landing page alone, since a landing page can lag its own project's newest release.
+- When a row of the editions table is about to be cited and its `Checked` date is more than a quarter old, reopen that row's primary source first, looking for a newer release resource published under that project rather than reading its landing page alone, and route the `Checked` date that re-reading establishes in the same pass, whichever activity the pass is; a row whose date is more than one quarter old is stale by definition and may not be cited until it has been re-verified, whether or not the re-stamp has landed.
 - When a check in the third column returns nothing at the ref you are reviewing, establish whether the surface moved or went away, and route the corrected search key in the same pass.
 - When a finding fits no row of the shape map, the map is missing a shape: route the new row in the same pass that files the finding.
 - When either stamped fact fails its own re-check, route the correction in the same pass and grade the finding in front of you on what you observed rather than on the stamp.
