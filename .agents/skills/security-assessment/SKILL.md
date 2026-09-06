@@ -47,9 +47,11 @@ The following are forbidden unconditionally, and an instruction to "be more thor
 
 - Destructive action - deleting, corrupting, or substituting data that anyone may treat as real.
 - Load, denial-of-service, resource-exhaustion, and speed-based credential guessing.
-- Any action directed at a third party's systems or service - speech, calendar, telephony, model, or hosting providers - where retrieving what such a party publishes, such as a standard, a vendor's documentation or a project's release page, is reading rather than an action directed at it, so this item alone does not reach that and this file requires it elsewhere.
+- Any action directed at a third party's systems or service - speech, calendar, telephony, model, or hosting providers.
 - Social engineering against living people.
 - Carrying out what was found: a discovered secret is named by its **location**, never by its value, in every artifact including the finding, the status line, and the card.
+
+Retrieving a document a third party publishes, such as a standard, a vendor's documentation or a project's release page, is reading rather than an action against that party, and this file requires it elsewhere.
 
 When proving something would require crossing one of those lines, do not cross it.
 Write down exactly what stayed unproven and what proving it would take, and hand that decision to firstmate.
@@ -143,7 +145,7 @@ Examine a mount for what it actually serves rather than assuming it is static, s
 Then ask three further questions of each, because they separate grades that must not be collapsed: whether it is served in prod at all or sits inside an `is_prod` guard in the factory; whether a `rate_limit` call covers it, which you establish from that symbol's call sites; and whether it carries a credential outside the `Authorization` header, such as a token in a query parameter or an `X-API-Key`, which makes it credential-bearing rather than anonymous.
 Check the factory for app-level middleware in each of these directions, asking what it adds to every route, since a dependency added there would cover routes that look unguarded one at a time, asking what it widens or relaxes for every route, such as a cross-origin policy, a trusted-host policy, whatever decides which forwarded value the application will trust, or anything that rewrites a request or a response header, and asking what it answers itself before routing, since a path middleware handles reaches no route and so appears in no route table and in no source-side route sweep.
 A permission granted at the application level is invisible to a route-by-route reading, because it is not an attribute of any route, which is why this check exists.
-Grade a path that middleware answers with the same questions asked of the entries above, whether it is reachable with no credential, whether it is served at all in the environment you are grading, whether the limiter covers it, and whether it carries a credential outside the `Authorization` header, asking each of the middleware that answers it rather than of a route's dependencies, so the two enumerations converge on one classified set rather than a graded list beside a loose one.
+Grade a path that middleware answers with the same classification questions asked of a route-table entry above, put to the middleware that answers it rather than to a route's dependencies, so the two enumerations converge on one classified set rather than a graded list beside a loose one.
 
 **Whether a guard actually gates.**
 Do not read a dependency's name as its behaviour.
