@@ -42,13 +42,12 @@ Never invent a severity to make a finding land.
 
 Active checks are permitted **only** against our own deployed application, at the address firstmate supplies for that check.
 That prohibition governs active checking, which is any probe, test request or payload issued in order to learn how a system behaves under it, and no such request goes to any other address, including addresses our own code calls out to.
-That prohibition and the forbidden list below both govern acts directed at a system, which is probing it, measuring it, stressing it, or reaching it through our own application in order to do any of those. Ordinary retrieval of published material is not such an act and falls outside them rather than being excepted from them, so opening a published standard, a vendor's documentation or a project's release page is reading rather than probing, and this file requires it elsewhere.
 
 The following are forbidden unconditionally, and an instruction to "be more thorough" does not lift any of them:
 
 - Destructive action - deleting, corrupting, or substituting data that anyone may treat as real.
 - Load, denial-of-service, resource-exhaustion, and speed-based credential guessing.
-- Any action directed at a third party's systems or service - speech, calendar, telephony, model, or hosting providers.
+- Any action directed at a third party's systems or service - speech, calendar, telephony, model, or hosting providers - where retrieving what such a party publishes, such as a standard, a vendor's documentation or a project's release page, is reading rather than an action directed at it, so this item alone does not reach that and this file requires it elsewhere.
 - Social engineering against living people.
 - Carrying out what was found: a discovered secret is named by its **location**, never by its value, in every artifact including the finding, the status line, and the card.
 
@@ -144,6 +143,7 @@ Examine a mount for what it actually serves rather than assuming it is static, s
 Then ask three further questions of each, because they separate grades that must not be collapsed: whether it is served in prod at all or sits inside an `is_prod` guard in the factory; whether a `rate_limit` call covers it, which you establish from that symbol's call sites; and whether it carries a credential outside the `Authorization` header, such as a token in a query parameter or an `X-API-Key`, which makes it credential-bearing rather than anonymous.
 Check the factory for app-level middleware in each of these directions, asking what it adds to every route, since a dependency added there would cover routes that look unguarded one at a time, asking what it widens or relaxes for every route, such as a cross-origin policy, a trusted-host policy, whatever decides which forwarded value the application will trust, or anything that rewrites a request or a response header, and asking what it answers itself before routing, since a path middleware handles reaches no route and so appears in no route table and in no source-side route sweep.
 A permission granted at the application level is invisible to a route-by-route reading, because it is not an attribute of any route, which is why this check exists.
+Grade a path that middleware answers with the same questions asked of the entries above, whether it is reachable with no credential, whether it is served at all in the environment you are grading, whether the limiter covers it, and whether it carries a credential outside the `Authorization` header, asking each of the middleware that answers it rather than of a route's dependencies, so the two enumerations converge on one classified set rather than a graded list beside a loose one.
 
 **Whether a guard actually gates.**
 Do not read a dependency's name as its behaviour.
