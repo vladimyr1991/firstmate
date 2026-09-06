@@ -42,13 +42,13 @@ Never invent a severity to make a finding land.
 
 Active checks are permitted **only** against our own deployed application, at the address firstmate supplies for that check.
 That prohibition governs active checking, which is any probe, test request or payload issued in order to learn how a system behaves under it, and no such request goes to any other address, including addresses our own code calls out to.
-Ordinary retrieval of public documentation is not an active check and is outside this prohibition, so opening a published standard, a vendor's documentation or a project's release page is reading rather than probing, and this file requires it elsewhere.
+That prohibition and the forbidden list below both govern acts directed at a system, which is probing it, measuring it, stressing it, or reaching it through our own application in order to do any of those. Ordinary retrieval of published material is not such an act and falls outside them rather than being excepted from them, so opening a published standard, a vendor's documentation or a project's release page is reading rather than probing, and this file requires it elsewhere.
 
 The following are forbidden unconditionally, and an instruction to "be more thorough" does not lift any of them:
 
 - Destructive action - deleting, corrupting, or substituting data that anyone may treat as real.
 - Load, denial-of-service, resource-exhaustion, and speed-based credential guessing.
-- Any action against a third party - speech, calendar, telephony, model, or hosting providers.
+- Any action directed at a third party's systems or service - speech, calendar, telephony, model, or hosting providers.
 - Social engineering against living people.
 - Carrying out what was found: a discovered secret is named by its **location**, never by its value, in every artifact including the finding, the status line, and the card.
 
@@ -132,8 +132,9 @@ Only when both searches come back empty may the finding say the guard appears un
 Two questions come up often enough to deserve a stated method rather than a stored answer, because a stored count is wrong on the day a route is added.
 
 **Which surfaces are reachable without a login.**
-Enumerate the application's own route table, the collection of registered routes the framework exposes on the application object once the factory has built it, because every path that application serves is registered there whatever mechanism attached it, and a mounted sub-application appears there as the mount it is.
+Enumerate the application's own route table, the collection of registered routes the framework exposes on the application object once the factory has built it, because every path that routing serves is registered there whatever mechanism attached it, and a mounted sub-application appears there as the mount it is.
 That completeness is over attachment mechanisms and not over environments, since the table is the one the settings in force when the object was built produce, so build it under the environment you are grading and record which environment that was, because a finding resting on the enumeration is a finding about that environment.
+That completeness is also only over paths that reach routing at all, since middleware runs ahead of routing and can answer a request itself, so a path it handles is served by the application while appearing in no route table: the route table is the enumeration of what routing serves, the application-level middleware check below is the enumeration of what answers before routing, and neither alone is the set of paths the application serves.
 Expect a factory that validates its configuration on startup to refuse to build under a production environment without real secrets, and satisfy that validation with placeholder values distinct from the defaults rather than with real credentials.
 Where the factory still cannot be built, the source-side sweep below is the enumeration rather than a reconcile against it, and the finding records both which environment the enumeration reflects and that it was source-side and therefore complete only over the attachment shapes that sweep covers, which makes it a floor rather than the closed set a built table would have given.
 Then reconcile that table against the source by walking the routers registered in the factory, the route decorators under the API package, and the routes and mounts declared directly on the application object, attributing each served path to the code that registered it and looking hardest at registrations that sit behind an environment condition, since those are what a table built under one environment silently omits and the "Environment-conditional auth" row below already owns.
@@ -141,7 +142,7 @@ The principle survives a change of framework or of attachment mechanism: enumera
 Classify each entry by whether the route or its router carries an auth dependency from the `require_*`, `resolve_operator` and `scoped_tenant` family or a route-specific guard, and read every unguarded one rather than trusting the classification, because a guard can also sit inline in the handler body.
 Examine a mount for what it actually serves rather than assuming it is static, since the application behind it carries its own routes and its own guards or lack of them.
 Then ask three further questions of each, because they separate grades that must not be collapsed: whether it is served in prod at all or sits inside an `is_prod` guard in the factory; whether a `rate_limit` call covers it, which you establish from that symbol's call sites; and whether it carries a credential outside the `Authorization` header, such as a token in a query parameter or an `X-API-Key`, which makes it credential-bearing rather than anonymous.
-Check the factory for app-level middleware in both directions, asking what it adds to every route, since a dependency added there would cover routes that look unguarded one at a time, and asking what it widens or relaxes for every route, such as a cross-origin policy, a trusted-host policy, whatever decides which forwarded value the application will trust, or anything that rewrites a request or a response header.
+Check the factory for app-level middleware in each of these directions, asking what it adds to every route, since a dependency added there would cover routes that look unguarded one at a time, asking what it widens or relaxes for every route, such as a cross-origin policy, a trusted-host policy, whatever decides which forwarded value the application will trust, or anything that rewrites a request or a response header, and asking what it answers itself before routing, since a path middleware handles reaches no route and so appears in no route table and in no source-side route sweep.
 A permission granted at the application level is invisible to a route-by-route reading, because it is not an attribute of any route, which is why this check exists.
 
 **Whether a guard actually gates.**
