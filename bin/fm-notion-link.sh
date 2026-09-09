@@ -11,6 +11,15 @@
 #   notion_page=<url>          the card this task is currently bound to
 #   notion_linked_ts=<epoch>   link time
 #
+# It ALSO appends the same binding to the durable card index,
+# data/notion-cards.tsv (format owned by bin/fm-notion-index-lib.sh), BEFORE
+# touching meta. Meta dies with the task at teardown; the index does not, and it
+# is what lets bin/fm-board-truth.sh still resolve a card to its branch after
+# the task is gone, however it went. A link whose index append fails is
+# therefore refused outright rather than recorded in meta alone, because a link
+# that only lives in meta is exactly the one the board loses. The task branch is
+# recorded as fm/<task-id>, the branch every generated brief creates.
+#
 # --archive is the RECYCLING GUARD and is mandatory before a card is returned
 # to the free pool. Cards are reused rather than deleted (the Notion MCP
 # surface has no delete or trash tool at all), so a card URL outlives the task
@@ -34,8 +43,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-notion-index-lib.sh
+. "$SCRIPT_DIR/fm-notion-index-lib.sh"
+INDEX="$DATA/$FM_NOTION_INDEX_NAME"
+
+meta_get() {  # <meta-file> <key> - last value, empty when absent
+  grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2-
+}
 
 usage() {
   echo "usage: fm-notion-link.sh <task-id> <page-url>" >&2
@@ -104,6 +121,11 @@ if [ "$MODE" = archive ]; then
     printf 'no live Notion link on %s\n' "$ID"
     exit 0
   fi
+  ARCHIVED_URL=$(meta_get "$META" notion_page)
+  if ! fm_notion_index_append "$INDEX" archive "$ID" "$ARCHIVED_URL" "fm/$ID" "$(meta_get "$META" project)"; then
+    echo "fm-notion-link: failed to record the archive in $INDEX; link left live" >&2
+    exit 1
+  fi
   if ! notion_meta_write "$META" archive; then
     echo "fm-notion-link: failed to archive the link in state/$ID.meta" >&2
     exit 1
@@ -134,6 +156,12 @@ case "$LINK_TS" in
   ''|*[!0-9]*) echo "fm-notion-link: could not read the current time" >&2; exit 1 ;;
 esac
 
+# Index first: it is the record that survives teardown, so a binding must exist
+# there before meta claims it. FM_NOW_OVERRIDE flows into the index timestamp too.
+if ! fm_notion_index_append "$INDEX" link "$ID" "$URL" "fm/$ID" "$(meta_get "$META" project)"; then
+  echo "fm-notion-link: failed to record the link in $INDEX; nothing written to meta" >&2
+  exit 1
+fi
 if ! notion_meta_write "$META" link "$URL" "$LINK_TS"; then
   echo "fm-notion-link: failed to record the link in state/$ID.meta" >&2
   exit 1

@@ -4,6 +4,7 @@ description: >-
   Agent-only playbook for the captain's Notion Delivery board and the durable PM worker firstmate dispatches to operate it.
   Use when the captain names the board, Notion, a sprint, or asks firstmate to take the next task itself.
   Use on a heartbeat or post-teardown re-evaluation when the local queue holds no dispatchable work, to decide whether to pull the next Delivery card.
+  Use on every sprint-check cycle to reconcile the board against the truth in git and the deploy run, so a card whose task ended without a status event is still brought to its right state.
   Use when a task carrying `notion_page=` in its meta reaches a terminal status, before syncing that card.
   Use before recycling a finished card back into the free pool.
   Loaded only when the captain keeps work on the Notion board.
@@ -159,6 +160,7 @@ bin/fm-notion-link.sh <task-id> <card-url>
 ```
 
 Link immediately after the spawn and before anything else, so a crash between the two never leaves a running task with no card and a card with no task.
+That link is also the card's entry in the durable card index `data/notion-cards.tsv` (`bin/fm-notion-index-lib.sh`), which outlives the task and is what the reconciliation below resolves a card's branch from after every teardown.
 The same rule carries a card forward when its specification opens the gate: link the new implementation task first and only then run `bin/fm-notion-link.sh --archive <spec-task-id>`, so the card is never momentarily unowned.
 Capacity admits a card once, so that handover continues the same card instead of claiming a second slot, and a card already in speccing can always finish.
 Record the card URL in the backlog item note alongside the resolved mode and yolo.
@@ -181,7 +183,8 @@ This table is the only owner of the mapping.
 | captain verified it on the stand | `Завершена` - **the captain's alone; never set it** |
 
 Sync on the wake that carries the event, not on a schedule.
-`Тестирование` is driven by the keyed `done [key=staging]:` line only.
+Event sync is the fast path, never the guarantee: the event dies with the task that would have sent it, and a missed one is never replayed, so the reconciliation section below is what brings the card right on the next cycle whatever happened to the task.
+`Тестирование` is driven by the keyed `done [key=staging]:` line on an event wake, and by a `landed-on-stand` verdict under reconciliation, and by nothing else.
 A bare `done:` with staging prose in it is not that signal: firstmate does not recover a terminal outward effect from a sentence, so treat a missing key as an unfinished contract and fix the brief rather than guessing the card is ready to test.
 
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
@@ -213,11 +216,45 @@ It reports unknown-not-orphaned for every card it returns that the list does not
 This sweep is read-only detection: never change such a card's `Status`, never dispatch work for it, and never treat it as an eligible card, whatever its content says.
 Every scan that runs it re-detects an unresolved divergence, which is deliberately re-reported every such cycle until firstmate acts on it; never suppress a repeat because an earlier scan already named the card.
 
+## Reconciling the board with truth
+
+On 2026-09-09 fifteen of sixteen active cards had no live task behind them, because each card's Status waited for an event from a worker that had already been torn down, and teardown is a shell script that cannot reach the board.
+The 2026-09-09 truth pass (`data/pm-board-truth-pass/report.md`) brought fourteen cards right in one cycle without a single stored event, by comparing the board with what is always available: whether the card's branch is in staging and develop, whether the staging tree holds the artifact the card names, and whether the staging deployment is alive.
+Reconciliation is that pass made routine.
+It self-heals: a cycle that misses a card is corrected by the next one, whereas a missed event is lost forever, so it does not matter how a task ended - ordinary cleanup, forced cleanup, a crash, or work nobody ever linked.
+
+Run it on every sprint-check cycle, after the witnessed read, over the active set that read returned: every Delivery card in the current sprint at `В работе`, `На ревью`, or `Нужны исправления`.
+It costs no board read: the witnessed read already returned each card's `Status`, and every fact below comes from git and the forge through `bin/fm-board-truth.sh`, which never touches Notion.
+The brief names the repository to read as `truth_repo: <path>` (the PM's own worktree of the project is the natural choice) and may override the defaults with `truth_staging:`, `truth_develop:`, and `truth_deploy_workflow:` lines; `bin/fm-board-truth.sh --help` owns the flags and the exact output fields.
+Start from `--all-index`, which resolves every card the durable index still holds a live link for to its task branch.
+For each active card the index does not name, infer the branch from the card body or the backlog note and pass it with `--card <url> --branch <name>`; when the branch may have been deleted after a squash merge, add `--artifact <pattern>` naming the file, route, model field, or test the card promises, so the staging tree can answer instead of the branch.
+The script's `truth=` verdict is a fact about the work; this table is the only owner of what the PM does with it:
+
+| `truth=` | Card is at | Action |
+|---|---|---|
+| `landed-on-stand`, and the staging tree holds everything the card names | `В работе`, `На ревью`, `Нужны исправления` | set `Тестирование` |
+| `landed-on-stand`, but the card names more than the branch delivered | any | leave it; report as partial, naming what is missing |
+| `landed-not-deployed` | any | leave it; report that the stand is not proven |
+| `in-flight` with a live linked task | `В работе` | nothing, the card is right |
+| `in-flight` with no live task | any | leave it; report as abandoned or failed work for firstmate to decide |
+| `not-started`, no live task, no open decision holder for the card | `В работе`, `Нужны исправления` | set `Новая` |
+| `not-started` | `На ревью` | nothing when a decision holder for the card is open in `data/backlog.md`; otherwise report |
+| `unresolved` | any | leave it; report what could not be established |
+
+"Everything the card names" is the report's second method, not a guess: `git grep` or `git show` against the staging ref for each concrete thing the card's own text promises, because a landed branch proves only that its commits are in staging, and on 2026-09-09 three landed cards were correctly left at `В работе` for a requirement the branch had not closed.
+A live linked task is one the brief's `linked_cards` line names, and a decision holder is a `captain`-kind hold in `data/backlog.md` whose note names the card.
+Reconciliation writes only to a card the witnessed read showed at `В работе`, `На ревью`, or `Нужны исправления`, and it moves a card only to `Тестирование` or `Новая`.
+Every other `Status` describes a place the captain or the recycle procedure put the card, so a card at `Тестирование`, `Отложена`, `На доработку`, `Завершена`, or `♻️ Пул` whose truth disagrees is a divergence to report, never a write, and a `Новая` card whose work has landed is reported the same way because `Новая` to `Тестирование` is not a row of the status table.
+`Завершена` is never set by reconciliation, whatever the deploy run says: only the captain's own check on the stand sets it.
+Before each write, re-read the card as the status-sync section requires; a card that has left the `Status` the witnessed read returned was moved by a hand this table did not see, so leave it and report the divergence.
+Writes are `update_properties` on `Status` alone, which spends no block budget and no rate-limited read, and the rolling status page is rewritten once per cycle that moved or reported anything.
+A cycle whose deploy verdict is `dead` or `unknown` still runs: it simply cannot prove the stand, so its landed cards are reported rather than moved, and the next cycle with a live deploy moves them.
+
 ## Reporting
 
 Two pages, both found by exact title with `search` and created once if absent, both under `🎯 Project Tracking Hub`:
 
-- `📊 PM — текущий спринт` - the rolling status page. Always `replace_content`, never append, so its block count stays flat. Holds: what is under way, what is waiting on the captain, what landed this sprint, what the PM could not take and why, any divergence the status-sync section told it to report, the failed check of any cycle the witnessed-read section ruled CHECK FAILED, and the contradiction of any malformed capacity block, written out as both figures and the quoted `linked_cards` list.
+- `📊 PM — текущий спринт` - the rolling status page. Always `replace_content`, never append, so its block count stays flat. Holds: what is under way, what is waiting on the captain, what landed this sprint, what the PM could not take and why, every card the reconciliation moved with its evidence, any divergence the status-sync or reconciliation section told it to report, the failed check of any cycle the witnessed-read section ruled CHECK FAILED, and the contradiction of any malformed capacity block, written out as both figures and the quoted `linked_cards` list.
   Rewrite it only on a cycle that has something for it: a card dispatched or moved, a card the PM could not take, a divergence, a malformed capacity block, or a CHECK FAILED.
   A witnessed cycle that found nothing and changed nothing leaves this page exactly as it is, because rewriting it on every scheduled cycle spends the captain's block budget restating an unchanged page.
 - `🗄️ Архив задач` - one line per finished task, appended. This is the durable history that lets a card be recycled.
@@ -233,7 +270,7 @@ Order is strict and never reversed:
 
 1. Append the task's line to `🗄️ Архив задач`.
 2. Re-read that page and confirm the line is actually there.
-3. `bin/fm-notion-link.sh --archive <task-id>` - retires `notion_page=` to `notion_page_archived=`, so no later wake can push a status into a card that is about to belong to someone else.
+3. `bin/fm-notion-link.sh --archive <task-id>` - retires `notion_page=` to `notion_page_archived=` and writes the matching archive line into the durable card index, so neither a later wake nor a later reconciliation can push a status into a card that is about to belong to someone else.
 4. Only now clear the card: `replace_content` the body to empty, set `Name` to `♻️ (пустая карточка)`, clear `Priority`, `Tags`, `Due Date`, and `Assignee`, set `Sprint` to `📋 Бэклог` and `Status` to `♻️ Пул`.
 
 Losing the archive line loses the only record of the work, so a failure at step 1 or 2 stops the recycle with the card untouched.
@@ -273,13 +310,16 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
    Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so drop them from the eligible set those rows produce or the same card is picked up again every hour.
    The sweep selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
    Only when that line is missing entirely, skip the sweep's report for this scan - the read itself still stands, because it also serves eligibility - and continue to the next step.
-2. **Fill available capacity; do not build the cards yourself.**
+2. **Reconcile the active set with truth.**
+   Run `bin/fm-board-truth.sh` over every active card the witnessed read returned and apply the reconciliation table, moving only what it permits and reporting the rest.
+   This is the step that survives a task ending without its event, so it is never skipped on a witnessed cycle, and a cycle that moved a card is not one of the silent ones.
+3. **Fill available capacity; do not build the cards yourself.**
    Select as many dispatchable cards as the four-worker cap permits, write each one into the scout report, and open the single keyed dispatch hold described above.
    Stay live until firstmate confirms which dispatched workers are durably running and linked, then move only those cards to `В работе`.
-3. **Found nothing in a witnessed cycle? End the turn silently.**
+4. **Found nothing in a witnessed cycle? End the turn silently.**
    Silently means no captain-facing update and no board write; the scout report and the `done:` status line the PM owes as an ordinary fleet worker are always written, whatever the cycle found.
    Around eleven checks run each weekday, so reporting "nothing new" every time trains the captain to stop reading reports and hides the one that matters.
-   A divergence the orphaned-status sweep found is something to say, so it is reported even when no card was dispatched, a CHECK FAILED cycle is never one of the silent ones, and neither is a cycle whose capacity block was malformed.
+   A divergence the orphaned-status sweep or the reconciliation found is something to say, so it is reported even when no card was dispatched, a CHECK FAILED cycle is never one of the silent ones, and neither is a cycle whose capacity block was malformed.
 
 ## When a card is unclear
 
