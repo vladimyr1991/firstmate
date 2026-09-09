@@ -25,7 +25,8 @@
 #       with an unreadable staging ref in_staging is - and the verdict is
 #       unresolved, never in-flight
 #   (f) branch absent, artifact pattern misses       -> not-started
-#   (g) branch absent, artifact pattern hits staging -> landed-on-stand (squash-merged)
+#   (g) branch absent, artifact pattern hits staging -> landed-on-stand (squash-merged),
+#       basis=artifact, and the matched file is shown next to the verdict
 #   (h) branch absent, no artifact pattern           -> unresolved (never guessed)
 #   (i) --deploy none / no gh-axi on PATH            -> deploy=unknown, landed-not-deployed
 #   (j) REVERSE HALF: the task is torn down with --force (records erased) -
@@ -38,6 +39,21 @@
 #       --archive retires every live index link for the task whatever meta says,
 #       retires a live notion_page= the index never saw, and --all-index is then
 #       empty with exit 0
+#   (m) THE 2026-09-09 FALSE LANDING, replayed: the pattern `mcp_server|booking_mcp`
+#       matches exactly one staging file, .mcp.json, the harness's own MCP config.
+#       The verdict is still landed-on-stand - the tool states facts, and that
+#       file does hold the text - but it is no longer silent: artifact_matches=1
+#       and artifact_files=.mcp.json sit on the same line, so a reader sees the
+#       basis was a config file and not the card's work. Before the fix the line
+#       carried no such field, which is what this case fails on. The honest
+#       pattern for the same card matches nothing and yields not-started
+#   (n) many matches fold: the exact count is always printed, the listing shows
+#       the first --artifact-files paths (default 5) and `+K more`; the option
+#       refuses 0, 00 and non-integers; an unreadable staging ref reports - for both
+#   (o) a pattern git grep refuses (`list_slots(`, unbalanced) is not a miss:
+#       every artifact field is -, the verdict is unresolved, never not-started,
+#       exit stays 0 and one warning on stderr names the subject and the pattern;
+#       a staging file with a Cyrillic path is listed as typed, not octal-escaped
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -80,6 +96,18 @@ build_case() {
   git -C "$seed" push -q origin fm/t1
   git -C "$seed" checkout -q staging
   gitc -C "$seed" merge -q --no-ff fm/t1 -m "merge landed"
+  # The harness's own MCP config, exactly as the real staging tree carries it: it
+  # names an "mcp_server" and has nothing to do with any card's work.
+  printf '{ "mcpServers": { "mcp_server": { "command": "npx" } } }\n' > "$seed/.mcp.json"
+  # Eight files that all hold one token, for the fold test.
+  mkdir -p "$seed/many"
+  for k in 1 2 3 4 5 6 7 8; do printf 'many_token %s\n' "$k" > "$seed/many/f$k.txt"; done
+  # A file whose path is Cyrillic, as a project whose cards are named in
+  # Cyrillic may well carry.
+  mkdir -p "$seed/модули"
+  printf 'cyrillic_token\n' > "$seed/модули/бронирование.py"
+  git -C "$seed" add .mcp.json many модули
+  gitc -C "$seed" commit -q -m "harness config and many files"
   git -C "$seed" push -q origin staging
   git -C "$seed" checkout -q -b fm/wip main
   gitc -C "$seed" commit -q --allow-empty -m "wip"
@@ -187,6 +215,9 @@ expect_code 0 "$RC" "(c) exit"
 [ "$(field "$OUT" in_staging)" = yes ] || fail "(c) in_staging"
 [ "$(field "$OUT" in_develop)" = no ] || fail "(c) in_develop"
 [ "$(field "$OUT" deploy)" = alive ] || fail "(c) deploy alive"
+[ "$(field "$OUT" basis)" = branch ] || fail "(c) basis=branch: $OUT"
+[ "$(field "$OUT" artifact_matches)" = - ] || fail "(c) no pattern -> artifact_matches=-: $OUT"
+[ "$(field "$OUT" artifact_files)" = - ] || fail "(c) no pattern -> artifact_files=-: $OUT"
 pass "(c) branch in staging with live deploy -> landed-on-stand"
 
 D=$(build_case d failure 'deploy')
@@ -198,6 +229,7 @@ pass "(d) failed deploy run -> landed-not-deployed"
 run_truth "$C" --branch fm/wip
 [ "$(field "$OUT" truth)" = in-flight ] || fail "(e) expected in-flight: $OUT"
 [ "$(field "$OUT" in_develop)" = yes ] || fail "(e) in_develop"
+[ "$(field "$OUT" basis)" = - ] || fail "(e) not landed -> basis=-: $OUT"
 run_truth "$C" --branch fm/wip --staging no-such-stand
 [ "$(field "$OUT" in_staging)" = - ] || fail "(e) unreadable staging ref reports -: $OUT"
 [ "$(field "$OUT" truth)" = unresolved ] || fail "(e) unknown staging is never in-flight: $OUT"
@@ -206,12 +238,17 @@ pass "(e) branch outside staging -> in-flight; unknown staging -> unresolved"
 run_truth "$C" --branch fm/never --artifact 'webhook-test|webhook_test'
 [ "$(field "$OUT" truth)" = not-started ] || fail "(f) expected not-started: $OUT"
 [ "$(field "$OUT" branch_exists)" = no ] || fail "(f) branch_exists"
+[ "$(field "$OUT" artifact_matches)" = 0 ] || fail "(f) a miss counts 0: $OUT"
+[ "$(field "$OUT" artifact_files)" = - ] || fail "(f) a miss lists nothing: $OUT"
 pass "(f) absent branch and missing artifact -> not-started"
 
 run_truth "$C" --card https://www.notion.so/squashed --branch fm/deleted-after-squash --artifact 'subject_requests/search'
 [ "$(field "$OUT" truth)" = landed-on-stand ] || fail "(g) expected landed-on-stand: $OUT"
 [ "$(field "$OUT" artifact_in_staging)" = yes ] || fail "(g) artifact"
-pass "(g) absent branch but artifact in staging -> landed-on-stand"
+[ "$(field "$OUT" basis)" = artifact ] || fail "(g) basis=artifact: $OUT"
+[ "$(field "$OUT" artifact_matches)" = 1 ] || fail "(g) one match: $OUT"
+[ "$(field "$OUT" artifact_files)" = feature.py ] || fail "(g) the matched file is shown: $OUT"
+pass "(g) absent branch but artifact in staging -> landed-on-stand, basis and file shown"
 
 run_truth "$C" --branch fm/never
 [ "$(field "$OUT" truth)" = unresolved ] || fail "(h) expected unresolved: $OUT"
@@ -223,6 +260,66 @@ run_truth "$C" --branch fm/t1 --deploy none
 OUT=$(PATH="/usr/bin:/bin" FM_HOME="$C" "$TRUTH" --repo "$C/repo" --branch fm/t1 --no-fetch 2>&1)
 [ "$(field "$OUT" deploy)" = unknown ] || fail "(i) no gh-axi -> unknown: $OUT"
 pass "(i) unreadable deploy -> unknown, never alive"
+
+# --- (m) the 2026-09-09 false landing, replayed ------------------------------------
+run_truth "$C" --branch fm/booking-mcp-server --artifact 'mcp_server|booking_mcp'
+expect_code 0 "$RC" "(m) exit"
+[ "$(field "$OUT" truth)" = landed-on-stand ] || fail "(m) the fact stands, the text is in staging: $OUT"
+[ "$(field "$OUT" basis)" = artifact ] || fail "(m) the verdict rests on the pattern alone: $OUT"
+[ "$(field "$OUT" artifact_matches)" = 1 ] || fail "(m) exactly one file matched: $OUT"
+[ "$(field "$OUT" artifact_files)" = .mcp.json ] || fail "(m) and it is the harness config, shown on the line: $OUT"
+run_truth "$C" --branch fm/booking-mcp-server --artifact 'booking_mcp|BookingMCP|list_slots|mcp/booking'
+[ "$(field "$OUT" truth)" = not-started ] || fail "(m) the honest pattern says not-started: $OUT"
+[ "$(field "$OUT" artifact_matches)" = 0 ] || fail "(m) honest pattern matches nothing: $OUT"
+pass "(m) a config-file match is landed-on-stand on its face, with .mcp.json shown as the only basis"
+
+# --- (n) many matches fold; option refusals; unreadable staging ----------------------
+run_truth "$C" --branch fm/gone --artifact 'many_token'
+[ "$(field "$OUT" artifact_matches)" = 8 ] || fail "(n) exact count: $OUT"
+[ "$(field "$OUT" artifact_files)" = 'many/f1.txt,many/f2.txt,many/f3.txt,many/f4.txt,many/f5.txt,+3 more' ] || fail "(n) default fold at 5: $OUT"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files 2
+[ "$(field "$OUT" artifact_files)" = 'many/f1.txt,many/f2.txt,+6 more' ] || fail "(n) fold at 2: $OUT"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files 8
+[ "$(field "$OUT" artifact_files)" = 'many/f1.txt,many/f2.txt,many/f3.txt,many/f4.txt,many/f5.txt,many/f6.txt,many/f7.txt,many/f8.txt' ] || fail "(n) no fold when all fit: $OUT"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files 0
+expect_code 2 "$RC" "(n) --artifact-files 0 refused"
+assert_contains "$OUT" 'positive integer' "(n) refusal names the rule"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files two
+expect_code 2 "$RC" "(n) --artifact-files two refused"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files 00
+expect_code 2 "$RC" "(n) --artifact-files 00 refused"
+assert_contains "$OUT" 'positive integer' "(n) all-zero refusal names the rule"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files 000
+expect_code 2 "$RC" "(n) --artifact-files 000 refused"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files 02
+[ "$(field "$OUT" artifact_files)" = 'many/f1.txt,many/f2.txt,+6 more' ] || fail "(n) a leading zero still counts as 2: $OUT"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --staging no-such-stand
+[ "$(field "$OUT" artifact_in_staging)" = - ] || fail "(n) unreadable staging: $OUT"
+[ "$(field "$OUT" artifact_matches)" = - ] || fail "(n) unreadable staging counts nothing: $OUT"
+[ "$(field "$OUT" artifact_files)" = - ] || fail "(n) unreadable staging lists nothing: $OUT"
+[ "$(field "$OUT" truth)" = unresolved ] || fail "(n) unreadable staging is unresolved: $OUT"
+pass "(n) counts are exact, listings fold, refusals and unreadable refs are honest"
+
+# --- (o) a refused pattern is not a miss; non-ASCII paths are listed as typed -------
+OUT=$(PATH="$C/fakebin:$PATH" FM_HOME="$C" "$TRUTH" --repo "$C/repo" --branch fm/gone --artifact 'list_slots(' 2>"$C/err"); RC=$?
+expect_code 0 "$RC" "(o) a refused pattern does not abort the run"
+[ "$(field "$OUT" artifact_in_staging)" = - ] || fail "(o) never evaluated is not no: $OUT"
+[ "$(field "$OUT" artifact_matches)" = - ] || fail "(o) never evaluated counts nothing: $OUT"
+[ "$(field "$OUT" artifact_files)" = - ] || fail "(o) never evaluated lists nothing: $OUT"
+[ "$(field "$OUT" truth)" = unresolved ] || fail "(o) an unevaluated pattern is unresolved, never not-started: $OUT"
+[ "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" = 1 ] || fail "(o) stdout carries the subject line only: $OUT"
+assert_grep 'warning' "$C/err" "(o) a warning is printed on stderr"
+assert_grep 'branch=fm/gone' "$C/err" "(o) the warning names the subject"
+assert_grep 'list_slots(' "$C/err" "(o) the warning names the pattern"
+[ "$(wc -l < "$C/err" | tr -d ' ')" = 1 ] || fail "(o) exactly one warning line: $(cat "$C/err")"
+run_truth "$C" --branch fm/gone --artifact 'list_slots(' --card https://www.notion.so/booking --branch fm/gone2 --artifact 'many_token'
+expect_code 0 "$RC" "(o) the next subject is still answered"
+[ "$(printf '%s\n' "$OUT" | grep -c 'artifact_matches=8')" = 1 ] || fail "(o) the second subject counts its matches: $OUT"
+run_truth "$C" --branch fm/gone --artifact 'cyrillic_token'
+[ "$(field "$OUT" artifact_files)" = 'модули/бронирование.py' ] || fail "(o) a Cyrillic path is listed as typed: $OUT"
+[ "$(field "$OUT" artifact_matches)" = 1 ] || fail "(o) the Cyrillic file counts once: $OUT"
+[ "$(field "$OUT" truth)" = landed-on-stand ] || fail "(o) and it lands: $OUT"
+pass "(o) a refused pattern reports - with a warning; non-ASCII paths are readable"
 
 # --- (j) reverse half: task torn down by force -------------------------------------
 # Same scenario twice. The only difference between the two runs is whether the
