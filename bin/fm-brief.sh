@@ -99,8 +99,9 @@
 # gate run costs the same on the machine whichever kind started it. It names
 # bin/fm-gate.sh by absolute path, has the worker take and release the queue
 # itself with no firstmate in the loop, prescribes the single acquire-run-release
-# command (the wait dies with the turn that started it), fixes the order of the
-# waiting and running status lines, and states the unconditional rule that any
+# command (the wait dies with the turn that started it), carries the running
+# status line INSIDE that command so it cannot be written while nothing runs and
+# the gate cannot be reported without starting, and states the unconditional rule that any
 # end of a wait is a reason to re-read state rather than to wait again. Each rule
 # carries its measured reason because the spoken version of this contract was
 # talked around by the first inconvenient case, twelve times in one day.
@@ -460,15 +461,15 @@ Do not ask firstmate for the queue and do not wait to be given it - taking it is
 The queue covers FULL runs, the whole suite and its browser half, and deliberately not a single targeted test or a look at the app in a browser; those were measured to be far lighter, and widening the queue to cover them would halve the fleet's parallelism against a hazard that is not there.
 
 Take the queue, run the gate, and release it in ONE command, and do not end your turn before that command returns:
-   \`$GATE_CMD acquire $ID --wait && {the project's full gate command}; $GATE_CMD release $ID\`
+   \`$GATE_CMD acquire $ID --wait && { echo "working: queue taken, gate running" >> $STATUS_FILE; {the project's full gate command}; }; $GATE_CMD release $ID\`
 The wait lives only inside your turn and dies with it, so "start the wait, write a status line, end the turn" leaves you awake with no wait running and stopped forever - three workers stood exactly that way in one night.
 Release even when the run fails, which is why the release hangs off \`;\` and not off \`&&\`: an abandoned hold is only broken after 25 minutes, and every minute of that is paid by the workers queued behind you.
 
-Write the waiting status line BEFORE that command and the running one only AFTER it returns, and never end the turn between them:
-   while waiting: \`$PAUSED_VERB: waiting for the test-gate queue\`
-   once it returns: \`working: queue taken, gate running\`
-Until the command returns you are waiting and not working - two workers in a row declared themselves running with zero processes alive.
-The gate starts together with that \`working:\` line and never after it: a worker who took the queue, reported it, and ended the turn owned the queue with nothing running and held three workers behind it.
+Append the waiting line BEFORE you run that command, and let the command itself write the running line, which is why that line sits inside it:
+   before the command: \`$PAUSED_VERB: waiting for the test-gate queue\`
+   written by the command the instant the queue becomes yours: \`working: queue taken, gate running\`
+Written from outside, that line can only be a guess: until \`acquire\` returns you are waiting and not working, and two workers in a row declared themselves running with zero processes alive.
+Inside the command the gate starts in the same breath as the line, so the queue can never be reported taken without the run starting - a worker who took the queue, reported it, and ended the turn owned the queue with nothing running and held three workers behind it.
 
 **The end of a wait, in any form whatsoever, is a reason to read the ground again and never a reason to wait again.**
 Read that as unconditional, because it deliberately names no shapes: while a rule enumerates the ways a wait can end - returned empty, cut off, reported killed - the one shape nobody listed walks straight past it, and that is why seven spoken warnings in a single day changed nothing.

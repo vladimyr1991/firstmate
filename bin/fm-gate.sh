@@ -23,21 +23,42 @@
 #   acquire is atomic (mkdir), so two workers racing it cannot both win; a real
 #   race of twenty contenders produced exactly one winner.
 #   Before handing the queue out, acquire also looks at the RESOURCE and not only
-#   at the permit: if a full run is already live in another task's worktree, the
-#   queue is refused even though the hold is free. A permit-counting guard only
-#   ever meets the worker who politely asked, and on 2026-09-08 a worker who
-#   released the hold and then ran the browser half on a neighbouring lane broke
-#   nothing and still put a second full run on the machine.
-#   That live-run probe counts CHECK WORK (pytest, playwright, make, vitest,
-#   jest), never "any process in the worktree" and never a bare `node`: a worker
-#   WAITING for the queue keeps two wait shells alive, so counting any process
-#   made waiters look busy to each other and would have deadlocked the whole
-#   fleet after the first release; and a bare `node` matched the vite dev server
-#   of the browser inspection this queue explicitly does NOT cover, so one idle
-#   dev server would have pinned the queue for the whole fleet with no staleness
-#   path out of it, since only HOLDS age out and a resource refusal never does.
+#   at the permit. A permit-counting guard only ever meets the worker who
+#   politely asked, and on 2026-09-08 a worker who released the hold and then ran
+#   the browser half on a neighbouring lane broke nothing and still put a second
+#   full run on the machine.
+#   That probe is BEST EFFORT and is NOT a guarantee that no run is live. It can
+#   only see a run whose argv carries the task worktree path, because it starts
+#   from `pgrep -f <worktree>`: `make test` launched from inside the worktree has
+#   argv exactly `make test`, and a system `pytest tests/` carries no path either,
+#   so both are invisible to it and the queue is granted beside them. What
+#   serializes the honest case is the machine-wide HOLD; this probe only catches a
+#   full run that went around the hold and still names its worktree.
+#   What it does count is CHECK WORK (pytest, playwright, make, vitest, jest),
+#   never "any process in the worktree", never a bare `node`, and never a process
+#   whose argv carries this script's own name. A worker WAITING for the queue
+#   keeps wait shells alive, so counting any process made waiters look busy to
+#   each other and would have deadlocked the whole fleet after the first release.
+#   A bare `node` matched the vite dev server of the browser inspection this queue
+#   explicitly does NOT cover, so one idle dev server would have pinned the queue
+#   for the whole fleet with no staleness path out of it, since only HOLDS age out
+#   and a resource refusal never does. And the mandated worker one-liner carries
+#   `acquire ... --wait && <the gate command>` in a single argv, so a harness that
+#   shells out via `bash -c` leaves the worktree path and the runner name in a
+#   MERELY WAITING shell: counting that text would have put two waiters in a
+#   permanent two-way stall, each reading the other's unrun command as a live run.
+#   A process holding this script's invocation is a waiter or a wrapper by
+#   contract and never the run itself, so it is skipped before the runner match.
 #   A hold whose owner has no live check work and is older than FM_GATE_STALE_SECONDS
-#   (default 1500, 25 minutes) is treated as abandoned and broken. The owner's
+#   (default 1500, 25 minutes) is treated as abandoned and broken. Only ONE
+#   contender breaks at a time, behind <hold>.breaking, and it re-makes the whole
+#   decision inside that mutex: an unsynchronised break let two contenders judge
+#   the same hold stale, spend the probe's lifetime confirming it, and then each
+#   remove whatever sat at the path - so each took the queue and each started a
+#   full run, the two-full-runs hazard arriving through the very rule meant to
+#   prevent it, with the first holder's own release then refused because the hold
+#   recorded the second. Re-reading the mtime under the mutex is what refuses a
+#   hold created while the probe was running. The owner's
 #   worktree is recorded INSIDE the hold at acquire time, so that staleness proof
 #   reads the same from any home and never needs another home's metadata; looking
 #   the owner up through this home's state/<id>.meta would find nothing for a
@@ -59,6 +80,9 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 LOCK="${FM_GATE_LOCK_DIR:-/tmp/fm-gate-lock}"
 STALE="${FM_GATE_STALE_SECONDS:-1500}"
 POLL="${FM_GATE_POLL_SECONDS:-30}"
+BREAK_MUTEX="$LOCK.breaking"
+GATE_SELF="$(basename "${BASH_SOURCE[0]}")"
+GATE_SELF_INVOCATION="${GATE_SELF//./\\.}[\"']?[[:space:]]+(acquire|release|status)([[:space:]]|\$)"
 
 # fm_lock_path_mtime owns the platform test. A `stat -f %m || stat -c %Y` chain
 # looks portable and is not: GNU `stat -f` means --file-system and SUCCEEDS, so
@@ -113,13 +137,17 @@ worktree_of() {
 }
 
 # True when a FULL gate run is live in worktree $1. See the header on why this
-# looks for check work rather than for any process, and why a bare `node` is not
-# check work.
+# looks for check work rather than for any process, why a bare `node` is not check
+# work, why a process carrying this script's own name is a waiter and never a run,
+# and what this probe cannot see at all.
 check_work_live() {
-  local wt=$1 pid
+  local wt=$1 pid cmd
   [ -n "$wt" ] || return 1
   pgrep -f "$wt" 2>/dev/null | while read -r pid; do
-    ps -p "$pid" -o command= 2>/dev/null
+    cmd=$(ps -p "$pid" -o command= 2>/dev/null)
+    [ -n "$cmd" ] || continue
+    [[ $cmd =~ $GATE_SELF_INVOCATION ]] && continue
+    printf '%s\n' "$cmd"
   done | grep -qE '[p]ytest|[p]laywright|[m]ake |[v]itest|[j]est'
 }
 
@@ -145,21 +173,49 @@ other_task_running() {
   return 1
 }
 
+# Age of $1 in seconds, or -1 when it cannot be read as a number.
+path_age() {
+  local now=$1 path=$2 m
+  m=$(fm_lock_path_mtime "$path")
+  case "$m" in ''|*[!0-9]*) printf '%s\n' -1; return 0 ;; esac
+  printf '%s\n' "$(( now - m ))"
+}
+
+# Break the hold if it is provably abandoned. The whole DECISION happens under
+# $BREAK_MUTEX and is re-made from scratch inside it, because the liveness probe
+# costs a pgrep plus a ps per pid: judging a hold stale, spending that long
+# probing, and only then removing whatever now sits at the path let a late
+# contender destroy a hold created while it probed, so two contenders were each
+# granted the queue and each started a full run - the two-full-runs hazard
+# arriving through the rule meant to prevent it. Re-reading the mtime inside the
+# mutex is what refuses a brand-new hold.
 break_if_abandoned() {
-  local now mtime age
+  local now age holder broke=1
   [ -d "$LOCK" ] || return 1
   hold_is_foreign && return 1
   now=$(date +%s)
   case "$now" in ''|*[!0-9]*) return 1 ;; esac
-  mtime=$(fm_lock_path_mtime "$LOCK")
-  case "$mtime" in ''|*[!0-9]*) mtime=$now ;; esac
-  age=$(( now - mtime ))
-  if [ "$age" -ge "$STALE" ] && ! owner_running; then
-    echo "breaking an abandoned hold (owner $(owner), ${age}s old, no check work running)" >&2
-    rm -rf "$LOCK"
-    return 0
+  # Cheap pre-filter, so contenders do not queue on the mutex for a fresh hold.
+  age=$(path_age "$now" "$LOCK")
+  [ "$age" -ge "$STALE" ] || return 1
+
+  # A breaker killed mid-probe must not wedge the rule for every later contender.
+  if [ -d "$BREAK_MUTEX" ] && [ "$(path_age "$now" "$BREAK_MUTEX")" -ge "$STALE" ]; then
+    rmdir "$BREAK_MUTEX" 2>/dev/null
   fi
-  return 1
+  mkdir "$BREAK_MUTEX" 2>/dev/null || return 1
+
+  now=$(date +%s)
+  case "$now" in ''|*[!0-9]*) now=0 ;; esac
+  age=$(path_age "$now" "$LOCK")
+  if [ -d "$LOCK" ] && ! hold_is_foreign && [ "$age" -ge "$STALE" ] && ! owner_running; then
+    holder=$(owner)
+    echo "breaking an abandoned hold (owner $holder, ${age}s old, no check work running)" >&2
+    rm -rf "$LOCK"
+    broke=0
+  fi
+  rmdir "$BREAK_MUTEX" 2>/dev/null
+  return "$broke"
 }
 
 case "${1:-}" in
@@ -171,6 +227,7 @@ case "${1:-}" in
     [ -z "$WAIT" ] || [ "$WAIT" = "--wait" ] || { echo "error: unknown argument: $WAIT" >&2; exit 2; }
     mkdir -p "$STATE" 2>/dev/null || true
     mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
+    OWNER_READS=0
     while :; do
       # Waiting cannot help a hold this user may not touch, so --wait refuses too.
       if hold_is_foreign; then
@@ -178,8 +235,13 @@ case "${1:-}" in
         exit 1
       fi
       if mkdir "$LOCK" 2>/dev/null; then
+        # Owner first, probe second: the probe walks every meta with a pgrep and a
+        # ps apiece, and a concurrent reader inside that window used to be told
+        # "held by:" with no holder named.
+        printf '%s\n' "$ID" > "$LOCK/owner"
+        printf '%s\n' "$(worktree_of "$ID")" > "$LOCK/owner_worktree"
         if OTHER=$(other_task_running "$ID"); then
-          rmdir "$LOCK" 2>/dev/null
+          [ "$(owner)" = "$ID" ] && rm -rf "$LOCK"
           # Printed on stdout as well as stderr: a worker reading only stdout
           # took a refusal for a success on 2026-09-08.
           echo "QUEUE NOT GRANTED - a full run is already live in $OTHER, although the hold was free"
@@ -188,13 +250,26 @@ case "${1:-}" in
           sleep "$POLL"
           continue
         fi
-        printf '%s\n' "$ID" > "$LOCK/owner"
-        printf '%s\n' "$(worktree_of "$ID")" > "$LOCK/owner_worktree"
+        HOLDER=$(owner)
+        if [ "$HOLDER" != "$ID" ]; then
+          echo "QUEUE NOT YOURS - held by: $HOLDER"
+          echo "the hold changed owner to $HOLDER while it was being taken" >&2
+          [ "$WAIT" = "--wait" ] || exit 1
+          sleep "$POLL"
+          continue
+        fi
         echo "queue held by you: $ID"
         exit 0
       fi
       break_if_abandoned && continue
       HOLDER=$(owner)
+      # A hold that is gone, or one caught between its mkdir and its owner file,
+      # names no holder; retry briefly rather than report an empty one.
+      if [ -z "$HOLDER" ] && [ "$OWNER_READS" -lt 40 ]; then
+        OWNER_READS=$(( OWNER_READS + 1 ))
+        sleep 0.05
+        continue
+      fi
       if [ "$HOLDER" = "$ID" ]; then
         echo "queue is already yours: $ID"
         exit 0

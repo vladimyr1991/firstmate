@@ -1171,22 +1171,27 @@ test_gate_queue_contract_reaches_ship_and_scout() {
     # One command carries wait, run, and release, because the wait dies with the
     # turn that started it; the release hangs off ';' so a failed run still frees
     # the queue.
-    assert_grep "'$ROOT/bin/fm-gate.sh' acquire $id --wait && {the project's full gate command}; '$ROOT/bin/fm-gate.sh' release $id" "$brief" \
+    assert_grep "'$ROOT/bin/fm-gate.sh' acquire $id --wait && { echo \"working: queue taken, gate running\" >> '$home/state/$id.status'; {the project's full gate command}; }; '$ROOT/bin/fm-gate.sh' release $id" "$brief" \
       "$id ($kind): queue contract lost the single acquire-run-release command"
     assert_grep "The wait lives only inside your turn and dies with it" "$brief" \
       "$id ($kind): queue contract lost the reason the wait cannot span turns"
     assert_grep "Release even when the run fails" "$brief" \
       "$id ($kind): queue contract lost the mandatory release"
 
-    # Status-line ORDER, not merely the presence of two lines: waiting before the
-    # command, running only after it returns, and the gate started with that line.
-    assert_grep "Write the waiting status line BEFORE that command and the running one only AFTER it returns" "$brief" \
-      "$id ($kind): queue contract lost the status-line ordering"
+    # Status lines: the waiting one before the command, the running one INSIDE it.
+    # Written from outside, the running line could only ever be a guess, and no
+    # worker can emit it at the instant a blocking acquire returns.
+    assert_grep "Append the waiting line BEFORE you run that command, and let the command itself write the running line" "$brief" \
+      "$id ($kind): queue contract lost the waiting-outside/running-inside placement"
+    assert_no_grep "only AFTER it returns" "$brief" \
+      "$id ($kind): queue contract kept an instruction to write a line after the whole command returns"
     assert_grep "\`paused: waiting for the test-gate queue\`" "$brief" \
       "$id ($kind): queue contract lost its waiting status line"
-    assert_grep "\`working: queue taken, gate running\`" "$brief" \
-      "$id ($kind): queue contract lost its running status line"
-    assert_grep "The gate starts together with that \`working:\` line and never after it" "$brief" \
+    assert_grep "echo \"working: queue taken, gate running\" >> '$home/state/$id.status'" "$brief" \
+      "$id ($kind): the running status line is not emitted by the command itself"
+    assert_grep "until \`acquire\` returns you are waiting and not working" "$brief" \
+      "$id ($kind): queue contract lost the declared-working-with-nothing-alive reason"
+    assert_grep "the queue can never be reported taken without the run starting" "$brief" \
       "$id ($kind): queue contract lost the owner-with-nothing-running stop"
 
     # The end-of-wait rule must stay UNCONDITIONAL. An enumeration of failure
@@ -1217,7 +1222,7 @@ test_gate_queue_quotes_foreign_firstmate_path() {
     "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "$id: brief was not scaffolded"
-  assert_grep "$gate acquire $id --wait && {the project's full gate command}; $gate release $id" "$brief" \
+  assert_grep "$gate acquire $id --wait && { echo \"working: queue taken, gate running\" >> '$home/state/$id.status'; {the project's full gate command}; }; $gate release $id" "$brief" \
     "the queue command must shell-quote an absolute Firstmate gate path"
   assert_grep "check \`$gate status\`" "$brief" \
     "the end-of-wait rule must shell-quote the gate path it names"

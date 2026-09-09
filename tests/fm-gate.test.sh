@@ -17,6 +17,14 @@
 #     for one hold, and a hold whose owner runs in another home is not broken by
 #     age, because the owner's worktree is recorded inside the hold rather than
 #     looked up in the acquiring home's metadata.
+#   - Reading command TEXT is not reading a running runner. The mandated worker
+#     one-liner carries the worktree path, the acquire invocation and the gate
+#     command in a single argv, so a merely waiting shell reads exactly like a
+#     live run; counting it stalls two waiters against each other forever,
+#     because resource refusals never age out.
+#   - Breaking an abandoned hold is a claim only one contender can win. An
+#     unsynchronised break granted the queue twice, which is the two-full-runs
+#     hazard arriving through the rule meant to prevent it.
 # Every test drives a hold path of its own through FM_GATE_LOCK_DIR; without that
 # the suite would fight the real machine-wide hold of a live fleet.
 set -u
@@ -84,6 +92,20 @@ start_fixture_process() {
     sleep 0.05
   done
   fail "fixture process never became visible with marker $marker"
+}
+
+# Backdate <path>'s mtime by <seconds>, so a hold can be genuinely stale while a
+# hold created during the test is not. Driving staleness with
+# FM_GATE_STALE_SECONDS=0 instead would make EVERY hold abandonable, including
+# each contender's fresh one, which is a different situation entirely.
+age_path() {
+  local path=$1 seconds=$2 stamp
+  if [ "$(uname)" = Darwin ]; then
+    stamp=$(date -v-"${seconds}"S +%Y%m%d%H%M.%S)
+  else
+    stamp=$(date -d "@$(( $(date +%s) - seconds ))" +%Y%m%d%H%M.%S)
+  fi
+  touch -t "$stamp" "$path" || fail "could not backdate $path"
 }
 
 gate() {
@@ -199,6 +221,13 @@ test_a_real_race_produces_exactly_one_winner() {
       refusals=$((refusals + 1))
       assert_contains "$out" "QUEUE NOT YOURS" \
         "contender $i exited $rc without a visible refusal"
+      # A refusal that names no holder is the shape a worker cannot act on; it
+      # appeared whenever a reader caught the hold between its mkdir and its
+      # owner file.
+      case "$out" in
+        *"QUEUE NOT YOURS - held by: task-"*) : ;;
+        *) fail "contender $i was refused without a named holder: $out" ;;
+      esac
     fi
   done
   [ "$wins" -eq 1 ] || fail "a race of $n contenders produced $wins winners, not exactly one"
@@ -206,6 +235,85 @@ test_a_real_race_produces_exactly_one_winner() {
   out=$(gate "$state" status 2>&1)
   assert_contains "$out" "held by: task-" "the single winner must be the recorded holder"
   pass "fm-gate.sh: a real race of $n contenders produces exactly one winner"
+}
+
+# Breaking an abandoned hold must be a claim only one contender can win. With an
+# unsynchronised remove, two contenders could each observe the same stale hold,
+# each remove it, and each take the queue - two full runs arriving through the
+# very rule meant to prevent them, and a first holder whose own release is then
+# refused because the hold records the second. This drives the window directly:
+# every contender starts against one already-stale hold with a dead owner.
+test_breaking_an_abandoned_hold_grants_it_to_exactly_one() {
+  local state dir go n i pid rc out wins holder fakebin
+  state=$(new_state stale-break-race)
+  GATE_LOCK=$(new_lock stale-break-race)
+  dir="$TMP_ROOT/stale-break-results"
+  go="$TMP_ROOT/stale-break-go"
+  mkdir -p "$dir"
+  n=8
+  # A hold whose owner has no live check work and whose mtime is an hour old: it
+  # is abandoned under the default 25-minute rule, while any hold a contender
+  # creates during this test is brand new and must NOT be breakable.
+  mkdir -p "$GATE_LOCK"
+  printf '%s\n' "task-dead" > "$GATE_LOCK/owner"
+  printf '%s\n' "$TMP_ROOT/dead-wt" > "$GATE_LOCK/owner_worktree"
+  age_path "$GATE_LOCK" 3600
+  # The double-grant window is the gap between deciding a hold is abandoned and
+  # actually breaking it. In production that gap is real - the liveness probe runs
+  # a pgrep plus a ps per matched pid - but with an empty fixture worktree it is
+  # sub-millisecond and the bug never shows. A slow pgrep on PATH reopens exactly
+  # that gap deterministically, so every contender decides "abandoned" and only
+  # then races to break it.
+  fakebin=$(fm_fakebin "$TMP_ROOT/stale-break")
+  cat > "$fakebin/pgrep" <<'SH'
+#!/usr/bin/env bash
+sleep 0.4
+exit 1
+SH
+  chmod +x "$fakebin/pgrep"
+
+  # STAGGERED, not released together: the double grant needs a contender that
+  # decided "abandoned" against the OLD hold while an earlier contender has
+  # already broken it and taken a fresh one. Contenders released at the same
+  # instant all remove the hold before any of them re-creates it, and the bug
+  # stays hidden. Spreading them across the probe window is the production shape.
+  local pids=()
+  for i in $(seq 1 "$n"); do
+    (
+      while [ ! -e "$go" ]; do sleep 0.01; done
+      sleep "0.$(( i * 5 + 5 ))"
+      PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+        FM_GATE_POLL_SECONDS=1 "$GATE" acquire "task-$i" >"$dir/$i.out" 2>"$dir/$i.err"
+      printf '%s\n' "$?" >"$dir/$i.rc"
+    ) &
+    pids+=("$!")
+  done
+  touch "$go"
+  for pid in "${pids[@]}"; do wait "$pid"; done
+
+  wins=0
+  for i in $(seq 1 "$n"); do
+    [ -e "$dir/$i.rc" ] || fail "contender $i never recorded an outcome"
+    rc=$(cat "$dir/$i.rc")
+    out=$(cat "$dir/$i.out")
+    if [ "$rc" = 0 ]; then
+      wins=$((wins + 1))
+      assert_contains "$out" "queue held by you: task-$i" \
+        "contender $i succeeded without being told the queue is its own"
+    else
+      assert_contains "$out" "QUEUE NOT" "contender $i exited $rc without a visible refusal"
+    fi
+  done
+  # Two contenders were each granted the broken hold before this was closed, and
+  # the aftermath was worse than the double run: the first holder's own release
+  # was refused because the hold recorded the second, so it left a hold it did not
+  # own behind, and the queue read free while its run was still going.
+  [ "$wins" -eq 1 ] || fail "breaking one abandoned hold granted the queue to $wins tasks, not exactly one"
+  # The survivor must be the recorded holder, or its own release will be refused
+  # and the queue will read free while its run is still going.
+  holder=$(gate "$state" status 2>&1)
+  assert_contains "$holder" "held by: task-" "the single winner must be the recorded holder"
+  pass "fm-gate.sh: breaking an abandoned hold grants it to exactly one contender"
 }
 
 # The hold is machine-wide. Two homes on one machine must see one another, which
@@ -346,6 +454,34 @@ test_waiting_workers_do_not_block_each_other() {
   pass "fm-gate.sh: waiting workers are not mistaken for running ones"
 }
 
+# The mandated worker one-liner puts the worktree path, the acquire invocation and
+# the project's gate command in ONE argv. A harness that shells out through
+# `bash -c` therefore leaves a merely WAITING shell whose command line reads
+# exactly like a live run. Counting that text put two waiters in a permanent
+# two-way stall - each refused issuance by the other's unrun command, and a
+# resource refusal never ages out - which is the fleet deadlock the 2026-09-09
+# narrowing closed. A process carrying this script's own invocation is a waiter or
+# a wrapper by contract and is never the run.
+test_a_waiting_worker_holding_the_gate_command_does_not_block_issuance() {
+  local state wt out rc gate_name
+  state=$(new_state waiter-argv)
+  GATE_LOCK=$(new_lock waiter-argv)
+  wt="$TMP_ROOT/waiter-argv-wt"
+  register_task "$state" task-a "$wt"
+  register_task "$state" task-b "$TMP_ROOT/waiter-argv-wt-b"
+  gate_name=$(basename "$GATE")
+  # Exactly the reported shape: the whole one-liner in one argv, playwright named
+  # but never exec'd because acquire has not returned.
+  start_fixture_process "cd $wt && $GATE acquire task-a --wait && npx playwright test; $GATE release task-a" >/dev/null
+
+  out=$(gate "$state" acquire task-b 2>&1); rc=$?
+  expect_code 0 "$rc" "a worker still waiting inside the gate command must not read as a live full run"
+  assert_contains "$out" "queue held by you: task-b" \
+    "the queue must be grantable beside a worker whose argv only mentions a runner"
+  [ -n "$gate_name" ] || fail "the gate script must have a resolvable name to exclude"
+  pass "fm-gate.sh: a waiting worker carrying the gate command does not block issuance"
+}
+
 # The browser inspection is explicitly NOT queued, so the dev server it runs must
 # not be counted as a full run: a resource refusal has no staleness path, so one
 # idle dev server would pin the queue for the whole fleet indefinitely.
@@ -417,12 +553,14 @@ test_help_renders_the_header
 test_unknown_command_is_refused
 test_one_holder_at_a_time
 test_a_real_race_produces_exactly_one_winner
+test_breaking_an_abandoned_hold_grants_it_to_exactly_one
 test_two_homes_contend_for_one_hold
 test_release_is_owner_only
 test_abandoned_hold_is_broken_but_a_live_run_is_not
 test_a_live_run_in_another_home_keeps_its_hold
 test_a_live_run_outside_the_hold_refuses_a_free_queue
 test_waiting_workers_do_not_block_each_other
+test_a_waiting_worker_holding_the_gate_command_does_not_block_issuance
 test_a_dev_server_does_not_block_issuance
 test_a_foreign_hold_is_refused_and_never_removed
 test_secondmate_homes_are_not_counted_as_runs
