@@ -416,7 +416,7 @@ test_recording_dir_ownership() {
   assert_absent "$own" "the same WAV is deleted once its directory is named"
   assert_present "$hand" "the hand directory survives every submit"
   assert_present "$other/keep.wav" "the mismatched directory survives every submit"
-  [ "$(ls "$home/tmp" | wc -l | tr -d ' ')" = 2 ] || fail "only those two directories remain under TMPDIR: $(ls "$home/tmp")"
+  [ "$(find "$home/tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 2 ] || fail "only those two directories remain under TMPDIR: $(find "$home/tmp" -mindepth 1 -maxdepth 1)"
   pass "submit deletes exactly the --recording-dir it was handed, and nothing without it"
 }
 
