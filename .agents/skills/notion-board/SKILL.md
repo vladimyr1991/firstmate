@@ -31,7 +31,7 @@ Only a `claude`-harness agent can reach the connector at all; never route the PM
 The firstmate primary and implementation workers never scan the board or substitute for a PM whose spawn failed.
 
 `query_data_sources` and `query_database_view` are rate-limited on the captain's plan; `search` and `fetch` are not.
-A healthy cycle spends exactly ONE `query_data_sources` call - the witnessed read below, from which both sweeps are derived - and TWO per cycle remains the hard ceiling, the second reserved for that read's single retry, deliberately covering a zero-row result as well as an error, and for nothing else.
+A healthy cycle spends exactly ONE `query_data_sources` call - the witnessed read below, from which both sweeps and the reconciliation are derived - and TWO per cycle remains the hard ceiling, the second reserved for that read's single retry, deliberately covering a zero-row result as well as an error, and for nothing else.
 The call the second sweep used to spend is freed, not repurposed: do not add a new query use with it.
 Never issue a query per card, read individual cards with `fetch`, and never re-run the witnessed read inside the same cycle beyond that one permitted retry.
 

@@ -40,9 +40,9 @@
 #
 # This is a separate step the notion-board skill runs AFTER fm-spawn.sh, so it
 # never changes fm-spawn's interface - the same split fm-x-link.sh uses. This
-# script is deliberately network-free: it owns only the meta format, while
-# every Notion read and write goes through the MCP connector from inside the
-# agent's own turn.
+# script is deliberately network-free: it owns only the meta format (the index
+# format belongs to fm-notion-index-lib.sh), while every Notion read and write
+# goes through the MCP connector from inside the agent's own turn.
 #
 # The task id composes a path (state/<id>.meta) and is guarded against path
 # traversal even though it comes from a trusted caller.
