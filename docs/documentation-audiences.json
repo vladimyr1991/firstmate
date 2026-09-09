@@ -30,7 +30,8 @@
     "docs/herdr-backend.md",
     "docs/zellij-backend.md",
     "docs/orca-backend.md",
-    "docs/cmux-backend.md"
+    "docs/cmux-backend.md",
+    "docs/voice-input.md"
   ],
   "requiredOwnerPointers": [
     {
@@ -100,6 +101,10 @@
     {
       "source": "docs/codex-app-backend.md",
       "target": "docs/verification/runtime-backends.md"
+    },
+    {
+      "source": "docs/voice-input.md",
+      "target": "docs/configuration.md"
     }
   ],
   "surfaces": [
@@ -406,6 +411,10 @@
     {
       "path": "docs/verification/supervision.md",
       "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/voice-input.md",
+      "audience": "operator-current"
     },
     {
       "path": "docs/watcher-continuity.md",

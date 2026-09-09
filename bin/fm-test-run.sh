@@ -146,7 +146,7 @@ family_for_basename() {
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-transition-lib.test.sh|\
-    fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
+    fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-voice.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
@@ -842,6 +842,12 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       ;;
     bin/fm-board-truth.sh|bin/fm-notion-index-lib.sh|bin/fm-notion-link.sh)
+      printf '%s\n' pure-contract-unit
+      ;;
+    bin/fm-voice.sh|bin/fm-voice-hotkey.swift)
+      # The daemon source is compiled, never executed by a test, but its
+      # content hash is what start binds the built binary to, so a change here
+      # selects the same suite as the script that owns that binding.
       printf '%s\n' pure-contract-unit
       ;;
     bin/backends/herdr*|bin/fm-herdr-lab.sh|tests/herdr-test-safety.sh)
