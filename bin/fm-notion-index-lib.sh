@@ -12,9 +12,9 @@
 # Format - data/notion-cards.tsv, append-only, one event per line:
 #   <epoch>\t<event>\t<task-id>\t<card-url>\t<branch>\t<project>
 #   event = link     the card was bound to the task; branch is the task branch
-#   event = archive  the link was retired (recycle step 3, or a spec task handed
-#                    its card to the implementation task); this task no longer
-#                    owns the card
+#   event = archive  the link was retired (recycle step 3, a spec task handed
+#                    its card to the implementation task, or the task was
+#                    relinked to another card); this task no longer owns the card
 # Links are tracked per task: a `link` adds the task to the card's live set and
 # an `archive` removes only that task, so the handover order "link impl, then
 # archive spec" leaves the card live and owned by impl. A card is live while any
@@ -68,6 +68,24 @@ fm_notion_index_lookup() {
       best = ""
       for (id in live) if (best == "" || live[id] > live[best]) best = id
       if (best != "") printf "%s\t%s\n", best, br[best]
+    }' "$index"
+}
+
+# Resolve a task to the card it still holds: prints "<url>\t<branch>\t<project>"
+# for the most recently linked card the task has not archived, or nothing. This
+# is what lets --archive retire a link after teardown erased the task's meta.
+# Args: <index> <task-id>
+fm_notion_index_task_live_link() {
+  local index=$1 id=$2
+  [ -f "$index" ] || return 0
+  awk -F'\t' -v id="$id" '
+    $3 != id { next }
+    $2 == "link" { live[$4] = ++seq; br[$4] = $5; pr[$4] = $6 }
+    $2 == "archive" { delete live[$4] }
+    END {
+      best = ""
+      for (u in live) if (best == "" || live[u] > live[best]) best = u
+      if (best != "") printf "%s\t%s\t%s\n", best, br[best], pr[best]
     }' "$index"
 }
 

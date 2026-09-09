@@ -15,7 +15,7 @@
 #       card then has no live link and --all-index skips it; the handover order
 #       link spec1 / link impl1 / archive spec1 leaves the card live on impl1,
 #       and archiving impl1 afterwards retires it; a project path with a space
-#       still links
+#       still links; relinking a task to another card releases the old card
 #   (b) index append refused (unwritable data dir) -> meta untouched, exit 1
 #   (c) branch in staging + deploy run success       -> landed-on-stand, parsed
 #       from the real gh-axi default row whose quoted title holds a comma
@@ -31,6 +31,8 @@
 #   (j) REVERSE HALF: the task is torn down with --force (records erased) -
 #       without the index the card is unresolved; with the index it is still
 #       landed-on-stand. The index is the only difference between the two runs.
+#       Then --archive on the torn-down task still retires the card from the
+#       index (exit 0), --all-index drops it, and a repeat archive is a no-op
 #   (k) unsafe inputs are refused: bad url, bad branch name, missing --repo
 set -u
 
@@ -147,6 +149,18 @@ FM_HOME="$C" FM_NOW_OVERRIDE=120 "$LINK" t3 https://www.notion.so/card-3 >/dev/n
 assert_grep $'120\tlink\tt3\thttps://www.notion.so/card-3\tfm/t3\t'"$C/with space/repo" "$C/data/notion-cards.tsv" "(a) spaced project recorded"
 run_truth "$C" --card https://www.notion.so/card-3 --no-fetch
 [ "$(field "$OUT" task)" = t3 ] || fail "(a) spaced project line still parses: $OUT"
+# Relink: a task moved from card X to card Y leaves X with no live link.
+fm_write_meta "$C/state/t4.meta" "window=firstmate:fm-t4" "project=$C/repo"
+FM_HOME="$C" FM_NOW_OVERRIDE=130 "$LINK" t4 https://www.notion.so/card-x >/dev/null || fail "(a) link t4 to X"
+FM_HOME="$C" FM_NOW_OVERRIDE=131 "$LINK" t4 https://www.notion.so/card-y >/dev/null || fail "(a) relink t4 to Y"
+assert_grep $'131\tarchive\tt4\thttps://www.notion.so/card-x\tfm/t4' "$C/data/notion-cards.tsv" "(a) relink archives the old card"
+assert_grep 'notion_page=https://www.notion.so/card-y' "$C/state/t4.meta" "(a) meta holds the new card"
+run_truth "$C" --card https://www.notion.so/card-x --no-fetch
+[ "$(field "$OUT" task)" = - ] || fail "(a) old card resolves to nothing after relink: $OUT"
+run_truth "$C" --card https://www.notion.so/card-y --no-fetch
+[ "$(field "$OUT" task)" = t4 ] || fail "(a) new card resolves to t4: $OUT"
+FM_HOME="$C" FM_NOW_OVERRIDE=132 "$LINK" t4 https://www.notion.so/card-y >/dev/null || fail "(a) relink to the same card"
+assert_no_grep $'132\tarchive' "$C/data/notion-cards.tsv" "(a) relinking the same card archives nothing"
 pass "(a) index lifecycle"
 
 # --- (b) index append refused -> meta untouched ---------------------------------
@@ -232,7 +246,22 @@ mv "$J/index.saved" "$J/data/notion-cards.tsv"
 run_truth "$J" --card https://www.notion.so/card-j --no-fetch
 [ "$(field "$OUT" truth)" = landed-on-stand ] || fail "(j) with the index the card still reconciles: $OUT"
 [ "$(field "$OUT" task)" = t1 ] || fail "(j) task resolved from index after teardown"
-pass "(j) forced teardown: card lost without the index, reconciled with it"
+# Recycle step 3 runs after the task is gone: --archive must still retire the card.
+OUT=$(FM_HOME="$J" FM_NOW_OVERRIDE=200 "$LINK" --archive t1 2>&1); rc=$?
+expect_code 0 "$rc" "(j) archive after teardown"
+assert_contains "$OUT" 'from the index' "(j) archive names the index path"
+assert_grep $'200\tarchive\tt1\thttps://www.notion.so/card-j\tfm/t1\t'"$J/repo" "$J/data/notion-cards.tsv" "(j) archive line recorded without meta"
+run_truth "$J" --all-index --no-fetch
+expect_code 0 "$RC" "(j) all-index after archive"
+assert_not_contains "$OUT" 'card-j' "(j) archived card no longer listed"
+run_truth "$J" --card https://www.notion.so/card-j --no-fetch
+[ "$(field "$OUT" task)" = - ] || fail "(j) archived card resolves to no task: $OUT"
+OUT=$(FM_HOME="$J" "$LINK" --archive t1 2>&1); rc=$?
+expect_code 0 "$rc" "(j) repeat archive is idempotent"
+assert_contains "$OUT" 'no live Notion link' "(j) repeat archive reports no live link"
+OUT=$(FM_HOME="$J" "$LINK" --archive never-linked 2>&1); rc=$?
+expect_code 0 "$rc" "(j) archive of an unknown task is a no-op"
+pass "(j) forced teardown: card lost without the index, reconciled with it, retired by archive"
 
 # --- (k) refusals ---------------------------------------------------------------------
 run_truth "$C" --card 'http://www.notion.so/x'

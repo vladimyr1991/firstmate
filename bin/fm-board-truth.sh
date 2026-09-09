@@ -34,7 +34,8 @@
 #   --artifact <re>     an extended regex `git grep -E` must match somewhere in
 #                       the staging tree for the card's named artifact to count
 #                       as present. Attaches to the most recent subject.
-#   --all-index         every card the index currently holds a live link for.
+#   --all-index         every card the index currently holds a live link for;
+#                       an index with no live card prints nothing and exits 0.
 #
 # Options:
 #   --repo <dir>        a git repository or worktree holding the project (required)
@@ -145,7 +146,10 @@ if [ "$ALL_INDEX" = 1 ]; then
     new_subject "$url"
   done < <(fm_notion_index_live_cards "$INDEX")
 fi
-[ "$n" -gt 0 ] || { usage; die "no subject given (--card, --branch, or --all-index)" 2; }
+if [ "$n" -eq 0 ]; then
+  [ "$ALL_INDEX" = 1 ] && exit 0
+  usage; die "no subject given (--card, --branch, or --all-index)" 2
+fi
 
 if [ "$FETCH" = 1 ]; then
   git -C "$REPO" fetch --prune --quiet "$REMOTE" 2>/dev/null \

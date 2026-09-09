@@ -125,6 +125,7 @@ Firstmate records that scan's `active_count` and remaining capacity in the PM br
 That same step records `linked_cards`, the card URL of every task it counted, so the brief carries the live linked-card list the orphaned-status sweep tests against and the PM never has to infer a task's terminality from the backlog.
 Write that line on every brief, using `linked_cards: none` when `active_count` is 0, because an explicit empty list means zero live links while a missing line means the list was never supplied.
 Only a brief with no `linked_cards` line at all leaves the sweep unarmed; `linked_cards: none` arms it exactly like a populated list, and on an idle fleet every card that sweep returns is then a divergence.
+Firstmate also writes a `truth_repo: <path>` line on every PM brief, naming the repository the reconciliation section reads, because a PM without it cannot establish any card's truth.
 
 `active_count` and `linked_cards` must correspond, and that correspondence is the PM's check on the capacity block it was handed: the list names exactly the tasks the count counted, so a list holding a different number of card URLs than `active_count` is a malformed block rather than a number to interpret.
 That check runs only on a brief that carries a `linked_cards` line, so a brief missing the line entirely is never a malformed block: it is the unarmed-sweep case above, where only the sweep's report is skipped while the read still stands for eligibility and the scan dispatches normally.
@@ -226,6 +227,7 @@ It self-heals: a cycle that misses a card is corrected by the next one, whereas 
 Run it on every sprint-check cycle, after the witnessed read, over the active set that read returned: every Delivery card in the current sprint at `В работе`, `На ревью`, or `Нужны исправления`.
 It costs no board read: the witnessed read already returned each card's `Status`, and every fact below comes from git and the forge through `bin/fm-board-truth.sh`, which never touches Notion.
 The brief names the repository to read as `truth_repo: <path>` (the PM's own worktree of the project is the natural choice) and may override the defaults with `truth_staging:`, `truth_develop:`, and `truth_deploy_workflow:` lines; `bin/fm-board-truth.sh --help` owns the flags and the exact output fields.
+A brief with no `truth_repo:` line skips reconciliation for that scan and reports it as unarmed, exactly as a missing `linked_cards` line is handled by the orphaned-status sweep, because a truth the PM cannot read is not evidence about any card.
 Start from `--all-index`, which resolves every card the durable index still holds a live link for to its task branch.
 For each active card the index does not name, infer the branch from the card body or the backlog note and pass it with `--card <url> --branch <name>`; when the branch may have been deleted after a squash merge, add `--artifact <pattern>` naming the file, route, model field, or test the card promises, so the staging tree can answer instead of the branch.
 The script's `truth=` verdict is a fact about the work; this table is the only owner of what the PM does with it:
@@ -312,7 +314,7 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
    Only when that line is missing entirely, skip the sweep's report for this scan - the read itself still stands, because it also serves eligibility - and continue to the next step.
 2. **Reconcile the active set with truth.**
    Run `bin/fm-board-truth.sh` over every active card the witnessed read returned and apply the reconciliation table, moving only what it permits and reporting the rest.
-   This is the step that survives a task ending without its event, so it is never skipped on a witnessed cycle, and a cycle that moved a card is not one of the silent ones.
+   This is the step that survives a task ending without its event, so it is never skipped on a witnessed cycle whose brief carries `truth_repo:`, and a cycle that moved a card is not one of the silent ones.
 3. **Fill available capacity; do not build the cards yourself.**
    Select as many dispatchable cards as the four-worker cap permits, write each one into the scout report, and open the single keyed dispatch hold described above.
    Stay live until firstmate confirms which dispatched workers are durably running and linked, then move only those cards to `В работе`.

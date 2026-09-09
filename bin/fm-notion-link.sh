@@ -18,7 +18,9 @@
 # the task is gone, however it went. A link whose index append fails is
 # therefore refused outright rather than recorded in meta alone, because a link
 # that only lives in meta is exactly the one the board loses. The task branch is
-# recorded as fm/<task-id>, the branch every generated brief creates.
+# recorded as fm/<task-id>, the branch every generated brief creates. Relinking
+# a task to a different card archives the previous card in the index first, so
+# the index always mirrors meta's single live binding.
 #
 # --archive is the RECYCLING GUARD and is mandatory before a card is returned
 # to the free pool. Cards are reused rather than deleted (the Notion MCP
@@ -27,7 +29,10 @@
 # notion_page= to notion_page_archived=, which no sync step reads, so a late
 # wake on an old task can never push a status into a card that has since been
 # handed to someone else. Never hand a card back to the pool while a live
-# notion_page= still points at it.
+# notion_page= still points at it. Recycling ordinarily happens after the task
+# was torn down and its meta erased, so --archive also works with no meta: it
+# resolves the card from the durable index and writes the archive event there,
+# which is the record reconciliation reads.
 #
 # This is a separate step the notion-board skill runs AFTER fm-spawn.sh, so it
 # never changes fm-spawn's interface - the same split fm-x-link.sh uses. This
@@ -109,6 +114,24 @@ fi
 fm_pr_task_id_valid "$ID" || { echo "fm-notion-link: unsafe task id: $ID" >&2; exit 2; }
 
 META="$STATE/$ID.meta"
+
+if [ "$MODE" = archive ] && [ ! -f "$META" ]; then
+  HIT=$(fm_notion_index_task_live_link "$INDEX" "$ID")
+  if [ -z "$HIT" ]; then
+    printf 'no live Notion link on %s\n' "$ID"
+    exit 0
+  fi
+  IFS=$'\t' read -r HIT_URL HIT_BRANCH HIT_PROJECT <<EOF
+$HIT
+EOF
+  if ! fm_notion_index_append "$INDEX" archive "$ID" "$HIT_URL" "$HIT_BRANCH" "$HIT_PROJECT"; then
+    echo "fm-notion-link: failed to record the archive in $INDEX; link left live" >&2
+    exit 1
+  fi
+  printf 'archived the Notion link on %s from the index (task already torn down); its card may now be recycled\n' "$ID"
+  exit 0
+fi
+
 if [ ! -f "$META" ]; then
   echo "fm-notion-link: no such task: state/$ID.meta" >&2
   exit 1
@@ -149,7 +172,17 @@ esac
 
 # Index first: it is the record that survives teardown, so a binding must exist
 # there before meta claims it. FM_NOW_OVERRIDE flows into the index timestamp too.
-if ! fm_notion_index_append "$INDEX" link "$ID" "$URL" "fm/$ID" "$(meta_get "$META" project)"; then
+# A task moving to a different card releases the old one in the index first, so
+# no card stays resolvable to a task that meta no longer binds to it.
+PROJECT=$(meta_get "$META" project)
+PREVIOUS_URL=$(meta_get "$META" notion_page)
+if [ -n "$PREVIOUS_URL" ] && [ "$PREVIOUS_URL" != "$URL" ]; then
+  if ! fm_notion_index_append "$INDEX" archive "$ID" "$PREVIOUS_URL" "fm/$ID" "$PROJECT"; then
+    echo "fm-notion-link: failed to release the previous card $PREVIOUS_URL in $INDEX; nothing written to meta" >&2
+    exit 1
+  fi
+fi
+if ! fm_notion_index_append "$INDEX" link "$ID" "$URL" "fm/$ID" "$PROJECT"; then
   echo "fm-notion-link: failed to record the link in $INDEX; nothing written to meta" >&2
   exit 1
 fi
