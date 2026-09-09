@@ -580,7 +580,8 @@ test_single_instance() {
   expect_code 5 "$rc" "AC-17: live pid"
   [ "$out" = "already running (pid $sleeper)" ] || fail "AC-17: stdout, got: $out"
   out=$(PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
-    FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" "$VOICE" status)
+    FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" \
+    FM_VOICE_OS_OVERRIDE=Darwin "$VOICE" status)
   [ "$out" = "running (pid $sleeper)" ] || fail "AC-17: status while running, got: $out"
   out=$(PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" "$VOICE" stop); rc=$?
