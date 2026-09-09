@@ -89,7 +89,8 @@ func say(_ line: String) {
     fflush(stdout)
 }
 
-func runSubmit(_ arguments: [String], completion: ((Int32, String) -> Void)? = nil) {
+@discardableResult
+func runSubmit(_ arguments: [String], completion: ((Int32, String) -> Void)? = nil) -> Process? {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: submitPath)
     p.arguments = arguments
@@ -103,7 +104,9 @@ func runSubmit(_ arguments: [String], completion: ((Int32, String) -> Void)? = n
     }
     do { try p.run() } catch {
         DispatchQueue.main.async { completion?(127, "failed: cannot run \(submitPath)\n") }
+        return nil
     }
+    return p
 }
 
 func cue(_ state: String) {
@@ -188,6 +191,7 @@ final class Recorder {
     var recorder: AVAudioRecorder?
     var directory: String?
     var capTimer: Timer?
+    var submit: Process?            // the in-flight `submit`, cancelled on shutdown
     var transcribing = false
     var held = false                // Carbon repeats the press event while the chord is held
 
@@ -249,10 +253,11 @@ final class Recorder {
         say(String(format: "transcribing (%.1f s%@)", seconds, note))
         cue("transcribing")
         transcribing = true
-        runSubmit(["submit", "\(dir)/rec.wav"]) { [weak self] _, out in
+        submit = runSubmit(["submit", "\(dir)/rec.wav"]) { [weak self] _, out in
             let line = out.trimmingCharacters(in: .whitespacesAndNewlines)
             if !line.isEmpty { say(line) }
             try? FileManager.default.removeItem(atPath: dir)
+            self?.submit = nil
             self?.transcribing = false
         }
     }
@@ -263,6 +268,16 @@ final class Recorder {
         recorder = nil
         if let dir = directory { try? FileManager.default.removeItem(atPath: dir) }
         directory = nil
+    }
+
+    // SIGTERM the in-flight submit so nothing is typed after a stop, and give its
+    // EXIT trap a bounded moment to release the lock and delete its directories.
+    func cancelSubmit(timeout: TimeInterval) {
+        guard let p = submit, p.isRunning else { return }
+        p.terminate()
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning && Date() < deadline { usleep(50_000) }
+        submit = nil
     }
 }
 
@@ -302,6 +317,7 @@ sweepLeftovers()
 func shutdown() {
     recorder.abort()
     if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
+    recorder.cancelSubmit(timeout: 3)
     sweepLeftovers()
     exit(0)
 }

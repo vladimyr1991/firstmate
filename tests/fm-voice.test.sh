@@ -53,14 +53,14 @@ with wave.open(path, "wb") as w:
 PY
 }
 
-# minimal_path <home>: a PATH holding only the shell utilities fm-voice.sh needs
-# plus python3, so whisper-cli, swiftc, jq, and herdr are genuinely absent
-# whatever the host has installed (swiftc lives in /usr/bin on macOS).
+# minimal_path <home>: a PATH holding only the shell utilities fm-voice.sh needs,
+# so whisper-cli, swiftc, jq, python3, and herdr are genuinely absent whatever
+# the host has installed (swiftc and python3 live in /usr/bin on macOS).
 minimal_path() {
   local d="$1/minbin" t src
   mkdir -p "$d"
   for t in bash sh env sed cut basename dirname wc tr grep cat mktemp uname kill \
-           mkdir rm head tail sort ls sleep find python3 rmdir; do
+           mkdir rm head tail sort ls sleep find rmdir; do
     src=$(command -v "$t" 2>/dev/null) || continue
     ln -sf "$src" "$d/$t"
   done
@@ -183,20 +183,22 @@ test_doctor_and_bootstrap_relay() {
   home=$(make_home doctor "")
   fakebin=$(fm_fakebin "$home")
   minbin=$(minimal_path "$home")
-  # PATH holds only core utilities plus python3: no whisper-cli, swiftc, jq, herdr.
+  # PATH holds only core utilities: no whisper-cli, swiftc, jq, python3, herdr.
   out=$(PATH="$minbin" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" \
     FM_VOICE_OS_OVERRIDE=Darwin XDG_CACHE_HOME="$home/cache" "$VOICE" doctor); rc=$?
   expect_code 1 "$rc" "AC-3: doctor not ready"
   expected='MISSING: whisper-cpp (install: brew install whisper-cpp)
 MISSING_MANUAL: swiftc (instructions: xcode-select --install)
-MISSING: jq (install: brew install jq)'
-  [ "$(printf '%s\n' "$out" | head -3)" = "$expected" ] || fail "AC-3: MISSING lines in order, got:"$'\n'"$out"
-  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 4 ] || fail "AC-3: exactly four lines, got:"$'\n'"$out"
-  case "$(printf '%s\n' "$out" | sed -n 4p)" in
+MISSING: jq (install: brew install jq)
+MISSING_MANUAL: python3 (instructions: xcode-select --install)'
+  [ "$(printf '%s\n' "$out" | head -4)" = "$expected" ] || fail "AC-3: MISSING lines in order, got:"$'\n'"$out"
+  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 5 ] || fail "AC-3: exactly five lines, got:"$'\n'"$out"
+  case "$(printf '%s\n' "$out" | sed -n 5p)" in
     "VOICE: not ready - "*) ;;
-    *) fail "AC-3: fourth line must be the VOICE summary, got:"$'\n'"$out" ;;
+    *) fail "AC-3: fifth line must be the VOICE summary, got:"$'\n'"$out" ;;
   esac
+  assert_contains "$out" "python3 missing" "AC-3: python3 reason"
   assert_contains "$out" "model missing at $home/cache/firstmate/voice/ggml-large-v3-turbo-q5_0.bin (run bin/fm-voice.sh install-model)" "AC-3: model reason"
   assert_contains "$out" "daemon not built (run bin/fm-voice.sh build)" "AC-3: daemon reason"
   assert_contains "$out" "herdr not running" "AC-3: herdr reason"
@@ -341,7 +343,45 @@ test_silence_gate() {
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 400
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
   expect_code 0 "$RC" "quiet speech above min_dbfs is transcribed"
-  pass "AC-10: recordings shorter than 0.5 s or below min_dbfs never reach whisper"
+
+  # submit re-reads config/voice on every call; a threshold the gate cannot
+  # evaluate is a failure, never a pass-through to whisper on silence.
+  printf 'min_dbfs=-45dB\n' > "$home/config/voice"
+  dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 0
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Продолжение следует..."
+  expect_code 5 "$RC" "invalid min_dbfs"
+  [ "$OUT" = "failed: invalid min_dbfs: -45dB (expected an integer -90..0)" ] || fail "invalid min_dbfs stdout, got: $OUT"
+  [ ! -s "$home/whisper.log" ] || fail "whisper must not run when min_dbfs is invalid"
+  assert_no_grep "send-text" "$home/herdr.log" "invalid min_dbfs: nothing typed"
+  assert_absent "$dir" "invalid min_dbfs: directory deleted"
+  assert_absent "$home/state/voice.submit.lock" "invalid min_dbfs: lock released"
+  wait_afplay "$home"
+  assert_grep "Sosumi.aiff" "$home/afplay.log" "invalid min_dbfs: Sosumi cue"
+  pass "AC-10: recordings shorter than 0.5 s or below min_dbfs never reach whisper, and a bad threshold fails closed"
+}
+
+# --- a WAV outside a daemon directory is never deleted ---------------------------
+
+test_operator_wav_kept() {
+  local home fakebin wav
+  home=$(make_home keepwav "")
+  fakebin=$(make_fakes "$home")
+  mkdir -p "$home/clips" "$home/tmp"
+  wav="$home/clips/clip.wav"; make_wav "$wav" 2 20000
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  expect_code 0 "$RC" "operator WAV typed"
+  assert_present "$wav" "operator WAV kept after a typed submit"
+  assert_present "$home/clips" "operator directory kept after a typed submit"
+
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude blocked)" FAKE_WHISPER_OUT="Привет"
+  expect_code 3 "$RC" "operator WAV refused"
+  assert_present "$wav" "operator WAV kept after a refusal"
+
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_RC=1
+  expect_code 5 "$RC" "operator WAV failed"
+  assert_present "$wav" "operator WAV kept after a failure"
+  [ -z "$(ls "$home/tmp" 2>/dev/null)" ] || fail "no scratch left under TMPDIR: $(ls "$home/tmp")"
+  pass "submit deletes only a daemon-made fm-voice.* directory and leaves any other recording in place"
 }
 
 # --- AC-11 / AC-12: hallucination list, whole-text only --------------------------
@@ -394,6 +434,18 @@ test_failures() {
   run_submit "$home" "$fakebin" "$dir/rec.wav"
   expect_code 5 "$RC" "missing recording"
   [ "$OUT" = "failed: no recording" ] || fail "missing recording must not print the path, got: $OUT"
+
+  # No scratch directory means no transcription: submit fails closed instead of
+  # running whisper with its output pointed at the filesystem root.
+  dir=$(mktemp -d "$home/fm-voice.XXXXXX"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
+  chmod 0500 "$home/tmp"
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  chmod 0700 "$home/tmp"
+  expect_code 5 "$RC" "unusable TMPDIR"
+  [ "$OUT" = "failed: cannot create a scratch directory under TMPDIR" ] || fail "unusable TMPDIR stdout, got: $OUT"
+  [ ! -s "$home/whisper.log" ] || fail "whisper must not run without a scratch directory"
+  assert_absent "$dir" "unusable TMPDIR: recording directory deleted"
+  assert_absent "$home/state/voice.submit.lock" "unusable TMPDIR: lock released"
   pass "AC-13/AC-14: whisper and herdr failures report, clean up, and keep the transcript when there is one"
 }
 
@@ -625,6 +677,7 @@ test_invalid_hotkey
 test_happy_path_types_without_enter
 test_refusals
 test_silence_gate
+test_operator_wav_kept
 test_hallucinations
 test_failures
 test_signal_cleanup

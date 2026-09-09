@@ -35,7 +35,7 @@
 # Subcommands (all but --help/status exit 2 when config/voice is absent):
 #   status         prints off | not ready | ready | running (pid N); exit 0
 #   doctor         MISSING:/MISSING_MANUAL: lines for whisper-cpp, swiftc, jq,
-#                  then exactly one VOICE: summary line; exit 0 ready/running/
+#                  python3, then exactly one VOICE: summary line; exit 0 ready/running/
 #                  macOS-only, 1 not ready
 #   build          compile the daemon with swiftc -O into the voice cache,
 #                  content-addressed by the source hash; exit 7 on failure
@@ -52,7 +52,8 @@
 #   submit <wav>   gate, transcribe, deliver; prints exactly one line
 #                  (typed into ... | nothing heard | refused: ... | failed: ...
 #                  | busy: ...); exit 0 typed, 3 refused, 4 nothing heard,
-#                  5 failed, 9 another submit holds the lock
+#                  5 failed (including an invalid config/voice, re-read on
+#                  every submit), 9 another submit holds the lock
 #   cue <state>    play the afplay cue for a state (used by the daemon)
 #
 # Silence protection is DOUBLE and both halves are mandatory: whisper invents
@@ -404,6 +405,10 @@ collect_readiness() {
     echo "MISSING: jq (install: brew install jq)"
     reasons="$reasons, jq missing"
   fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "MISSING_MANUAL: python3 (instructions: xcode-select --install)"
+    reasons="$reasons, python3 missing"
+  fi
   r=$(config_error)
   [ -z "$r" ] || reasons="$reasons, $r"
   r=$(model_status)
@@ -619,20 +624,19 @@ cmd_stop() {
 # --- submit -------------------------------------------------------------------
 
 SUBMIT_DIR=
-SUBMIT_WAV=
 SUBMIT_WORK=
 SUBMIT_CHILD=
 SUBMIT_LOCKED=0
 
 # Runs on every exit path, including SIGTERM/SIGINT/SIGHUP: the recording's directory
-# (only when it is one the daemon made), the private work directory, and the
-# lock all go, and a still-running whisper-cli child is killed first.
+# (only when it is one the daemon made - a WAV handed in from anywhere else is
+# left untouched), the private work directory, and the lock all go, and a
+# still-running whisper-cli child is killed first.
 submit_cleanup() {
   [ -n "$SUBMIT_CHILD" ] && kill "$SUBMIT_CHILD" 2>/dev/null
   if [ -n "$SUBMIT_DIR" ]; then
     case "$(basename "$SUBMIT_DIR")" in
       fm-voice.*) rm -rf -- "$SUBMIT_DIR" ;;
-      *) rm -f -- "$SUBMIT_WAV" ;;
     esac
   fi
   [ -n "$SUBMIT_WORK" ] && rm -rf -- "$SUBMIT_WORK"
@@ -683,7 +687,7 @@ PY
 }
 
 cmd_submit() {
-  local wav probe dur dbfs below raw rc verdict text short panes focused_json
+  local wav err probe dur dbfs below raw rc verdict text short panes focused_json
   local count pane_id agent status title
   require_enabled
   wav=${1:-}
@@ -692,12 +696,17 @@ cmd_submit() {
     exit 5
   fi
   load_config
-  SUBMIT_WAV=$wav
   SUBMIT_DIR=$(cd "$(dirname "$wav")" && pwd)
   trap submit_cleanup EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT
   trap 'exit 129' HUP
+  err=$(config_error)
+  if [ -n "$err" ]; then
+    play_cue failed
+    echo "failed: $err"
+    exit 5
+  fi
   mkdir -p "$STATE"
   if ! acquire_submit_lock; then
     play_cue busy
@@ -717,13 +726,21 @@ cmd_submit() {
     exit 5
   fi
   dur=${probe%% *}; dbfs=${probe##* }
-  below=$(python3 -c 'import sys; print(1 if float(sys.argv[1]) < 0.5 or float(sys.argv[2]) < float(sys.argv[3]) else 0)' "$dur" "$dbfs" "$MIN_DBFS")
-  if [ "$below" = 1 ]; then
-    play_cue nothing
-    notify "Nothing heard" "recording too short or too quiet"
-    echo "nothing heard"
-    exit 4
-  fi
+  below=$(python3 -c 'import sys; print(1 if float(sys.argv[1]) < 0.5 or float(sys.argv[2]) < float(sys.argv[3]) else 0)' "$dur" "$dbfs" "$MIN_DBFS" 2>/dev/null)
+  case "$below" in
+    1)
+      play_cue nothing
+      notify "Nothing heard" "recording too short or too quiet"
+      echo "nothing heard"
+      exit 4
+      ;;
+    0) ;;
+    *)
+      play_cue failed
+      echo "failed: cannot evaluate the silence gate"
+      exit 5
+      ;;
+  esac
 
   if ! command -v whisper-cli >/dev/null 2>&1; then
     play_cue failed
@@ -732,7 +749,12 @@ cmd_submit() {
   fi
   # whisper-cli runs as a background child under `wait` so a SIGTERM to submit
   # reaches the trap immediately instead of after the transcription finishes.
-  SUBMIT_WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-voice-submit.XXXXXX")
+  if ! SUBMIT_WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-voice-submit.XXXXXX" 2>/dev/null); then
+    SUBMIT_WORK=
+    play_cue failed
+    echo "failed: cannot create a scratch directory under TMPDIR"
+    exit 5
+  fi
   if [ "${FM_VOICE_DEBUG:-0}" = 1 ]; then
     whisper-cli -m "$MODEL" -f "$wav" -l "$LANGUAGE" -nt -np > "$SUBMIT_WORK/out" &
   else
