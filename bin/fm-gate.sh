@@ -19,8 +19,8 @@
 # cannot see each other's, so that machine can carry two full runs at once -
 # the hazard this queue exists to prevent, arriving from the one direction a
 # per-user path cannot reach. Each user's own fleet is still serialized whole.
-# The remedy is explicit: point both fleets at ONE hold both users can write,
-# by setting FM_GATE_LOCK_DIR to the same path in both.
+# The remedy is explicit: point both fleets at ONE hold both users can write, by
+# setting FM_GATE_LOCK_DIR to the same absolute path in both.
 # CORRECTNESS does not depend on FM_HOME. The hold path, the recorded holder
 # identity and the recorded owner worktree are all resolved without it: the owner
 # worktree comes from this home's metadata when it is there and otherwise from
@@ -147,7 +147,9 @@
 # Environment: FM_GATE_LOCK_DIR overrides the machine-wide hold path (default
 #   ${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/fm-gate-lock, which is one
 #   hold per unix user - set it to a shared writable path in every fleet when
-#   two different users run fleets on one machine); FM_HOME
+#   two different users run fleets on one machine; it must be ABSOLUTE, because a
+#   relative one gives every worktree a hold of its own and is refused);
+#   FM_HOME
 #   selects the home whose state/ the home-scoped issuance probe scans and
 #   nothing else; FM_STATE_OVERRIDE overrides that state directory;
 #   FM_GATE_STALE_SECONDS sets the abandoned-hold age; FM_GATE_MAX_HOLD_SECONDS
@@ -174,58 +176,53 @@ elif [ -n "${XDG_STATE_HOME:-}" ]; then
 elif [ -n "${HOME:-}" ]; then
   LOCK="$HOME/.local/state/firstmate/fm-gate-lock"
 fi
-# Canonical form of $1: repeated separators collapsed, `.` components dropped,
-# `..` resolved against what precedes it. Empty output means the path names
-# nothing this script can hold. Purely lexical by design - the hold's own leaf is
-# never followed through a symlink, because a symlinked hold must still reach
-# hold_is_foreign as the foreign entry it is.
+# Canonical form of the ABSOLUTE path $1: repeated separators collapsed, `.`
+# components dropped, `..` resolved against what precedes it. Empty output means
+# the path names nothing below the root and so nothing this script can hold.
+# Purely lexical by design - the hold's own leaf is never followed through a
+# symlink, because a symlinked hold must still reach hold_is_foreign as the
+# foreign entry it is. No arrays: expanding an empty one under `set -u` is fatal
+# on the stock macOS bash this repo still supports.
 canonical_path() {
-  local path=$1 abs='' part rest joined=''
-  local -a stack=()
-  case "$path" in /*) abs=1 ;; esac
-  rest=$path
+  local rest=$1 part out=''
   while [ -n "$rest" ]; do
     part=${rest%%/*}
     if [ "$part" = "$rest" ]; then rest=; else rest=${rest#*/}; fi
     case "$part" in
       ''|.) ;;
-      ..)
-        if [ "${#stack[@]}" -gt 0 ] && [ "${stack[$(( ${#stack[@]} - 1 ))]}" != ".." ]; then
-          unset "stack[$(( ${#stack[@]} - 1 ))]"
-          stack=("${stack[@]}")
-        elif [ -z "$abs" ]; then
-          stack+=("..")
-        fi
-        ;;
-      *) stack+=("$part") ;;
+      ..) out=${out%/*} ;;
+      *) out="$out/$part" ;;
     esac
   done
-  for part in "${stack[@]:-}"; do
-    [ -n "$part" ] || continue
-    joined="${joined:+$joined/}$part"
-  done
-  if [ -n "$abs" ]; then
-    printf '%s\n' "/$joined"
-  else
-    printf '%s\n' "$joined"
-  fi
+  printf '%s\n' "$out"
 }
 
-# Any spelling that leaves the hold's own name unresolved - a trailing slash, a
-# trailing `.`, a trailing `..`, doubled separators - used to put the break
-# marker INSIDE the hold, where `mkdir` refreshed the hold's own mtime and every
-# age read back as 0: both the 25-minute rule and the ceiling silently and
-# permanently disabled, with nothing printed to say why. Canonicalising here is
-# what makes the marker a sibling for every input shape; a path that canonicalises
-# to nothing nameable is refused rather than derived from.
+# The hold path must be ABSOLUTE and must name one directory. A relative value
+# resolves against each acquiring process's own working directory, and every
+# worker runs the mandated one-liner from a different task worktree, so it turns
+# the one machine-wide hold into a hold per worktree - the two-full-runs hazard
+# this queue exists to prevent, arriving with nothing printed. There is no
+# correct base to resolve it against, so it is refused rather than guessed at.
+# Canonicalising the rest is what keeps the break marker a SIBLING of the hold
+# for every spelling: a trailing slash, a trailing `.` or `..`, or doubled
+# separators once left the marker INSIDE the hold, where `mkdir` refreshed the
+# hold's own mtime, every age read back as 0, and both the 25-minute rule and the
+# ceiling were silently and permanently disabled.
+LOCK_RAW=$LOCK
 LOCK_UNUSABLE=
+LOCK_UNUSABLE_WHY=
 if [ -n "$LOCK" ]; then
-  LOCK_UNUSABLE=$LOCK
-  LOCK=$(canonical_path "$LOCK")
   case "$LOCK" in
-    ''|/|..|*/..) LOCK= ;;
-    *) LOCK_UNUSABLE= ;;
+    /*) LOCK=$(canonical_path "$LOCK") ;;
+    *) LOCK= ;;
   esac
+  if [ -z "$LOCK" ]; then
+    LOCK_UNUSABLE=$LOCK_RAW
+    case "$LOCK_RAW" in
+      /*) LOCK_UNUSABLE_WHY="it names no directory below the filesystem root" ;;
+      *) LOCK_UNUSABLE_WHY="it is not an absolute path, so every worker would resolve it against its own worktree and hold a queue of its own" ;;
+    esac
+  fi
 fi
 STALE="${FM_GATE_STALE_SECONDS:-1500}"
 case "$STALE" in ''|*[!0-9]*) STALE=1500 ;; esac
@@ -357,8 +354,8 @@ refuse_unresolvable_hold() {
 # Refused rather than used, because a marker derived from it would land inside
 # the hold and disable both break rules without saying so.
 refuse_unusable_hold_path() {
-  echo "QUEUE NOT AVAILABLE - the configured hold path $LOCK_UNUSABLE does not name a directory that can be held; set FM_GATE_LOCK_DIR to a plain directory path"
-  echo "unusable hold path: $LOCK_UNUSABLE" >&2
+  echo "QUEUE NOT AVAILABLE - the configured hold path $LOCK_UNUSABLE cannot be used: $LOCK_UNUSABLE_WHY; set FM_GATE_LOCK_DIR to an absolute directory path every worker can reach"
+  echo "unusable hold path $LOCK_UNUSABLE: $LOCK_UNUSABLE_WHY" >&2
 }
 
 require_hold_path() {

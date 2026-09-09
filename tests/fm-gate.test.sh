@@ -799,7 +799,7 @@ test_an_unresolvable_hold_path_refuses_by_name() {
   expect_code 1 "$rc" "a hold path that names no holdable directory must be refused"
   assert_contains "$out" "QUEUE NOT AVAILABLE" \
     "an unusable hold path must refuse visibly on stdout"
-  assert_contains "$out" "does not name a directory that can be held" \
+  assert_contains "$out" "names no directory below the filesystem root" \
     "the refusal must say what is wrong with the configured path"
   pass "fm-gate.sh: an unresolvable hold path refuses by name instead of aborting"
 }
@@ -1038,6 +1038,61 @@ test_an_unusable_hold_parent_is_refused_rather_than_waited_out() {
   pass "fm-gate.sh: an unusable hold parent is refused rather than waited out"
 }
 
+# A relative hold path resolves against each acquiring process's own working
+# directory, and every worker runs the mandated one-liner from a different task
+# worktree - so one machine-wide hold silently becomes a hold per worktree and two
+# full runs go at once, which is the hazard this queue exists to remove. There is
+# no correct base to resolve it against, so it is refused rather than guessed at.
+test_a_relative_hold_path_is_refused_rather_than_held_per_worktree() {
+  local state dir out rc
+  state=$(new_state relative-hold)
+  mkdir -p "$TMP_ROOT/relative-a" "$TMP_ROOT/relative-b"
+  for dir in "$TMP_ROOT/relative-a" "$TMP_ROOT/relative-b"; do
+    out=$( cd "$dir" && FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR=fmhold \
+      "$GATE" acquire task-x 2>&1 ); rc=$?
+    expect_code 1 "$rc" "a relative hold path must be refused, never granted"
+    assert_contains "$out" "QUEUE NOT AVAILABLE" \
+      "the refusal must be visible on stdout, like every other refusal a worker reads"
+    assert_contains "$out" "not an absolute path" \
+      "the refusal must name why a relative hold path cannot serialize the fleet"
+    [ ! -e "$dir/fmhold" ] \
+      || fail "a relative hold path must not create a hold inside the worker's own directory"
+  done
+  pass "fm-gate.sh: a relative hold path is refused rather than held per worktree"
+}
+
+# The gate runs wherever a worker's pane runs, including the stock macOS bash this
+# repo still supports, where expanding an empty array under `set -u` is fatal. A
+# hold path whose `..` pops back to the root took exactly that route and refused a
+# perfectly usable path with a raw bash diagnostic, so this drives the platform's
+# own /bin/bash rather than the ambient one, which cannot see the class at all.
+test_a_hold_path_resolved_through_dotdot_works_under_the_platform_bash() {
+  local state shell spelled out err rc
+  state=$(new_state platform-bash)
+  GATE_LOCK=$(new_lock platform-bash)
+  shell=/bin/bash
+  [ -x "$shell" ] || shell=$(command -v bash)
+  # Pops the leading component back to the root, then names the hold again.
+  spelled="/tmp/..$GATE_LOCK"
+  err="$TMP_ROOT/platform-bash.err"
+
+  out=$(FM_GATE_LOCK_DIR="$spelled" "$shell" "$GATE" status 2>"$err"); rc=$?
+  expect_code 0 "$rc" "status must succeed for a hold path resolved through .."
+  assert_contains "$out" "free" "the hold must read as free rather than be refused"
+  assert_not_contains "$(cat "$err")" "unbound variable" \
+    "the platform's own bash must not abort inside the gate"
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$spelled" "$shell" \
+    "$GATE" acquire task-a 2>"$err"); rc=$?
+  expect_code 0 "$rc" "acquire must succeed for a hold path resolved through .."
+  assert_contains "$out" "queue held by you: task-a" "the queue must be granted"
+  assert_not_contains "$(cat "$err")" "unbound variable" \
+    "acquire must not abort inside the gate under the platform's own bash"
+  [ -d "$GATE_LOCK" ] \
+    || fail "the hold must be created at the canonical path, not at the spelled one"
+  pass "fm-gate.sh: a hold path resolved through .. works under the platform's own bash"
+}
+
 # A fixed name in a shared directory can be pre-created by someone else. Such a
 # hold is refused outright and never removed - least of all followed through a
 # symlink into a directory this fleet does not own.
@@ -1106,6 +1161,8 @@ test_a_ceiling_below_the_stale_age_still_breaks_the_hold
 test_a_trailing_slash_on_the_hold_path_still_breaks_an_abandoned_hold
 test_dot_terminated_hold_paths_still_break_an_abandoned_hold
 test_an_unresolvable_hold_path_refuses_by_name
+test_a_relative_hold_path_is_refused_rather_than_held_per_worktree
+test_a_hold_path_resolved_through_dotdot_works_under_the_platform_bash
 test_a_foreign_break_marker_is_refused_visibly
 test_an_active_break_marker_survives_a_low_stale_age
 test_a_live_run_outside_the_hold_refuses_a_free_queue

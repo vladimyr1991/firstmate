@@ -1222,21 +1222,13 @@ test_gate_queue_contract_reaches_ship_and_scout() {
     assert_grep "contract above owns that rule" "$brief" \
       "$id ($kind): the pause qualification no longer defers to the queue contract"
 
-    # The scout's rule 2 keeps a CLOSED list of what may be written outside the
-    # worktree, and the queue hold is written outside it. Missing from that list,
-    # the same brief that mandates the queue also hands a worker a literal reason
-    # to skip it - the first-inconvenient-case failure these reasons exist to stop.
-    # Rule 2 is a CLOSED enumeration of the writes outside the worktree, so it is
-    # pinned WHOLE: every write this brief prescribes must be named in it, and the
-    # queue hold must still name the tool it is about. A prefix assertion let an
-    # unescaped backtick pair - command substitution inside the scaffold's own
-    # heredoc - delete the script name from every delivered brief and stay green.
     # Rule 2 governs the writes outside the worktree by PRINCIPLE, not by a closed
-    # list. Three rounds running, a closed list turned out to omit a write the
-    # same brief mandates - the queue hold, then the measurement scratch file,
-    # then the delivery pipeline's own state - and each omission read as licence
-    # to skip the step. The principle covers whatever the brief prescribes; the
-    # examples are grip, and the second sentence keeps the licence tight.
+    # list: write outside the worktree only where this brief itself prescribes it,
+    # pinned together with its named examples. Three rounds running, a closed list
+    # turned out to omit a write the same brief mandates - the queue hold, then the
+    # measurement scratch file, then the delivery pipeline's own state - and each
+    # omission read as licence to skip the step. The examples are grip, and the
+    # second sentence keeps the licence exactly as wide as the brief.
     assert_grep "2. Stay inside this worktree; the only writes you may make outside it are the ones this brief itself prescribes - for example " "$brief" \
       "$id ($kind): rule 2 lost the principle that the brief's own prescriptions are the licence"
     assert_grep "Those are examples and not the whole list: a step this brief mandates carries its own permission, so this rule is never a reason to skip one, and a write this brief does not mandate has no permission at all." "$brief" \
