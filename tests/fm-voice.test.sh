@@ -118,17 +118,25 @@ panes_json() {  # <pane_id> <agent or ""> <status> [title]
     "$1" "$agent_field" "$3" "${4:-Parlino webhook settings screen}"
 }
 
-# run_submit <home> <fakebin> <wav> [env...]: runs submit with logs wired up;
-# prints stdout, exit code in RC.
+# run_submit <home> <fakebin> <wav> [env...]: runs submit the way the daemon
+# does, with --recording-dir naming the WAV's directory and logs wired up;
+# prints stdout, exit code in RC. RECORDING_DIR overrides the directory passed
+# (set it to "" to run without --recording-dir, as a hand invocation would).
 run_submit() {
-  local home=$1 fakebin=$2 wav=$3
+  local home=$1 fakebin=$2 wav=$3 rdir
   shift 3
+  rdir=${RECORDING_DIR-$(dirname "$wav")}
   : > "$home/herdr.log"; : > "$home/whisper.log"; : > "$home/afplay.log"; : > "$home/pbcopy.log"
-  OUT=$(env "$@" PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  if [ -n "$rdir" ]; then
+    set -- "$@" "$VOICE" submit --recording-dir "$rdir" "$wav"
+  else
+    set -- "$@" "$VOICE" submit "$wav"
+  fi
+  OUT=$(env PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" TMPDIR="$home/tmp" \
     FAKE_HERDR_LOG="$home/herdr.log" FAKE_WHISPER_LOG="$home/whisper.log" \
     FAKE_AFPLAY_LOG="$home/afplay.log" FAKE_PBCOPY_LOG="$home/pbcopy.log" \
-    "$VOICE" submit "$wav" 2>"$home/stderr")
+    "$@" 2>"$home/stderr")
   RC=$?
 }
 
@@ -360,28 +368,56 @@ test_silence_gate() {
   pass "AC-10: recordings shorter than 0.5 s or below min_dbfs never reach whisper, and a bad threshold fails closed"
 }
 
-# --- a WAV outside a daemon directory is never deleted ---------------------------
+# --- recording ownership: only the directory named by --recording-dir is deleted -
 
-test_operator_wav_kept() {
-  local home fakebin wav
-  home=$(make_home keepwav "")
+test_recording_dir_ownership() {
+  local home fakebin hand own other wav
+  home=$(make_home ownership "")
   fakebin=$(make_fakes "$home")
-  mkdir -p "$home/clips" "$home/tmp"
-  wav="$home/clips/clip.wav"; make_wav "$wav" 2 20000
+  mkdir -p "$home/tmp"
+
+  # A hand invocation without --recording-dir never deletes anything, even
+  # when the WAV sits in a directory that looks like a daemon recording.
+  hand="$home/tmp/fm-voice.hand"; mkdir -p "$hand"
+  wav="$hand/take1.wav"; make_wav "$wav" 2 20000; : > "$hand/take2.wav"
+  RECORDING_DIR="" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  expect_code 0 "$RC" "hand submit typed"
+  assert_grep "pane send-text wA2:p2 Привет" "$home/herdr.log" "hand submit still types"
+  assert_present "$wav" "hand submit keeps the WAV after typing"
+  assert_present "$hand/take2.wav" "hand submit keeps sibling files after typing"
+  RECORDING_DIR="" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude blocked)" FAKE_WHISPER_OUT="Привет"
+  expect_code 3 "$RC" "hand submit refused"
+  assert_present "$wav" "hand submit keeps the WAV after a refusal"
+  assert_present "$hand" "hand submit keeps the directory after a refusal"
+  RECORDING_DIR="" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_RC=1
+  expect_code 5 "$RC" "hand submit failed"
+  assert_present "$wav" "hand submit keeps the WAV after a failure"
+
+  # With --recording-dir exactly that directory goes and nothing beside it.
+  own=$(rec_dir "$home"); wav="$own/rec.wav"; make_wav "$wav" 2 20000
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
-  expect_code 0 "$RC" "operator WAV typed"
-  assert_present "$wav" "operator WAV kept after a typed submit"
-  assert_present "$home/clips" "operator directory kept after a typed submit"
+  expect_code 0 "$RC" "owned submit typed"
+  assert_absent "$own" "owned recording directory deleted"
+  assert_present "$hand" "the neighbouring directory is untouched"
+  assert_present "$hand/take1.wav" "the neighbouring WAV is untouched"
 
-  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude blocked)" FAKE_WHISPER_OUT="Привет"
-  expect_code 3 "$RC" "operator WAV refused"
-  assert_present "$wav" "operator WAV kept after a refusal"
+  # A --recording-dir that is not the WAV's parent owns nothing: neither side is deleted.
+  own=$(rec_dir "$home"); wav="$own/rec.wav"; make_wav "$wav" 2 20000
+  other=$(rec_dir "$home"); : > "$other/keep.wav"
+  RECORDING_DIR="$other" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  expect_code 0 "$RC" "mismatched submit typed"
+  assert_present "$wav" "mismatched --recording-dir keeps the WAV"
+  assert_present "$other/keep.wav" "mismatched --recording-dir keeps the named directory"
+  RECORDING_DIR="$home/tmp/never-made" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  expect_code 0 "$RC" "nonexistent --recording-dir typed"
+  assert_present "$wav" "nonexistent --recording-dir keeps the WAV"
 
-  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_RC=1
-  expect_code 5 "$RC" "operator WAV failed"
-  assert_present "$wav" "operator WAV kept after a failure"
-  [ -z "$(ls "$home/tmp" 2>/dev/null)" ] || fail "no scratch left under TMPDIR: $(ls "$home/tmp")"
-  pass "submit deletes only a daemon-made fm-voice.* directory and leaves any other recording in place"
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  assert_absent "$own" "the same WAV is deleted once its directory is named"
+  assert_present "$hand" "the hand directory survives every submit"
+  assert_present "$other/keep.wav" "the mismatched directory survives every submit"
+  [ "$(ls "$home/tmp" | wc -l | tr -d ' ')" = 2 ] || fail "only those two directories remain under TMPDIR: $(ls "$home/tmp")"
+  pass "submit deletes exactly the --recording-dir it was handed, and nothing without it"
 }
 
 # --- AC-11 / AC-12: hallucination list, whole-text only --------------------------
@@ -462,7 +498,7 @@ test_signal_cleanup() {
     FAKE_HERDR_LOG="$home/herdr.log" FAKE_WHISPER_LOG="$home/whisper.log" \
     FAKE_AFPLAY_LOG="$home/afplay.log" FAKE_PBCOPY_LOG="$home/pbcopy.log" \
     FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_SLEEP=5 FAKE_WHISPER_OUT="Привет" \
-    "$VOICE" submit "$wav" >/dev/null 2>&1 &
+    "$VOICE" submit --recording-dir "$dir" "$wav" >/dev/null 2>&1 &
   pid=$!
   sleep 1
   kill -TERM "$pid" 2>/dev/null
@@ -677,7 +713,7 @@ test_invalid_hotkey
 test_happy_path_types_without_enter
 test_refusals
 test_silence_gate
-test_operator_wav_kept
+test_recording_dir_ownership
 test_hallucinations
 test_failures
 test_signal_cleanup

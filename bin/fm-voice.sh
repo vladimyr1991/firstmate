@@ -49,11 +49,17 @@
 #                  exit 2 invalid config or not ready, 3 microphone denied,
 #                  4 hot key registration failed, 5 already running
 #   stop           SIGTERM the recorded daemon; exit 1 when none runs
-#   submit <wav>   gate, transcribe, deliver; prints exactly one line
+#   submit [--recording-dir <dir>] <wav>
+#                  gate, transcribe, deliver; prints exactly one line
 #                  (typed into ... | nothing heard | refused: ... | failed: ...
 #                  | busy: ...); exit 0 typed, 3 refused, 4 nothing heard,
 #                  5 failed (including an invalid config/voice, re-read on
-#                  every submit), 9 another submit holds the lock
+#                  every submit), 9 another submit holds the lock.
+#                  --recording-dir names the directory the CALLER created for
+#                  this recording; submit removes exactly that directory on
+#                  every exit path, and only when it is the WAV's own parent
+#                  directory. Without the option submit deletes no recording,
+#                  whatever the path looks like.
 #   cue <state>    play the afplay cue for a state (used by the daemon)
 #
 # Silence protection is DOUBLE and both halves are mandatory: whisper invents
@@ -74,8 +80,10 @@
 # and types nowhere; another pane is never picked.
 #
 # Audio at rest: the daemon records into a fresh 0700 directory
-# $TMPDIR/fm-voice.XXXXXX; submit deletes that directory on every exit path
-# (EXIT/INT/TERM/HUP trap) and start sweeps any leftover fm-voice.* directory.
+# $TMPDIR/fm-voice.XXXXXX and hands it to submit as --recording-dir; submit
+# deletes that directory on every exit path (EXIT/INT/TERM/HUP trap), the
+# daemon removes it again once submit exits, and start sweeps any leftover
+# fm-voice.* directory.
 # No audio is ever written under data/, state/, projects/, or the repository,
 # and no audio path is printed.
 #
@@ -623,22 +631,18 @@ cmd_stop() {
 
 # --- submit -------------------------------------------------------------------
 
-SUBMIT_DIR=
+SUBMIT_OWNED_DIR=
 SUBMIT_WORK=
 SUBMIT_CHILD=
 SUBMIT_LOCKED=0
 
-# Runs on every exit path, including SIGTERM/SIGINT/SIGHUP: the recording's directory
-# (only when it is one the daemon made - a WAV handed in from anywhere else is
-# left untouched), the private work directory, and the lock all go, and a
+# Runs on every exit path, including SIGTERM/SIGINT/SIGHUP: the caller-owned
+# recording directory (set only when --recording-dir resolves to the WAV's own
+# parent), the private work directory, and the lock all go, and a
 # still-running whisper-cli child is killed first.
 submit_cleanup() {
   [ -n "$SUBMIT_CHILD" ] && kill "$SUBMIT_CHILD" 2>/dev/null
-  if [ -n "$SUBMIT_DIR" ]; then
-    case "$(basename "$SUBMIT_DIR")" in
-      fm-voice.*) rm -rf -- "$SUBMIT_DIR" ;;
-    esac
-  fi
+  [ -n "$SUBMIT_OWNED_DIR" ] && rm -rf -- "$SUBMIT_OWNED_DIR"
   [ -n "$SUBMIT_WORK" ] && rm -rf -- "$SUBMIT_WORK"
   [ "$SUBMIT_LOCKED" -eq 1 ] && rm -rf -- "$LOCK_DIR"
   return 0
@@ -687,16 +691,38 @@ PY
 }
 
 cmd_submit() {
-  local wav err probe dur dbfs below raw rc verdict text short panes focused_json
+  local wav recording_dir='' wav_dir owned_dir
+  local err probe dur dbfs below raw rc verdict text short panes focused_json
   local count pane_id agent status title
   require_enabled
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --recording-dir)
+        if [ $# -lt 2 ] || [ -z "$2" ]; then
+          echo "failed: --recording-dir needs a directory"
+          exit 5
+        fi
+        recording_dir=$2
+        shift 2
+        ;;
+      --) shift; break ;;
+      -*) echo "failed: unknown submit option $1"; exit 5 ;;
+      *) break ;;
+    esac
+  done
   wav=${1:-}
   if [ -z "$wav" ] || [ ! -f "$wav" ]; then
     echo "failed: no recording"
     exit 5
   fi
   load_config
-  SUBMIT_DIR=$(cd "$(dirname "$wav")" && pwd)
+  if [ -n "$recording_dir" ]; then
+    wav_dir=$(cd "$(dirname "$wav")" 2>/dev/null && pwd -P)
+    owned_dir=$(cd "$recording_dir" 2>/dev/null && pwd -P)
+    if [ -n "$wav_dir" ] && [ "$wav_dir" = "$owned_dir" ]; then
+      SUBMIT_OWNED_DIR=$owned_dir
+    fi
+  fi
   trap submit_cleanup EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT

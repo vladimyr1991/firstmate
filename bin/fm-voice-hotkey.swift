@@ -4,7 +4,8 @@
 // firstmate: register one global modifier chord with Carbon (no Accessibility
 // or Input Monitoring grant needed), record the default microphone into a
 // fresh 0700 temp directory ONLY while the chord is held, and hand the WAV to
-// `<submit> submit <wav>` on release. Every policy decision - focus rule,
+// `<submit> submit --recording-dir <dir> <dir>/rec.wav` on release, naming the
+// directory it made so submit deletes exactly that one. Every policy decision - focus rule,
 // silence gates, hallucination list, sound names, exit codes - lives in
 // bin/fm-voice.sh so the shell test suite covers it; this file stays a thin,
 // dependency-free (Carbon, Cocoa, AVFoundation) recorder.
@@ -253,7 +254,7 @@ final class Recorder {
         say(String(format: "transcribing (%.1f s%@)", seconds, note))
         cue("transcribing")
         transcribing = true
-        submit = runSubmit(["submit", "\(dir)/rec.wav"]) { [weak self] _, out in
+        submit = runSubmit(["submit", "--recording-dir", dir, "\(dir)/rec.wav"]) { [weak self] _, out in
             let line = out.trimmingCharacters(in: .whitespacesAndNewlines)
             if !line.isEmpty { say(line) }
             try? FileManager.default.removeItem(atPath: dir)
