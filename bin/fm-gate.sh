@@ -34,6 +34,12 @@
 #   so both are invisible to it and the queue is granted beside them. What
 #   serializes the honest case is the machine-wide HOLD; this probe only catches a
 #   full run that went around the hold and still names its worktree.
+#   It also cannot tell a FULL run from the targeted run this queue explicitly
+#   exempts, so `pytest tests/one_test.py` in a worktree refuses issuance with a
+#   message that overstates what is live. That cost is bounded - the refusal
+#   clears when the targeted test ends and --wait rides it out - so it spends
+#   parallelism rather than pinning the queue, and no argv-based probe can
+#   separate the two.
 #   What it does count is CHECK WORK (pytest, playwright, make, vitest, jest),
 #   never "any process in the worktree", never a bare `node`, and never a process
 #   whose argv carries this script's own name. A worker WAITING for the queue
@@ -49,20 +55,31 @@
 #   permanent two-way stall, each reading the other's unrun command as a live run.
 #   A process holding this script's invocation is a waiter or a wrapper by
 #   contract and never the run itself, so it is skipped before the runner match.
-#   A hold whose owner has no live check work and is older than FM_GATE_STALE_SECONDS
-#   (default 1500, 25 minutes) is treated as abandoned and broken. Only ONE
-#   contender breaks at a time, behind <hold>.breaking, and it re-makes the whole
-#   decision inside that mutex: an unsynchronised break let two contenders judge
-#   the same hold stale, spend the probe's lifetime confirming it, and then each
-#   remove whatever sat at the path - so each took the queue and each started a
-#   full run, the two-full-runs hazard arriving through the very rule meant to
-#   prevent it, with the first holder's own release then refused because the hold
-#   recorded the second. Re-reading the mtime under the mutex is what refuses a
-#   hold created while the probe was running. The owner's
-#   worktree is recorded INSIDE the hold at acquire time, so that staleness proof
-#   reads the same from any home and never needs another home's metadata; looking
-#   the owner up through this home's state/<id>.meta would find nothing for a
-#   holder in another home and would break a genuinely running suite's hold.
+#   A hold is abandoned when its recorded HOLDER PROCESS is gone AND the hold is
+#   older than FM_GATE_STALE_SECONDS (default 1500, 25 minutes). That process is
+#   the parent of this script - the shell running the mandated one-liner, which by
+#   construction lives exactly as long as wait plus run plus release - and its pid
+#   and start time are written into the hold at acquire time. Liveness is a
+#   recorded FACT, never an inference from process command text: the one-liner
+#   makes that inference impossible, because the only process whose argv carries
+#   the task worktree is the wrapper shell (which must be skipped, being also a
+#   waiter) while the real runner carries no path at all - `make test`, a system
+#   `pytest tests/`, or a bare `bash tests/foo.test.sh` are all invisible to argv
+#   matching, and a genuinely running suite lost its hold at 25 minutes because of
+#   it. The start time is compared as well as the pid so a recycled pid cannot
+#   masquerade as the holder; when the start time cannot be read the holder counts
+#   as ALIVE, because uncertainty must never break a hold. A hold written by an
+#   older copy of this script records no process and falls back to the argv probe,
+#   so it is no worse off than before. The owner's worktree is recorded too, so
+#   nothing here needs another home's metadata.
+#   Only ONE contender breaks at a time, behind <hold>.breaking, and the break is
+#   a COMPARE AND SWAP: the hold's identity is captured before the liveness
+#   decision and re-verified immediately before the removal, still inside the
+#   mutex. Without that, a holder releasing during the decision and a new
+#   contender acquiring meant the breaker deleted a hold milliseconds old and took
+#   the queue - two full runs, with the first holder's own release then refused
+#   because the hold recorded the second, and the queue reading free while its run
+#   continued. The mutex alone is necessary and not sufficient.
 #   A fixed name in a shared directory can be pre-created by another user, so a
 #   hold that is a symlink, is not a directory, or is not owned by this uid is
 #   refused outright: it is never broken, never removed, and never followed.
@@ -103,6 +120,28 @@ owner() { cat "$LOCK/owner" 2>/dev/null; }
 # The holder's worktree as recorded in the hold itself, so the staleness proof
 # works across homes. See the header.
 owner_worktree() { cat "$LOCK/owner_worktree" 2>/dev/null; }
+
+owner_pid() { cat "$LOCK/owner_pid" 2>/dev/null; }
+owner_pid_start() { cat "$LOCK/owner_pid_start" 2>/dev/null; }
+hold_token() { cat "$LOCK/token" 2>/dev/null; }
+
+# Absolute start time of $1 on one line, or empty when it cannot be read.
+process_start() {
+  ps -p "$1" -o lstart= 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'
+}
+
+# What this hold IS, for the compare-and-swap in break_if_abandoned. The token
+# this script writes is exact; a hold from an older copy has none, so owner plus
+# mtime stands in - enough to tell a stale hold from one taken after it.
+hold_identity() {
+  local token
+  token=$(hold_token)
+  if [ -n "$token" ]; then
+    printf 'token:%s\n' "$token"
+  else
+    printf 'owner:%s:%s\n' "$(owner)" "$(fm_lock_path_mtime "$LOCK")"
+  fi
+}
 
 path_uid() {
   if [ "$(uname)" = Darwin ]; then
@@ -151,9 +190,26 @@ check_work_live() {
   done | grep -qE '[p]ytest|[p]laywright|[m]ake |[v]itest|[j]est'
 }
 
+# The recorded holder process, checked as a fact. See the header for why an argv
+# probe cannot answer this and what the start-time comparison is for.
+owner_process_alive() {
+  local pid recorded current
+  pid=$(owner_pid)
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  recorded=$(owner_pid_start)
+  [ -n "$recorded" ] || return 0
+  current=$(process_start "$pid")
+  [ -n "$current" ] || return 0
+  [ "$current" = "$recorded" ]
+}
+
 owner_running() {
   [ -n "$(owner)" ] || return 1
-  check_work_live "$(owner_worktree)"
+  case "$(owner_pid)" in
+    ''|*[!0-9]*) check_work_live "$(owner_worktree)" ;;
+    *) owner_process_alive ;;
+  esac
 }
 
 # Print the id of another task with a live full run, if any. Home-scoped by
@@ -181,16 +237,12 @@ path_age() {
   printf '%s\n' "$(( now - m ))"
 }
 
-# Break the hold if it is provably abandoned. The whole DECISION happens under
-# $BREAK_MUTEX and is re-made from scratch inside it, because the liveness probe
-# costs a pgrep plus a ps per pid: judging a hold stale, spending that long
-# probing, and only then removing whatever now sits at the path let a late
-# contender destroy a hold created while it probed, so two contenders were each
-# granted the queue and each started a full run - the two-full-runs hazard
-# arriving through the rule meant to prevent it. Re-reading the mtime inside the
-# mutex is what refuses a brand-new hold.
+# Break the hold if it is provably abandoned. Only one contender decides at a
+# time, behind $BREAK_MUTEX, and the decision is a compare-and-swap: the hold's
+# identity is captured before the liveness check and re-verified immediately
+# before the removal. See the header for both failures this closes.
 break_if_abandoned() {
-  local now age holder broke=1
+  local now age holder identity broke=1
   [ -d "$LOCK" ] || return 1
   hold_is_foreign && return 1
   now=$(date +%s)
@@ -199,7 +251,7 @@ break_if_abandoned() {
   age=$(path_age "$now" "$LOCK")
   [ "$age" -ge "$STALE" ] || return 1
 
-  # A breaker killed mid-probe must not wedge the rule for every later contender.
+  # A breaker killed mid-decision must not wedge the rule for every later one.
   if [ -d "$BREAK_MUTEX" ] && [ "$(path_age "$now" "$BREAK_MUTEX")" -ge "$STALE" ]; then
     rmdir "$BREAK_MUTEX" 2>/dev/null
   fi
@@ -208,11 +260,18 @@ break_if_abandoned() {
   now=$(date +%s)
   case "$now" in ''|*[!0-9]*) now=0 ;; esac
   age=$(path_age "$now" "$LOCK")
+  identity=$(hold_identity)
   if [ -d "$LOCK" ] && ! hold_is_foreign && [ "$age" -ge "$STALE" ] && ! owner_running; then
     holder=$(owner)
-    echo "breaking an abandoned hold (owner $holder, ${age}s old, no check work running)" >&2
-    rm -rf "$LOCK"
-    broke=0
+    now=$(date +%s)
+    case "$now" in ''|*[!0-9]*) now=0 ;; esac
+    if [ "$(hold_identity)" = "$identity" ] && [ "$(path_age "$now" "$LOCK")" -ge "$STALE" ]; then
+      echo "breaking an abandoned hold (owner $holder, ${age}s old, holder process gone)" >&2
+      rm -rf "$LOCK"
+      broke=0
+    else
+      echo "not breaking: the hold changed while it was being judged" >&2
+    fi
   fi
   rmdir "$BREAK_MUTEX" 2>/dev/null
   return "$broke"
@@ -240,6 +299,9 @@ case "${1:-}" in
         # "held by:" with no holder named.
         printf '%s\n' "$ID" > "$LOCK/owner"
         printf '%s\n' "$(worktree_of "$ID")" > "$LOCK/owner_worktree"
+        printf '%s\n' "$PPID" > "$LOCK/owner_pid"
+        printf '%s\n' "$(process_start "$PPID")" > "$LOCK/owner_pid_start"
+        printf '%s.%s.%s\n' "$$" "$(date +%s)" "${RANDOM:-0}" > "$LOCK/token"
         if OTHER=$(other_task_running "$ID"); then
           [ "$(owner)" = "$ID" ] && rm -rf "$LOCK"
           # Printed on stdout as well as stderr: a worker reading only stdout

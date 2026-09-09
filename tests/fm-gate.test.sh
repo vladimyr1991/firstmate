@@ -108,6 +108,35 @@ age_path() {
   touch -t "$stamp" "$path" || fail "could not backdate $path"
 }
 
+# Take the hold the way the brief's mandated one-liner does: a wrapper shell that
+# runs `cd <worktree> && <gate> acquire <id>` and then STAYS ALIVE for the whole
+# run. That wrapper is the holder's controlling process, and the runner it goes on
+# to start carries no worktree path in its argv - `make test`, a system
+# `pytest tests/`, a bare `bash tests/foo.test.sh` - which is exactly why holder
+# liveness cannot be read off process command text. Echoes the wrapper's pid.
+# $1 is 'state' or 'home', naming which of the two the gate should resolve.
+start_holder_wrapper() {
+  local kind=$1 root=$2 id=$3 wt=$4 runner=${5:-sleep 60} pid tries=0
+  mkdir -p "$wt"
+  if [ "$kind" = home ]; then
+    FM_HOME="$root" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+      bash -c 'cd "$2" && "$1" acquire "$3" >/dev/null 2>&1 && exec $4' _ "$GATE" "$wt" "$id" "$runner" &
+  else
+    FM_STATE_OVERRIDE="$root" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+      bash -c 'cd "$2" && "$1" acquire "$3" >/dev/null 2>&1 && exec $4' _ "$GATE" "$wt" "$id" "$runner" &
+  fi
+  pid=$!
+  FIXTURE_PIDS+=("$pid")
+  while [ "$tries" -lt 300 ]; do
+    case "$(FM_GATE_LOCK_DIR="$GATE_LOCK" "$GATE" status 2>/dev/null)" in
+      *"held by: $id"*) printf '%s\n' "$pid"; return 0 ;;
+    esac
+    tries=$((tries + 1))
+    sleep 0.05
+  done
+  fail "the holder wrapper never took the hold for $id"
+}
+
 gate() {
   local state=$1
   shift
@@ -374,18 +403,20 @@ test_abandoned_hold_is_broken_but_a_live_run_is_not() {
   GATE_LOCK=$(new_lock abandoned)
   wt="$TMP_ROOT/abandoned-wt"
   register_task "$state" task-a "$wt"
-  gate "$state" acquire task-a >/dev/null 2>&1
+  # The holder's turn ended: the wrapper that took the hold has exited, so its
+  # recorded controlling process is gone. That is what an abandoned hold IS.
+  FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    bash -c '"$1" acquire "$2" >/dev/null 2>&1' _ "$GATE" task-a
 
-  # Owner has no check work: past the stale age, the hold is abandoned.
+  # Past the stale age with the holder's process gone, the hold is abandoned.
   out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_STALE_SECONDS=0 \
     "$GATE" acquire task-b 2>/dev/null); rc=$?
   expect_code 0 "$rc" "an abandoned hold must be broken for the next task"
   assert_contains "$out" "queue held by you: task-b" "breaking an abandoned hold must hand the queue over"
 
-  # Same age, but the owner's run is genuinely alive: the hold stands.
+  # Same age, but the holder's own process is genuinely alive: the hold stands.
   gate "$state" release task-b >/dev/null 2>&1
-  gate "$state" acquire task-a >/dev/null 2>&1
-  start_fixture_process "$wt/pytest-suite" >/dev/null
+  start_holder_wrapper state "$state" task-a "$wt" >/dev/null
   out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_STALE_SECONDS=0 \
     "$GATE" acquire task-b 2>/dev/null); rc=$?
   expect_code 1 "$rc" "a hold whose owner is still running must not be broken by age alone"
@@ -404,10 +435,9 @@ test_a_live_run_in_another_home_keeps_its_hold() {
   GATE_LOCK=$(new_lock cross-home-stale)
   wt="$TMP_ROOT/cross-home-wt"
   register_task "$home_a/state" task-a "$wt"
-  gate_home "$home_a" acquire task-a >/dev/null 2>&1
-  start_fixture_process "$wt/pytest-suite" >/dev/null
+  start_holder_wrapper home "$home_a" task-a "$wt" >/dev/null
 
-  # home-b knows nothing about task-a; only the hold itself records its worktree.
+  # home-b knows nothing about task-a; only the hold itself records the holder.
   out=$(FM_HOME="$home_b" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_STALE_SECONDS=0 \
     "$GATE" acquire task-b 2>/dev/null); rc=$?
   expect_code 1 "$rc" "a hold whose owner runs in another home must not be broken by age"
@@ -415,6 +445,102 @@ test_a_live_run_in_another_home_keeps_its_hold() {
   out=$(gate_home "$home_b" status 2>&1)
   assert_contains "$out" "held by: task-a" "the hold must survive the other home's stale probe"
   pass "fm-gate.sh: a live run in another home keeps its hold across the stale rule"
+}
+
+# The reported shape, and the one the mandated one-liner always produces: the
+# holder's only process carrying the worktree path is the wrapper shell, which the
+# issuance probe must skip because it is also a waiter, while the runner it
+# started carries no path and no runner name in its argv at all. Inferring holder
+# liveness from command text therefore declared a genuinely running suite dead and
+# broke its hold at 25 minutes - the exact two-full-runs hazard the queue exists
+# to prevent. Liveness is now the recorded holder process, so no argv is consulted.
+test_a_holder_whose_runner_is_invisible_to_argv_keeps_its_hold() {
+  local state wt out rc
+  state=$(new_state invisible-runner)
+  GATE_LOCK=$(new_lock invisible-runner)
+  wt="$TMP_ROOT/invisible-runner-wt"
+  register_task "$state" task-a "$wt"
+  start_holder_wrapper state "$state" task-a "$wt" >/dev/null
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_STALE_SECONDS=0 \
+    "$GATE" acquire task-b 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "a holder whose runner carries no worktree path must keep its hold"
+  assert_contains "$out" "QUEUE NOT YOURS - held by: task-a" \
+    "the running holder must still be named as the holder"
+  out=$(gate "$state" status 2>&1)
+  assert_contains "$out" "held by: task-a" "the stale rule must leave a running holder's hold alone"
+  pass "fm-gate.sh: a holder whose runner is invisible to argv keeps its hold"
+}
+
+# The break must be a compare-and-swap, not a decision followed by a delete. The
+# holder can release while the breaker is deciding, a new contender can take a
+# brand-new hold at the same path, and the breaker then removes a hold that is
+# milliseconds old and takes the queue - two full runs, and the first holder's own
+# release refused because the hold records the second. The break mutex does not
+# help: there is only ever one breaker here.
+test_a_hold_taken_during_the_decision_is_not_broken() {
+  local state fakebin live out rc breaker
+  state=$(new_state break-cas)
+  GATE_LOCK=$(new_lock break-cas)
+
+  # A stale hold whose recorded holder process is alive but is NOT the recorded
+  # one (the start times differ), so the breaker decides "abandoned" and proceeds.
+  live=$(start_fixture_process "$TMP_ROOT/break-cas-idle" )
+  mkdir -p "$GATE_LOCK"
+  printf '%s\n' "task-dead" > "$GATE_LOCK/owner"
+  printf '%s\n' "$TMP_ROOT/break-cas-wt" > "$GATE_LOCK/owner_worktree"
+  printf '%s\n' "$live" > "$GATE_LOCK/owner_pid"
+  printf '%s\n' "a start time this process never had" > "$GATE_LOCK/owner_pid_start"
+  printf '%s\n' "token-of-the-stale-hold" > "$GATE_LOCK/token"
+  age_path "$GATE_LOCK" 3600
+
+  # Both liveness paths are slowed, so the window is open whether the holder is
+  # judged by its recorded process (ps) or, for a hold from an older copy of the
+  # script that records none, by the argv probe (pgrep).
+  fakebin=$(fm_fakebin "$TMP_ROOT/break-cas")
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+sleep 1
+echo "Thu Jan  1 00:00:00 2026"
+SH
+  cat > "$fakebin/pgrep" <<'SH'
+#!/usr/bin/env bash
+sleep 1
+exit 1
+SH
+  chmod +x "$fakebin/ps" "$fakebin/pgrep"
+
+  ( PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+      "$GATE" acquire task-b >"$TMP_ROOT/break-cas.out" 2>"$TMP_ROOT/break-cas.err"
+    printf '%s\n' "$?" >"$TMP_ROOT/break-cas.rc" ) &
+  breaker=$!
+
+  # Wait for the breaker to enter its decision rather than guessing at a delay:
+  # it holds the break mutex for exactly that span.
+  rc=0
+  while [ "$rc" -lt 400 ]; do
+    [ -d "$GATE_LOCK.breaking" ] && break
+    rc=$((rc + 1))
+    sleep 0.01
+  done
+  [ -d "$GATE_LOCK.breaking" ] || fail "the breaker never entered its decision"
+
+  # The holder releases and a fresh contender takes the hold, both while the
+  # breaker is still deciding about the hold that is now gone.
+  gate "$state" release task-dead >/dev/null 2>&1
+  out=$(gate "$state" acquire task-c 2>&1); rc=$?
+  expect_code 0 "$rc" "the fresh contender must be able to take the released hold"
+  assert_contains "$out" "queue held by you: task-c" "the fresh contender must hold the queue"
+  wait "$breaker"
+
+  rc=$(cat "$TMP_ROOT/break-cas.rc")
+  out=$(cat "$TMP_ROOT/break-cas.out")
+  expect_code 1 "$rc" "the breaker must not be granted a queue held by a hold it never judged"
+  assert_contains "$out" "QUEUE NOT YOURS - held by: task-c" \
+    "the breaker must be refused and must name the fresh holder"
+  out=$(gate "$state" status 2>&1)
+  assert_contains "$out" "held by: task-c" "the fresh holder's hold must survive the breaker"
+  pass "fm-gate.sh: a hold taken while a break is being decided is not broken"
 }
 
 test_a_live_run_outside_the_hold_refuses_a_free_queue() {
@@ -558,6 +684,8 @@ test_two_homes_contend_for_one_hold
 test_release_is_owner_only
 test_abandoned_hold_is_broken_but_a_live_run_is_not
 test_a_live_run_in_another_home_keeps_its_hold
+test_a_holder_whose_runner_is_invisible_to_argv_keeps_its_hold
+test_a_hold_taken_during_the_decision_is_not_broken
 test_a_live_run_outside_the_hold_refuses_a_free_queue
 test_waiting_workers_do_not_block_each_other
 test_a_waiting_worker_holding_the_gate_command_does_not_block_issuance

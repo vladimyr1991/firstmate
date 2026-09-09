@@ -1171,8 +1171,15 @@ test_gate_queue_contract_reaches_ship_and_scout() {
     # One command carries wait, run, and release, because the wait dies with the
     # turn that started it; the release hangs off ';' so a failed run still frees
     # the queue.
-    assert_grep "'$ROOT/bin/fm-gate.sh' acquire $id --wait && { echo \"working: queue taken, gate running\" >> '$home/state/$id.status'; {the project's full gate command}; }; '$ROOT/bin/fm-gate.sh' release $id" "$brief" \
+    assert_grep "rc=1; '$ROOT/bin/fm-gate.sh' acquire $id --wait && { echo \"working: queue taken, gate running\" >> '$home/state/$id.status'; {the project's full gate command}; rc=\$?; }; '$ROOT/bin/fm-gate.sh' release $id; (exit \$rc)" "$brief" \
       "$id ($kind): queue contract lost the single acquire-run-release command"
+    # The command must carry the GATE's status out past the release. Ending on the
+    # release made a red gate - and a queue that was never taken, so the gate never
+    # ran at all - both report success.
+    assert_grep "That command's exit status is the GATE's own" "$brief" \
+      "$id ($kind): queue contract lost the exit-status rule"
+    assert_grep "the queue was never taken and the gate never ran, and neither of those is a finished run" "$brief" \
+      "$id ($kind): the exit-status rule lost what a non-zero status means"
     assert_grep "The wait lives only inside your turn and dies with it" "$brief" \
       "$id ($kind): queue contract lost the reason the wait cannot span turns"
     assert_grep "Release even when the run fails" "$brief" \
@@ -1222,7 +1229,7 @@ test_gate_queue_quotes_foreign_firstmate_path() {
     "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "$id: brief was not scaffolded"
-  assert_grep "$gate acquire $id --wait && { echo \"working: queue taken, gate running\" >> '$home/state/$id.status'; {the project's full gate command}; }; $gate release $id" "$brief" \
+  assert_grep "rc=1; $gate acquire $id --wait && { echo \"working: queue taken, gate running\" >> '$home/state/$id.status'; {the project's full gate command}; rc=\$?; }; $gate release $id; (exit \$rc)" "$brief" \
     "the queue command must shell-quote an absolute Firstmate gate path"
   assert_grep "check \`$gate status\`" "$brief" \
     "the end-of-wait rule must shell-quote the gate path it names"

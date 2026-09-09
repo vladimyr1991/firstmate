@@ -461,9 +461,10 @@ Do not ask firstmate for the queue and do not wait to be given it - taking it is
 The queue covers FULL runs, the whole suite and its browser half, and deliberately not a single targeted test or a look at the app in a browser; those were measured to be far lighter, and widening the queue to cover them would halve the fleet's parallelism against a hazard that is not there.
 
 Take the queue, run the gate, and release it in ONE command, and do not end your turn before that command returns:
-   \`$GATE_CMD acquire $ID --wait && { echo "working: queue taken, gate running" >> $STATUS_FILE; {the project's full gate command}; }; $GATE_CMD release $ID\`
+   \`rc=1; $GATE_CMD acquire $ID --wait && { echo "working: queue taken, gate running" >> $STATUS_FILE; {the project's full gate command}; rc=\$?; }; $GATE_CMD release $ID; (exit \$rc)\`
 The wait lives only inside your turn and dies with it, so "start the wait, write a status line, end the turn" leaves you awake with no wait running and stopped forever - three workers stood exactly that way in one night.
 Release even when the run fails, which is why the release hangs off \`;\` and not off \`&&\`: an abandoned hold is only broken after 25 minutes, and every minute of that is paid by the workers queued behind you.
+That command's exit status is the GATE's own, which is what \`rc\` carries past the release: a non-zero status means either the gate failed or the queue was never taken and the gate never ran, and neither of those is a finished run - without it the release's own success would report a red gate, or a refused queue, as green.
 
 Append the waiting line BEFORE you run that command, and let the command itself write the running line, which is why that line sits inside it:
    before the command: \`$PAUSED_VERB: waiting for the test-gate queue\`
