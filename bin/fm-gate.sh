@@ -174,12 +174,59 @@ elif [ -n "${XDG_STATE_HOME:-}" ]; then
 elif [ -n "${HOME:-}" ]; then
   LOCK="$HOME/.local/state/firstmate/fm-gate-lock"
 fi
-# A trailing slash on the configured path put the break marker INSIDE the hold,
-# where `mkdir` refreshed the hold's own mtime and every age read back as 0 -
-# silently and permanently disabling both the 25-minute rule and the ceiling.
-while [ -n "$LOCK" ] && [ "$LOCK" != / ] && [ "${LOCK%/}" != "$LOCK" ]; do
-  LOCK=${LOCK%/}
-done
+# Canonical form of $1: repeated separators collapsed, `.` components dropped,
+# `..` resolved against what precedes it. Empty output means the path names
+# nothing this script can hold. Purely lexical by design - the hold's own leaf is
+# never followed through a symlink, because a symlinked hold must still reach
+# hold_is_foreign as the foreign entry it is.
+canonical_path() {
+  local path=$1 abs='' part rest joined=''
+  local -a stack=()
+  case "$path" in /*) abs=1 ;; esac
+  rest=$path
+  while [ -n "$rest" ]; do
+    part=${rest%%/*}
+    if [ "$part" = "$rest" ]; then rest=; else rest=${rest#*/}; fi
+    case "$part" in
+      ''|.) ;;
+      ..)
+        if [ "${#stack[@]}" -gt 0 ] && [ "${stack[$(( ${#stack[@]} - 1 ))]}" != ".." ]; then
+          unset "stack[$(( ${#stack[@]} - 1 ))]"
+          stack=("${stack[@]}")
+        elif [ -z "$abs" ]; then
+          stack+=("..")
+        fi
+        ;;
+      *) stack+=("$part") ;;
+    esac
+  done
+  for part in "${stack[@]:-}"; do
+    [ -n "$part" ] || continue
+    joined="${joined:+$joined/}$part"
+  done
+  if [ -n "$abs" ]; then
+    printf '%s\n' "/$joined"
+  else
+    printf '%s\n' "$joined"
+  fi
+}
+
+# Any spelling that leaves the hold's own name unresolved - a trailing slash, a
+# trailing `.`, a trailing `..`, doubled separators - used to put the break
+# marker INSIDE the hold, where `mkdir` refreshed the hold's own mtime and every
+# age read back as 0: both the 25-minute rule and the ceiling silently and
+# permanently disabled, with nothing printed to say why. Canonicalising here is
+# what makes the marker a sibling for every input shape; a path that canonicalises
+# to nothing nameable is refused rather than derived from.
+LOCK_UNUSABLE=
+if [ -n "$LOCK" ]; then
+  LOCK_UNUSABLE=$LOCK
+  LOCK=$(canonical_path "$LOCK")
+  case "$LOCK" in
+    ''|/|..|*/..) LOCK= ;;
+    *) LOCK_UNUSABLE= ;;
+  esac
+fi
 STALE="${FM_GATE_STALE_SECONDS:-1500}"
 case "$STALE" in ''|*[!0-9]*) STALE=1500 ;; esac
 MAX_HOLD="${FM_GATE_MAX_HOLD_SECONDS:-7200}"
@@ -189,8 +236,9 @@ POLL="${FM_GATE_POLL_SECONDS:-30}"
 # both succeed and spin, and only a value test catches all of them.
 case "$POLL" in ''|*[!0-9]*) POLL=30 ;; esac
 [ "$POLL" -gt 0 ] || POLL=30
-# Derived from the hold's own parent and name rather than by concatenation, so
-# the marker is a sibling of the hold whatever the configured path looked like.
+# Derived from the canonical hold's own parent and name, so the marker is a
+# sibling of the hold and never an entry inside it, for every spelling of the
+# configured path.
 BREAK_MUTEX=
 [ -n "$LOCK" ] && BREAK_MUTEX="$(dirname "$LOCK")/$(basename "$LOCK").breaking"
 # Deliberately NOT $STALE: a marker held for the length of one decision must not
@@ -305,9 +353,21 @@ refuse_unresolvable_hold() {
   echo "cannot resolve the hold path: set FM_GATE_LOCK_DIR, XDG_STATE_HOME or HOME" >&2
 }
 
+# A configured path that canonicalises to nothing this script can name a hold at.
+# Refused rather than used, because a marker derived from it would land inside
+# the hold and disable both break rules without saying so.
+refuse_unusable_hold_path() {
+  echo "QUEUE NOT AVAILABLE - the configured hold path $LOCK_UNUSABLE does not name a directory that can be held; set FM_GATE_LOCK_DIR to a plain directory path"
+  echo "unusable hold path: $LOCK_UNUSABLE" >&2
+}
+
 require_hold_path() {
   [ -n "$LOCK" ] && return 0
-  refuse_unresolvable_hold
+  if [ -n "$LOCK_UNUSABLE" ]; then
+    refuse_unusable_hold_path
+  else
+    refuse_unresolvable_hold
+  fi
   exit 1
 }
 

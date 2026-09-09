@@ -1231,15 +1231,34 @@ test_gate_queue_contract_reaches_ship_and_scout() {
     # queue hold must still name the tool it is about. A prefix assertion let an
     # unescaped backtick pair - command substitution inside the scaffold's own
     # heredoc - delete the script name from every delivered brief and stay green.
+    # Rule 2 governs the writes outside the worktree by PRINCIPLE, not by a closed
+    # list. Three rounds running, a closed list turned out to omit a write the
+    # same brief mandates - the queue hold, then the measurement scratch file,
+    # then the delivery pipeline's own state - and each omission read as licence
+    # to skip the step. The principle covers whatever the brief prescribes; the
+    # examples are grip, and the second sentence keeps the licence tight.
+    assert_grep "2. Stay inside this worktree; the only writes you may make outside it are the ones this brief itself prescribes - for example " "$brief" \
+      "$id ($kind): rule 2 lost the principle that the brief's own prescriptions are the licence"
+    assert_grep "Those are examples and not the whole list: a step this brief mandates carries its own permission, so this rule is never a reason to skip one, and a write this brief does not mandate has no permission at all." "$brief" \
+      "$id ($kind): rule 2 lost the clause that keeps the licence exactly as wide as the brief"
+    assert_no_grep "the only things you may write outside it are" "$brief" \
+      "$id ($kind): rule 2 went back to a closed list, which has omitted a mandated write every round"
+    # The queue hold must still be one of the examples, and must still name the
+    # tool: an unescaped backtick pair once deleted the script name from every
+    # delivered brief while the assertions stayed green.
+    assert_grep "the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you when you take and release the queue above" "$brief" \
+      "$id ($kind): rule 2 stopped naming the queue hold, or the tool that takes it"
+    assert_grep "the status file below" "$brief" \
+      "$id ($kind): rule 2 stopped naming the status file it prescribes"
     if [ "$kind" = scout ]; then
-      assert_grep "2. Stay inside this worktree; the only things you may write outside it are the report, the status file below, and the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you when you take and release the queue above - each of those is prescribed by this brief, so this rule is never a reason to skip one of them, and it is licence for nothing else outside this worktree." "$brief" \
-        "$id ($kind): scout rule 2 no longer enumerates exactly the writes this brief prescribes"
+      assert_grep "for example the report, the status file below" "$brief" \
+        "$id ($kind): scout rule 2 stopped naming the report it exists to produce"
     else
-      assert_grep "2. Stay inside this worktree; the only things you may write outside it are the status file below, the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you when you take and release the queue above, and the scratch file or scratch directory of a base-revision measurement this brief prescribes above - each of those is prescribed by this brief, so this rule is never a reason to skip one of them, and it is licence for nothing else outside this worktree." "$brief" \
-        "$id ($kind): ship rule 2 no longer enumerates exactly the writes this brief prescribes"
       assert_no_grep "modify nothing outside it" "$brief" \
         "$id ($kind): ship rule 2 kept the categorical wording its own queue command breaks"
-      # The measurement it now names is still prescribed above it.
+      assert_grep "the scratch file or scratch directory of a base-revision measurement" "$brief" \
+        "$id ($kind): ship rule 2 stopped naming the measurement scratch write"
+      # The measurement it names is still prescribed above it.
       assert_grep "git show <base-sha>:<path> > /tmp/<scratch-file>" "$brief" \
         "$id ($kind): rule 2 names a scratch write the brief no longer prescribes"
     fi

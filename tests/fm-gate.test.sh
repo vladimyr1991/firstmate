@@ -736,6 +736,41 @@ test_a_trailing_slash_on_the_hold_path_still_breaks_an_abandoned_hold() {
   pass "fm-gate.sh: a trailing slash on the hold path still breaks an abandoned hold"
 }
 
+# Every other spelling that leaves the hold's own name unresolved is the same
+# defect: a trailing `.` or `..` also put the marker inside the hold, so both
+# break rules stayed silently disabled while a trailing-slash-only guard read as
+# a fix. The hold is one directory; how the operator spelled it must not matter.
+test_dot_terminated_hold_paths_still_break_an_abandoned_hold() {
+  local state wt out err rc base spelling
+  state=$(new_state dot-path)
+  base=$(new_lock dot-path)
+  GATE_LOCK="$base"
+  wt="$TMP_ROOT/dot-path-wt"
+  register_task "$state" task-a "$wt"
+  err="$TMP_ROOT/dot-path.err"
+
+  for spelling in "$base/." "$base/sub/.." "$base//" "$base/./"; do
+    rm -rf "$GATE_LOCK" "$base.breaking"
+    mkdir -p "$GATE_LOCK"
+    printf '%s\n' task-dead > "$GATE_LOCK/owner"
+    printf '%s\n' "$wt" > "$GATE_LOCK/owner_worktree"
+    printf '%s\n' token-of-the-stale-hold > "$GATE_LOCK/token"
+    age_path "$GATE_LOCK" 90000
+
+    out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$spelling" \
+      "$GATE" acquire task-b 2>"$err"); rc=$?
+    expect_code 0 "$rc" "an abandoned hold spelled '$spelling' must still be broken"
+    assert_contains "$out" "queue held by you: task-b" \
+      "the break must hand the queue over for the hold spelled '$spelling'"
+    assert_contains "$(cat "$err")" "breaking an abandoned hold" \
+      "the break of '$spelling' must still say what it did"
+    [ -z "$(find "$GATE_LOCK" -maxdepth 1 -name '*breaking*' 2>/dev/null)" ] \
+      || fail "a marker was created inside the hold for the path spelled '$spelling'"
+    gate "$state" release task-b >/dev/null 2>&1
+  done
+  pass "fm-gate.sh: dot- and dotdot-terminated hold paths still break an abandoned hold"
+}
+
 # The hold path is resolved from three environment variables, none of which is
 # guaranteed. Dereferencing an unset HOME under `set -u` aborted the whole script
 # before it dispatched anything - a bash diagnostic instead of one of this
@@ -757,6 +792,15 @@ test_an_unresolvable_hold_path_refuses_by_name() {
   out=$(env -u HOME -u XDG_STATE_HOME -u FM_GATE_LOCK_DIR "$GATE" status 2>&1); rc=$?
   expect_code 1 "$rc" "status with no resolvable hold path must fail too"
   assert_not_contains "$out" "unbound variable" "status must refuse by name as well"
+
+  # A path that canonicalises to nothing holdable is refused for the same reason
+  # rather than used: a marker derived from it lands inside the hold.
+  out=$(FM_GATE_LOCK_DIR=/ "$GATE" acquire task-a 2>&1); rc=$?
+  expect_code 1 "$rc" "a hold path that names no holdable directory must be refused"
+  assert_contains "$out" "QUEUE NOT AVAILABLE" \
+    "an unusable hold path must refuse visibly on stdout"
+  assert_contains "$out" "does not name a directory that can be held" \
+    "the refusal must say what is wrong with the configured path"
   pass "fm-gate.sh: an unresolvable hold path refuses by name instead of aborting"
 }
 
@@ -1060,6 +1104,7 @@ test_an_orphaned_runner_keeps_the_holders_hold
 test_a_hold_past_the_ceiling_is_broken_however_alive
 test_a_ceiling_below_the_stale_age_still_breaks_the_hold
 test_a_trailing_slash_on_the_hold_path_still_breaks_an_abandoned_hold
+test_dot_terminated_hold_paths_still_break_an_abandoned_hold
 test_an_unresolvable_hold_path_refuses_by_name
 test_a_foreign_break_marker_is_refused_visibly
 test_an_active_break_marker_survives_a_low_stale_age
