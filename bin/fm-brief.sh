@@ -452,7 +452,7 @@ fi
 # rule whose reason the worker cannot see is talked around by the first
 # inconvenient case, which is exactly how the spoken version of this contract
 # died with every worker that heard it.
-GATE_CMD="$FM_ROOT/bin/fm-gate.sh"
+GATE_CMD=$(shell_quote "$FM_ROOT/bin/fm-gate.sh")
 IFS= read -r -d '' GATE_SECTION <<EOF || true
 **A full run of the project's test gate is queued, and you take the queue yourself.**
 This machine sustains one full gate run; two at once starve each other for memory, and one such pair cost an hour when the system killed one of them halfway through.

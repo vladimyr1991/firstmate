@@ -1171,7 +1171,7 @@ test_gate_queue_contract_reaches_ship_and_scout() {
     # One command carries wait, run, and release, because the wait dies with the
     # turn that started it; the release hangs off ';' so a failed run still frees
     # the queue.
-    assert_grep "$ROOT/bin/fm-gate.sh acquire $id --wait && {the project's full gate command}; $ROOT/bin/fm-gate.sh release $id" "$brief" \
+    assert_grep "'$ROOT/bin/fm-gate.sh' acquire $id --wait && {the project's full gate command}; '$ROOT/bin/fm-gate.sh' release $id" "$brief" \
       "$id ($kind): queue contract lost the single acquire-run-release command"
     assert_grep "The wait lives only inside your turn and dies with it" "$brief" \
       "$id ($kind): queue contract lost the reason the wait cannot span turns"
@@ -1200,6 +1200,30 @@ test_gate_queue_contract_reaches_ship_and_scout() {
       "$id ($kind): the end-of-wait rule narrowed to enumerated endings"
   done
   pass "fm-brief.sh: ship and scout briefs carry the self-service test-gate queue contract"
+}
+
+# The queue line is one command the worker is told to run verbatim, so a
+# firstmate root with a space or an apostrophe in it must arrive quoted; unquoted
+# it splits into words and the worker runs something else entirely.
+test_gate_queue_quotes_foreign_firstmate_path() {
+  local home id brief foreign_root gate
+  home="$TMP_ROOT/gate-queue-foreign-home"
+  foreign_root="$TMP_ROOT/firstmate helper's root"
+  write_registry "$home"
+  id="brief-gate-foreign-d2"
+  gate=$(printf '%s' "$foreign_root/bin/fm-gate.sh" | sed "s/'/'\\\\''/g")
+  gate="'$gate'"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$foreign_root" FM_CLASSIFY_PAUSED_VERB=paused \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "$id: brief was not scaffolded"
+  assert_grep "$gate acquire $id --wait && {the project's full gate command}; $gate release $id" "$brief" \
+    "the queue command must shell-quote an absolute Firstmate gate path"
+  assert_grep "check \`$gate status\`" "$brief" \
+    "the end-of-wait rule must shell-quote the gate path it names"
+  assert_no_grep "$foreign_root/bin/fm-gate.sh acquire" "$brief" \
+    "the queue command must not emit an unquoted path containing a space"
+  pass "fm-brief.sh: the test-gate queue command quotes its Firstmate-owned gate path"
 }
 
 # A worker once closed on a neighbour's build numbers after the neighbour merged
@@ -1971,6 +1995,7 @@ test_no_mistakes_dod_requires_verified_gate_claims
 test_ship_project_memory_wording
 test_ship_baseline_and_no_placeholder_contract
 test_gate_queue_contract_reaches_ship_and_scout
+test_gate_queue_quotes_foreign_firstmate_path
 test_own_deployment_reporting_rule
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
