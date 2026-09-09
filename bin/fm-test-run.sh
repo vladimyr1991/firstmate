@@ -132,7 +132,7 @@ now_ms() {
 # unclassified so new tests are still runnable and visible in summaries.
 family_for_basename() {
   case "$1" in
-    fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
+    fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|fm-board-truth.test.sh|\
     fm-brief.test.sh|fm-gate.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
@@ -839,6 +839,9 @@ families_for_changed_path() {
       printf '%s\n' "__script__:$(basename "$path")"
       ;;
     bin/fm-quota-dash.sh|bin/fm-test-run.sh|bin/fm-test-isolation-proof.sh)
+      printf '%s\n' pure-contract-unit
+      ;;
+    bin/fm-board-truth.sh|bin/fm-notion-index-lib.sh|bin/fm-notion-link.sh)
       printf '%s\n' pure-contract-unit
       ;;
     bin/backends/herdr*|bin/fm-herdr-lab.sh|tests/herdr-test-safety.sh)
