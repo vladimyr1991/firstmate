@@ -1215,21 +1215,58 @@ test_gate_queue_contract_reaches_ship_and_scout() {
     # worktree, and the queue hold is written outside it. Missing from that list,
     # the same brief that mandates the queue also hands a worker a literal reason
     # to skip it - the first-inconvenient-case failure these reasons exist to stop.
+    # Rule 2 is a CLOSED enumeration of the writes outside the worktree, so it is
+    # pinned WHOLE: every write this brief prescribes must be named in it, and the
+    # queue hold must still name the tool it is about. A prefix assertion let an
+    # unescaped backtick pair - command substitution inside the scaffold's own
+    # heredoc - delete the script name from every delivered brief and stay green.
     if [ "$kind" = scout ]; then
-      assert_grep "the only things you may write outside it are the report, the status file below, and the test-gate queue hold" "$brief" \
-        "$id ($kind): scout rule 2 excludes the queue hold the same brief mandates"
-      assert_grep "this rule is never a reason to skip the queue" "$brief" \
-        "$id ($kind): scout rule 2 lost the reason it does not excuse skipping the queue"
+      assert_grep "2. Stay inside this worktree; the only things you may write outside it are the report, the status file below, and the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you when you take and release the queue above - each of those is prescribed by this brief, so this rule is never a reason to skip one of them, and it is licence for nothing else outside this worktree." "$brief" \
+        "$id ($kind): scout rule 2 no longer enumerates exactly the writes this brief prescribes"
     else
-      assert_grep "the only things you may write outside it are the status file below and the test-gate queue hold" "$brief" \
-        "$id ($kind): ship rule 2 forbids the queue hold and the status file the same brief mandates"
-      assert_grep "this rule is never a reason to skip either of them" "$brief" \
-        "$id ($kind): ship rule 2 lost the reason it does not excuse skipping the queue"
+      assert_grep "2. Stay inside this worktree; the only things you may write outside it are the status file below, the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you when you take and release the queue above, and the scratch file or scratch directory of a base-revision measurement this brief prescribes above - each of those is prescribed by this brief, so this rule is never a reason to skip one of them, and it is licence for nothing else outside this worktree." "$brief" \
+        "$id ($kind): ship rule 2 no longer enumerates exactly the writes this brief prescribes"
       assert_no_grep "modify nothing outside it" "$brief" \
         "$id ($kind): ship rule 2 kept the categorical wording its own queue command breaks"
+      # The measurement it now names is still prescribed above it.
+      assert_grep "git show <base-sha>:<path> > /tmp/<scratch-file>" "$brief" \
+        "$id ($kind): rule 2 names a scratch write the brief no longer prescribes"
     fi
   done
   pass "fm-brief.sh: ship and scout briefs carry the self-service test-gate queue contract"
+}
+
+# The scaffold builds both worker briefs in UNQUOTED heredocs, so an unescaped
+# backtick in their prose is a command substitution that runs while the brief is
+# written. Generating from the firstmate root is the case that executed
+# bin/fm-gate.sh outright; generating from a temp directory only printed an error
+# and dropped the name. Both leave the delivered brief silently mangled, so this
+# asserts the emitted text AND that scaffolding says nothing on stderr.
+test_brief_prose_is_not_executed_while_scaffolding() {
+  local home id brief err kind id_kind
+  home="$TMP_ROOT/brief-prose-home"
+  write_registry "$home"
+  err="$TMP_ROOT/brief-prose.err"
+
+  for id_kind in "brief-prose-d2:direct-PR" "brief-prose-d4:scout"; do
+    id=${id_kind%%:*}
+    kind=${id_kind##*:}
+    # From the firstmate root, where a bare `bin/fm-gate.sh` resolves and runs.
+    if [ "$kind" = scout ]; then
+      ( cd "$ROOT" && FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+        "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>"$err" )
+    else
+      ( cd "$ROOT" && FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+        "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$kind" >/dev/null 2>"$err" )
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded from the firstmate root"
+    [ ! -s "$err" ] \
+      || fail "$id ($kind): scaffolding ran something: $(cat "$err")"
+    assert_grep "the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you" "$brief" \
+      "$id ($kind): rule 2 lost the tool it names to a command substitution"
+  done
+  pass "fm-brief.sh: worker-brief prose is emitted literally, never executed while scaffolding"
 }
 
 # The queue line is one command the worker is told to run verbatim, so a
@@ -2025,6 +2062,7 @@ test_no_mistakes_dod_requires_verified_gate_claims
 test_ship_project_memory_wording
 test_ship_baseline_and_no_placeholder_contract
 test_gate_queue_contract_reaches_ship_and_scout
+test_brief_prose_is_not_executed_while_scaffolding
 test_gate_queue_quotes_foreign_firstmate_path
 test_own_deployment_reporting_rule
 test_herdr_lab_contract_is_explicit_and_complete

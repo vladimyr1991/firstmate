@@ -14,6 +14,13 @@
 # pre-created there makes every worker on the machine refuse without ever running
 # a gate, indefinitely, until a human removes it. fm-procevent-lib.sh already
 # keeps its machine-wide claim root there for the same reason.
+# NAMED LIMITATION of that choice, not a defect: the hold is per UNIX USER. Two
+# different users running fleets on one machine each resolve their own hold and
+# cannot see each other's, so that machine can carry two full runs at once -
+# the hazard this queue exists to prevent, arriving from the one direction a
+# per-user path cannot reach. Each user's own fleet is still serialized whole.
+# The remedy is explicit: point both fleets at ONE hold both users can write,
+# by setting FM_GATE_LOCK_DIR to the same path in both.
 # CORRECTNESS does not depend on FM_HOME. The hold path, the recorded holder
 # identity and the recorded owner worktree are all resolved without it: the owner
 # worktree comes from this home's metadata when it is there and otherwise from
@@ -138,7 +145,9 @@
 #   hold that is a symlink, is not a directory, or is not owned by this uid is
 #   refused outright: it is never broken, never removed, and never followed.
 # Environment: FM_GATE_LOCK_DIR overrides the machine-wide hold path (default
-#   ${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/fm-gate-lock); FM_HOME
+#   ${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/fm-gate-lock, which is one
+#   hold per unix user - set it to a shared writable path in every fleet when
+#   two different users run fleets on one machine); FM_HOME
 #   selects the home whose state/ the home-scoped issuance probe scans and
 #   nothing else; FM_STATE_OVERRIDE overrides that state directory;
 #   FM_GATE_STALE_SECONDS sets the abandoned-hold age; FM_GATE_MAX_HOLD_SECONDS
@@ -267,6 +276,14 @@ refuse_foreign_hold() {
   # On stdout as well as stderr, for the same reason the busy refusals are.
   echo "QUEUE NOT AVAILABLE - the hold at $LOCK is not owned by this user; refusing to touch it"
   echo "hold at $LOCK is not owned by this user" >&2
+}
+
+# A hold that cannot be created is not a hold someone else is holding, and the
+# difference is the whole point: waiting out contention clears, waiting out an
+# unwritable parent never does. Refused loudly, on both streams, --wait included.
+refuse_unreachable_hold() {
+  echo "QUEUE NOT AVAILABLE - the hold at $LOCK cannot be created; its parent $(dirname "$LOCK") is missing or not writable by this user, so no wait can clear it"
+  echo "cannot create the hold at $LOCK: its parent is missing or not writable" >&2
 }
 
 worktree_of() {
@@ -408,7 +425,10 @@ case "${1:-}" in
     [ -n "$ID" ] || { echo "error: acquire needs a task id" >&2; exit 2; }
     WAIT=${3:-}
     [ -z "$WAIT" ] || [ "$WAIT" = "--wait" ] || { echo "error: unknown argument: $WAIT" >&2; exit 2; }
-    mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
+    if ! mkdir -p "$(dirname "$LOCK")" 2>/dev/null && [ ! -d "$(dirname "$LOCK")" ]; then
+      refuse_unreachable_hold
+      exit 1
+    fi
     # Resolved once, before any hold exists: a crewmate pane carries no FM_HOME,
     # so the metadata lookup finds nothing there and the worker's own worktree is
     # the task worktree by construction of the mandated one-liner.
@@ -416,6 +436,7 @@ case "${1:-}" in
     [ -n "$OWNER_WT" ] || OWNER_WT=$(cwd_worktree)
     [ -n "$OWNER_WT" ] || OWNER_WT="$WORKTREE_UNKNOWN"
     OWNER_READS=0
+    MISSING_READS=0
     while :; do
       # Waiting cannot help a hold this user may not touch, so --wait refuses too.
       if hold_is_foreign; then
@@ -451,6 +472,18 @@ case "${1:-}" in
         fi
         echo "queue held by you: $ID"
         exit 0
+      fi
+      # mkdir failed and nothing is at the path: contention cannot explain that,
+      # and no amount of waiting makes an unwritable parent writable. A brief
+      # budget covers a holder that released inside the same instant.
+      if [ ! -d "$LOCK" ]; then
+        if [ "$MISSING_READS" -lt 40 ]; then
+          MISSING_READS=$(( MISSING_READS + 1 ))
+          sleep 0.05
+          continue
+        fi
+        refuse_unreachable_hold
+        exit 1
       fi
       break_if_abandoned && continue
       HOLDER=$(owner)

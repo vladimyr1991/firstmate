@@ -886,6 +886,57 @@ EOF
   pass "fm-gate.sh: an unusable poll falls back to the default instead of spinning"
 }
 
+# A hold that cannot be created is not a hold someone else is holding. Moving the
+# default off world-writable /tmp made the parent reachable-or-not: it can be
+# absent and uncreatable, root-owned, or on an unmounted XDG_STATE_HOME. Reported
+# as contention it printed an empty holder - the shape a worker cannot act on -
+# and under --wait it waited forever on a path that can never appear, inside the
+# one command the worker's whole turn is blocked in.
+test_an_unusable_hold_parent_is_refused_rather_than_waited_out() {
+  local state parent out rc errf outf rcf waiter tries=0
+  state=$(new_state unusable-parent)
+  parent="$TMP_ROOT/unusable-parent"
+  mkdir -p "$parent"
+  GATE_LOCK="$parent/hold"
+  if [ "$(id -u)" = 0 ]; then
+    pass "fm-gate.sh: an unusable hold parent is refused rather than waited out (skipped as root)"
+    return 0
+  fi
+  chmod 500 "$parent"
+
+  out=$(gate "$state" acquire task-a 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "an acquire that cannot create the hold must fail"
+  assert_contains "$out" "QUEUE NOT AVAILABLE" \
+    "the refusal must be visible on stdout, like every other refusal a worker reads"
+  assert_not_contains "$out" "QUEUE NOT YOURS - held by: " \
+    "an uncreatable hold must never be reported as a hold with no holder"
+
+  # --wait must refuse too: no wait can make an unwritable parent writable.
+  outf="$TMP_ROOT/unusable-parent.out"; errf="$TMP_ROOT/unusable-parent.err"
+  rcf="$TMP_ROOT/unusable-parent.rc"
+  ( FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_POLL_SECONDS=1 \
+    "$GATE" acquire task-a --wait >"$outf" 2>"$errf"; printf '%s\n' "$?" > "$rcf" ) &
+  waiter=$!
+  FIXTURE_PIDS+=("$waiter")
+  while kill -0 "$waiter" 2>/dev/null && [ "$tries" -lt 150 ]; do
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  if kill -0 "$waiter" 2>/dev/null; then
+    kill "$waiter" 2>/dev/null
+    chmod 700 "$parent"
+    fail "acquire --wait parked on a hold path that can never appear"
+  fi
+  wait "$waiter" 2>/dev/null
+  expect_code 1 "$(cat "$rcf")" "acquire --wait must fail on an uncreatable hold"
+  assert_contains "$(cat "$outf")" "QUEUE NOT AVAILABLE" \
+    "the --wait refusal must reach stdout too"
+  assert_contains "$(cat "$errf")" "not writable" \
+    "the refusal must name why the hold cannot be created"
+  chmod 700 "$parent"
+  pass "fm-gate.sh: an unusable hold parent is refused rather than waited out"
+}
+
 # A fixed name in a shared directory can be pre-created by someone else. Such a
 # hold is refused outright and never removed - least of all followed through a
 # symlink into a directory this fleet does not own.
@@ -959,4 +1010,5 @@ test_a_waiting_worker_holding_the_gate_command_does_not_block_issuance
 test_a_dev_server_does_not_block_issuance
 test_an_unusable_poll_does_not_spin
 test_a_foreign_hold_is_refused_and_never_removed
+test_an_unusable_hold_parent_is_refused_rather_than_waited_out
 test_secondmate_homes_are_not_counted_as_runs
