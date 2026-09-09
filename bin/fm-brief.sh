@@ -95,6 +95,24 @@
 # colon, so a second escalation cannot evict the first under the shared
 # "default" key (bin/fm-classify-lib.sh owns that fold); firstmate's answer must
 # close each one with the same key it was opened with.
+# Ship and scout briefs both carry the test-gate queue contract, because a full
+# gate run costs the same on the machine whichever kind started it. It names
+# bin/fm-gate.sh by absolute path, has the worker take and release the queue
+# itself with no firstmate in the loop, prescribes the single acquire-run-release
+# command (the wait dies with the turn that started it), carries the running
+# status line INSIDE that command so it cannot be written while nothing runs and
+# the gate cannot be reported without starting, and states the unconditional rule that any
+# end of a wait is a reason to re-read state rather than to wait again. Each rule
+# carries its measured reason because the spoken version of this contract was
+# talked around by the first inconvenient case, twelve times in one day.
+# Ship briefs no longer mandate a baseline gate run before the first edit: the
+# captain withdrew that requirement after five workers in one evening stalled on
+# it, one of them holding the gate queue for a measurement nobody wanted. The
+# base-revision comparison mechanics stay, now framed as guidance for a run the
+# worker chooses to make.
+# Ship briefs also carry the own-deployment reporting rule: a worker reports only
+# the deployment it ran itself and names a neighbour's task and build when a
+# neighbour carried the change out instead.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -429,6 +447,38 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+# Test-gate queue contract, shared by ship and scout briefs. Both kinds run full
+# gates on the same machine, and the measured hazard is two FULL runs at once
+# (data/learnings.md, 2026-09-08). Each rule carries its one-phrase reason: a
+# rule whose reason the worker cannot see is talked around by the first
+# inconvenient case, which is exactly how the spoken version of this contract
+# died with every worker that heard it.
+GATE_CMD=$(shell_quote "$FM_ROOT/bin/fm-gate.sh")
+IFS= read -r -d '' GATE_SECTION <<EOF || true
+**A full run of the project's test gate is queued, and you take the queue yourself.**
+This machine sustains one full gate run; two at once starve each other for memory, and one such pair cost an hour when the system killed one of them halfway through.
+Do not ask firstmate for the queue and do not wait to be given it - taking it is your job, not a request.
+The queue covers FULL runs, the whole suite and its browser half, and deliberately not a single targeted test or a look at the app in a browser; those were measured to be far lighter, and widening the queue to cover them would halve the fleet's parallelism against a hazard that is not there.
+The hold covers the gate runs you launch yourself: a validation pipeline you drive runs its own test step outside this queue and takes no hold, so a green pipeline is never evidence that the machine was serialised while it ran.
+
+Take the queue, run the gate, and release it in ONE command, and do not end your turn before that command returns:
+   \`rc=1; $GATE_CMD acquire $ID --wait && { echo "working: queue taken, gate running" >> $STATUS_FILE; {the project's full gate command}; rc=\$?; }; $GATE_CMD release $ID; (exit \$rc)\`
+The wait lives only inside your turn and dies with it, so "start the wait, write a status line, end the turn" leaves you awake with no wait running and stopped forever - three workers stood exactly that way in one night.
+Release even when the run fails, which is why the release hangs off \`;\` and not off \`&&\`: an abandoned hold is only broken after 25 minutes, and every minute of that is paid by the workers queued behind you.
+That command's exit status is the GATE's own, which is what \`rc\` carries past the release: a non-zero status means either the gate failed or the queue was never taken and the gate never ran, and neither of those is a finished run - without it the release's own success would report a red gate, or a refused queue, as green.
+
+Append the waiting line BEFORE you run that command, and let the command itself write the running line, which is why that line sits inside it:
+   before the command: \`$PAUSED_VERB: waiting for the test-gate queue\`
+   written by the command the instant the queue becomes yours: \`working: queue taken, gate running\`
+Written from outside, that line can only be a guess: until \`acquire\` returns you are waiting and not working, and two workers in a row declared themselves running with zero processes alive.
+Inside the command the gate starts in the same breath as the line, so the queue can never be reported taken without the run starting - a worker who took the queue, reported it, and ended the turn owned the queue with nothing running and held three workers behind it.
+
+**The end of a wait, in any form whatsoever, is a reason to read the ground again and never a reason to wait again.**
+Read that as unconditional, because it deliberately names no shapes: while a rule enumerates the ways a wait can end - returned empty, cut off, reported killed - the one shape nobody listed walks straight past it, and that is why seven spoken warnings in a single day changed nothing.
+Whenever a wait of yours ends, for any reason at all, check \`$GATE_CMD status\` and check whether your own run is actually alive before you do anything else, including before waiting again.
+EOF
+GATE_SECTION=${GATE_SECTION%$'\n'}
+
 if [ "$KIND" = scout ]; then
 # A scout cuts no branch, so its sync step guards the base it investigates on
 # instead: a diagnosis drawn on a stale pooled base reports a fix as missing when
@@ -457,9 +507,11 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 $SCOUT_SYNC
+$GATE_SECTION
+
 # Rules
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+2. Stay inside this worktree; the only writes you may make outside it are the ones this brief itself prescribes - for example the report, the status file below, and the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you when you take and release the queue above. Those are examples and not the whole list: a step this brief mandates carries its own permission, so this rule is never a reason to skip one, and a write this brief does not mandate has no permission at all.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -470,9 +522,13 @@ $SCOUT_SYNC
    FYI progress lines; firstmate reads your pane for that.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
-   run to finish, a long test gate you started in this worktree to finish,
+   run to finish, the test-gate queue and the gate run you are holding open inside the one command
+   the test-gate queue contract above prescribes,
    an upstream release, a rate-limit reset): firstmate then leaves your idle pane alone and rechecks
    it on a long cadence instead of treating it as a possible wedge.
+   That queue-and-gate wait is one you are still sitting in, never one you left running: the queue
+   contract above owns that rule, and a \`$PAUSED_VERB:\` line is never a reason to end your turn while
+   that command has not returned.
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
@@ -640,24 +696,25 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 $SETUP_STEPS
 
-**Establish a test baseline before your first edit.** Run the project's own test gate the way its \`AGENTS.md\` or \`README.md\` documents it, before you change anything.
-A green baseline is what makes a later failure attributable to your work; without one you cannot tell your own breakage apart from breakage you inherited, and a gate run that selects zero tests is a no-op rather than a baseline, as is a check that has never executed a single run.
-When the gate you chose selects nothing, or the check you would cite has no run history at all, run the project's documented nonempty gate instead or record that no executable baseline exists; never call a zero-selection or never-executed result green evidence.
+**A baseline gate run before your first edit is NOT required.** The captain withdrew that requirement: five workers in one evening stumbled over it before writing a line of the work they were sent to do, and one of them took the test-gate queue for a measurement nobody had asked for and held three other workers behind it.
+Run the project's own test gate, the way its \`AGENTS.md\` or \`README.md\` documents it, when you have something to measure - after your change, or when you need to know whether a failure is yours - and take the queue for it as the section below prescribes.
+A gate run that selects zero tests is a no-op rather than evidence, as is a check that has never executed a single run; when the gate you chose selects nothing, or the check you would cite has no run history at all, run the project's documented nonempty gate instead, and never call a zero-selection or never-executed result green evidence.
 A gate that is green before your change and green after it proves that the change did not break what is still asserted, never that what it was asserting is still there, so when your change removes or rewrites tests, say which coverage went with them.
-If the baseline is already red, treat that as inherited breakage: append \`blocked [key=red-baseline]: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
-One narrow case is not inherited breakage: a baseline that fails in exactly the way this task was commissioned to fix is the task's starting condition, so record it as such in a \`working:\` line naming the gate and its failure rather than proceeding silently or stopping - any other failure in that run, including one merely adjacent to the fix, is still inherited breakage and still stops the task.
-If the gate will run longer than a few minutes, append one \`$PAUSED_VERB:\` line naming the gate you are waiting on, and a \`working:\` line when it returns, so supervision reads the wait as a wait rather than a wedged pane.
-When the project's test gate serves the working tree (for example a Vite dev server started by Playwright's \`webServer\`), "baseline before first edit" is a hard ordering constraint, not a nicety: edits made while the gate is running feed half-finished code into later specs and produce a red suite that looks exactly like inherited breakage.
+If a gate run fails in a way your own change cannot explain, treat that as inherited breakage: append \`blocked [key=red-baseline]: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
+One narrow case is not inherited breakage: a failure in exactly the way this task was commissioned to fix is the task's starting condition, so record it as such in a \`working:\` line naming the gate and its failure rather than proceeding silently or stopping - any other failure in that run, including one merely adjacent to the fix, is still inherited breakage and still stops the task.
+When the project's test gate serves the working tree (for example a Vite dev server started by Playwright's \`webServer\`), a clean tree is a hard ordering constraint on any run you intend to trust, not a nicety: edits made while the gate is running feed half-finished code into later specs and produce a red suite that looks exactly like inherited breakage.
 If that window was missed, stop editing, commit or stash the work, and re-measure from a clean tree rather than trusting a mid-edit run.
-To measure against the base revision, read it read-only with \`git show <base-sha>:<path> > /tmp/<scratch-file>\` and compare against that, or run the measurement in a second, clean worktree; prefer both because they leave the branch's working tree exactly as it is and need no restore at all.
+When you do choose to measure against the base revision, read it read-only with \`git show <base-sha>:<path> > /tmp/<scratch-file>\` and compare against that, or run the measurement in a second, clean worktree; prefer both because they leave the branch's working tree exactly as it is and need no restore at all.
 When the comparison spans many paths or a whole subtree, where a per-file \`git show\` gets unwieldy, extract the base revision with \`git archive <base-sha> [-- <paths>] | tar -x -C <scratch-dir>\` instead; it writes only inside that scratch directory and needs no restore either.
 Do not reach for \`git stash push -- <paths>\` here: on a clean tree it is a silent no-op, and a later \`git stash pop\` reporting "No stash entries found" comes too late, after the measurement may already have run against the branch under test.
 \`git checkout <base-sha> -- <paths>\` is the fallback when neither fits, and it mutates the working tree and the index: it stages what it wrote, resurrects every file your work deleted, and does not remove the files your work added under those paths, so what you then measure is base sources plus your own new files rather than a true base revision.
 Using it therefore costs a full restore before you resume - \`git restore --source=HEAD --staged --worktree -- <paths>\` for the tracked content, plus deleting any untracked file the measurement left behind - and skipping that lets your next \`git add -A\` commit base-revision files, including the components an approved removal was meant to delete, over your own mandated edits.
 
+$GATE_SECTION
+
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+2. Stay inside this worktree; the only writes you may make outside it are the ones this brief itself prescribes - for example the status file below, the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you when you take and release the queue above, and the scratch file or scratch directory of a base-revision measurement. Those are examples and not the whole list: a step this brief mandates carries its own permission, so this rule is never a reason to skip one, and a write this brief does not mandate has no permission at all.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -671,9 +728,13 @@ $RULE1
    turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
-   run to finish, a long test gate you started in this worktree to finish,
+   run to finish, the test-gate queue and the gate run you are holding open inside the one command
+   the test-gate queue contract above prescribes,
    an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves your idle
    pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
+   That queue-and-gate wait is one you are still sitting in, never one you left running: the queue
+   contract above owns that rule, and a \`$PAUSED_VERB:\` line is never a reason to end your turn while
+   that command has not returned.
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
@@ -704,6 +765,14 @@ $RULE1
     evidence first, then delete, then re-probe to confirm it is gone. A consumed id is fine; visible
     text left behind is not. That cleanup belongs in the test's own teardown, including the failure
     path, never in your memory. Prefer a non-writing probe when the surface offers one.
+11. Report only the deployment you ran yourself, and name its run, its commit, and its build number.
+    Your change arriving in a shared environment is not your landing: a neighbouring task that merged
+    the shared branch into its own work carries your change out with it, and a worker who closed on
+    that neighbour's numbers sent firstmate to investigate a build that was not theirs. The danger runs
+    both ways, and the second way is worse: a worker whose change the neighbour did NOT carry out
+    sees the same green landing and concludes the job is done - eight tasks once closed that way on
+    top of a red deployment. If a neighbour carried your work out, write exactly that, naming their
+    task and their build number, and do not borrow their result as your own.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
