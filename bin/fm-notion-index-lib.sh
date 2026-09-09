@@ -71,21 +71,22 @@ fm_notion_index_lookup() {
     }' "$index"
 }
 
-# Resolve a task to the card it still holds: prints "<url>\t<branch>\t<project>"
-# for the most recently linked card the task has not archived, or nothing. This
-# is what lets --archive retire a link after teardown erased the task's meta.
+# Every card a task still holds live: one "<url>\t<branch>\t<project>" line per
+# card the task linked and has not archived, oldest link first, or nothing. The
+# index is the source of truth for --archive: it is what reconciliation reads,
+# it outlives the task's meta, and it may hold more than one live card for a
+# task when a meta rewrite failed between the index append and the meta write.
 # Args: <index> <task-id>
-fm_notion_index_task_live_link() {
+fm_notion_index_task_live_links() {
   local index=$1 id=$2
   [ -f "$index" ] || return 0
   awk -F'\t' -v id="$id" '
     $3 != id { next }
-    $2 == "link" { live[$4] = ++seq; br[$4] = $5; pr[$4] = $6 }
+    $2 == "link" && !($4 in live) { live[$4] = ++n; urls[n] = $4 }
+    $2 == "link" { br[$4] = $5; pr[$4] = $6 }
     $2 == "archive" { delete live[$4] }
     END {
-      best = ""
-      for (u in live) if (best == "" || live[u] > live[best]) best = u
-      if (best != "") printf "%s\t%s\t%s\n", best, br[best], pr[best]
+      for (i = 1; i <= n; i++) if (urls[i] in live) printf "%s\t%s\t%s\n", urls[i], br[urls[i]], pr[urls[i]]
     }' "$index"
 }
 

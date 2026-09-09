@@ -34,6 +34,10 @@
 #       Then --archive on the torn-down task still retires the card from the
 #       index (exit 0), --all-index drops it, and a repeat archive is a no-op
 #   (k) unsafe inputs are refused: bad url, bad branch name, missing --repo
+#   (l) index/meta divergence (a meta write failed after the index append):
+#       --archive retires every live index link for the task whatever meta says,
+#       retires a live notion_page= the index never saw, and --all-index is then
+#       empty with exit 0
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -276,5 +280,45 @@ run_truth "$C"
 expect_code 2 "$RC" "(k) no subject"
 FM_HOME="$C" "$LINK" t9 https://www.notion.so/x >/dev/null 2>&1 && fail "(k) link without meta must fail"
 pass "(k) unsafe inputs refused"
+
+# --- (l) index/meta divergence ----------------------------------------------------
+L=$(build_case l)
+# A link whose meta write failed: the index holds the link, meta never got it.
+fm_write_meta "$L/state/t1.meta" "window=firstmate:fm-t1" "project=$L/repo"
+printf '300\tlink\tt1\thttps://www.notion.so/card-l1\tfm/t1\t%s\n' "$L/repo" >> "$L/data/notion-cards.tsv"
+OUT=$(FM_HOME="$L" FM_NOW_OVERRIDE=301 "$LINK" --archive t1 2>&1); rc=$?
+expect_code 0 "$rc" "(l) archive with meta but no notion_page="
+assert_contains "$OUT" 'from the index' "(l) archive reports the index path"
+assert_grep $'301\tarchive\tt1\thttps://www.notion.so/card-l1\tfm/t1\t'"$L/repo" "$L/data/notion-cards.tsv" "(l) index link archived despite meta"
+assert_no_grep 'notion_page' "$L/state/t1.meta" "(l) meta without a link is left alone"
+# A relink whose meta write failed: the index moved to the new card, meta still
+# names the old one, and a stale index link for a third card is also live.
+fm_write_meta "$L/state/t2.meta" "window=firstmate:fm-t2" "project=$L/repo" \
+  "notion_page=https://www.notion.so/card-old" "notion_linked_ts=310"
+{
+  printf '310\tlink\tt2\thttps://www.notion.so/card-old\tfm/t2\t%s\n' "$L/repo"
+  printf '311\tlink\tt2\thttps://www.notion.so/card-stale\tfm/t2\t%s\n' "$L/repo"
+  printf '312\tarchive\tt2\thttps://www.notion.so/card-old\tfm/t2\t%s\n' "$L/repo"
+  printf '312\tlink\tt2\thttps://www.notion.so/card-new\tfm/t2\t%s\n' "$L/repo"
+} >> "$L/data/notion-cards.tsv"
+OUT=$(FM_HOME="$L" FM_NOW_OVERRIDE=313 "$LINK" --archive t2 2>&1); rc=$?
+expect_code 0 "$rc" "(l) archive with diverged meta"
+assert_grep $'313\tarchive\tt2\thttps://www.notion.so/card-new\tfm/t2' "$L/data/notion-cards.tsv" "(l) newest index link archived"
+assert_grep $'313\tarchive\tt2\thttps://www.notion.so/card-stale\tfm/t2' "$L/data/notion-cards.tsv" "(l) every live index link archived"
+assert_grep 'notion_page_archived=https://www.notion.so/card-old' "$L/state/t2.meta" "(l) stale meta key retired"
+# A legacy link that predates the index: meta is live, the index never saw it.
+fm_write_meta "$L/state/t3.meta" "window=firstmate:fm-t3" "project=$L/repo" \
+  "notion_page=https://www.notion.so/card-legacy" "notion_linked_ts=320"
+OUT=$(FM_HOME="$L" FM_NOW_OVERRIDE=321 "$LINK" --archive t3 2>&1); rc=$?
+expect_code 0 "$rc" "(l) archive of a meta-only link"
+assert_grep $'321\tarchive\tt3\thttps://www.notion.so/card-legacy\tfm/t3\t'"$L/repo" "$L/data/notion-cards.tsv" "(l) meta-only link gets an archive event"
+assert_grep 'notion_page_archived=https://www.notion.so/card-legacy' "$L/state/t3.meta" "(l) legacy meta key retired"
+run_truth "$L" --all-index --no-fetch
+expect_code 0 "$RC" "(l) all-index after archives"
+[ -z "$OUT" ] || fail "(l) no card stays live after the archives: $OUT"
+OUT=$(FM_HOME="$L" "$LINK" --archive t2 2>&1); rc=$?
+expect_code 0 "$rc" "(l) repeat archive"
+assert_contains "$OUT" 'no live Notion link' "(l) nothing left to archive"
+pass "(l) archive follows the index, not meta"
 
 echo "all fm-board-truth tests passed"

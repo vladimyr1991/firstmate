@@ -29,10 +29,14 @@
 # notion_page= to notion_page_archived=, which no sync step reads, so a late
 # wake on an old task can never push a status into a card that has since been
 # handed to someone else. Never hand a card back to the pool while a live
-# notion_page= still points at it. Recycling ordinarily happens after the task
-# was torn down and its meta erased, so --archive also works with no meta: it
-# resolves the card from the durable index and writes the archive event there,
-# which is the record reconciliation reads.
+# notion_page= still points at it. The durable index is the source of truth for
+# what --archive retires: every card the index still holds live for the task
+# gets an archive event (there can be more than one after a meta rewrite failed
+# between the index append and the meta write), and a live notion_page= that the
+# index never recorded is archived too. Recycling ordinarily happens after the
+# task was torn down and its meta erased, so --archive works with no meta at
+# all; meta is rewritten only when it exists and still carries notion_page=.
+# "No live link" means neither the index nor meta holds one, and is exit 0.
 #
 # This is a separate step the notion-board skill runs AFTER fm-spawn.sh, so it
 # never changes fm-spawn's interface - the same split fm-x-link.sh uses. This
@@ -115,46 +119,50 @@ fm_pr_task_id_valid "$ID" || { echo "fm-notion-link: unsafe task id: $ID" >&2; e
 
 META="$STATE/$ID.meta"
 
-if [ "$MODE" = archive ] && [ ! -f "$META" ]; then
-  HIT=$(fm_notion_index_task_live_link "$INDEX" "$ID")
-  if [ -z "$HIT" ]; then
+if [ "$MODE" = archive ]; then
+  LIVE=$(fm_notion_index_task_live_links "$INDEX" "$ID")
+  META_URL=
+  if [ -f "$META" ]; then
+    META_URL=$(meta_get "$META" notion_page)
+    if [ -n "$META_URL" ] && ! printf '%s\n' "$LIVE" | cut -f1 | grep -qxF -- "$META_URL"; then
+      LIVE="${LIVE:+$LIVE
+}$META_URL"$'\t'"fm/$ID"$'\t'"$(meta_get "$META" project)"
+    fi
+  fi
+  if [ -z "$LIVE" ]; then
+    # Idempotent: re-archiving an already-archived task is a no-op success, so
+    # a retried cleanup pass never fails the recycle.
     printf 'no live Notion link on %s\n' "$ID"
     exit 0
   fi
-  IFS=$'\t' read -r HIT_URL HIT_BRANCH HIT_PROJECT <<EOF
-$HIT
+  ARCHIVED=0
+  while IFS=$'\t' read -r HIT_URL HIT_BRANCH HIT_PROJECT; do
+    [ -n "$HIT_URL" ] || continue
+    if ! fm_notion_index_append "$INDEX" archive "$ID" "$HIT_URL" "$HIT_BRANCH" "$HIT_PROJECT"; then
+      echo "fm-notion-link: failed to record the archive of $HIT_URL in $INDEX; link left live" >&2
+      exit 1
+    fi
+    ARCHIVED=$((ARCHIVED + 1))
+  done <<EOF
+$LIVE
 EOF
-  if ! fm_notion_index_append "$INDEX" archive "$ID" "$HIT_URL" "$HIT_BRANCH" "$HIT_PROJECT"; then
-    echo "fm-notion-link: failed to record the archive in $INDEX; link left live" >&2
-    exit 1
+  if [ -n "$META_URL" ]; then
+    if ! notion_meta_write "$META" archive; then
+      echo "fm-notion-link: failed to archive the link in state/$ID.meta" >&2
+      exit 1
+    fi
+    printf 'archived %s Notion link(s) on %s; its card may now be recycled\n' "$ARCHIVED" "$ID"
+  elif [ -f "$META" ]; then
+    printf 'archived %s Notion link(s) on %s from the index (meta held no live link); its card may now be recycled\n' "$ARCHIVED" "$ID"
+  else
+    printf 'archived %s Notion link(s) on %s from the index (task already torn down); its card may now be recycled\n' "$ARCHIVED" "$ID"
   fi
-  printf 'archived the Notion link on %s from the index (task already torn down); its card may now be recycled\n' "$ID"
   exit 0
 fi
 
 if [ ! -f "$META" ]; then
   echo "fm-notion-link: no such task: state/$ID.meta" >&2
   exit 1
-fi
-
-if [ "$MODE" = archive ]; then
-  if ! grep -q '^notion_page=' "$META"; then
-    # Idempotent: re-archiving an already-archived task is a no-op success, so
-    # a retried cleanup pass never fails the recycle.
-    printf 'no live Notion link on %s\n' "$ID"
-    exit 0
-  fi
-  ARCHIVED_URL=$(meta_get "$META" notion_page)
-  if ! fm_notion_index_append "$INDEX" archive "$ID" "$ARCHIVED_URL" "fm/$ID" "$(meta_get "$META" project)"; then
-    echo "fm-notion-link: failed to record the archive in $INDEX; link left live" >&2
-    exit 1
-  fi
-  if ! notion_meta_write "$META" archive; then
-    echo "fm-notion-link: failed to archive the link in state/$ID.meta" >&2
-    exit 1
-  fi
-  printf 'archived the Notion link on %s; its card may now be recycled\n' "$ID"
-  exit 0
 fi
 
 # The URL lands in a line-oriented meta file and is echoed into later prompts;
