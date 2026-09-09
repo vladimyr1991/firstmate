@@ -6,8 +6,8 @@
 # are fakebin stubs that log their calls (pbcopy exists only so a clipboard
 # write would show up in a log), test WAVs are generated with python3's
 # wave module, and every home lives under the test tmproot. The real microphone,
-# hot key, and permission dialog cannot be exercised here; the specification's
-# manual verifications MV-1..MV-6 own those.
+# hot key, and permission dialog cannot be exercised here; manual verification
+# owns those.
 #
 # Two guarantees carry the most weight:
 #   - INERT BY DEFAULT: without config/voice nothing runs, and bootstrap prints
@@ -245,7 +245,7 @@ MISSING_MANUAL: python3 (instructions: xcode-select --install)'
 
 test_invalid_hotkey() {
   local home fakebin out rc spec
-  for spec in option ctrl+alt+space+x 'ctrl+' fn+space; do
+  for spec in option ctrl+alt+space+x 'ctrl+' fn+space+extra fn fn+fn+v fn+ctrl; do
     home=$(make_home "hotkey-$RANDOM" "hotkey=$spec")
     fakebin=$(fm_fakebin "$home")
     out=$(PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
@@ -261,6 +261,157 @@ test_invalid_hotkey() {
   expect_code 2 "$rc" "invalid max_seconds"
   assert_contains "$out" "invalid max_seconds: 4-5" "invalid integer names the key"
   pass "AC-5: invalid hotkey and config values are refused at start"
+}
+
+# --- fn chords: refused with the pane named until the grant is on ---------------
+
+# fn_home <name> <hotkey>: a ready home whose daemon is a fake that answers the
+# fn chord probes from files, so a test can stage every grant state: FAKE_FN_ACCESS
+# is what --probe-fn-chord prints before any request, and --request-fn-chord logs
+# itself to fn-request.log and, when FAKE_FN_AFTER_REQUEST is set, makes every
+# later probe print that instead (the operator switched the app on).
+fn_home() {
+  local home model bin
+  home=$(make_home "$1" "hotkey=$2
+model=MODELPATH
+sounds=off")
+  model="$home/custom-weights.bin"
+  sed -i.bak "s|MODELPATH|$model|" "$home/config/voice" && rm -f "$home/config/voice.bak"
+  printf 'weights' > "$model"
+  mkdir -p "$home/cache/firstmate/voice" "$home/tmp"
+  bin="$home/cache/firstmate/voice/fm-voice-hotkey-fakefn"
+  cat > "$bin" <<'SH'
+#!/usr/bin/env bash
+here=$(dirname "$0")
+case "${1:-}" in
+  --probe-mic) echo authorized ;;
+  --probe-fn-chord)
+    if [ -f "$here/granted" ]; then cat "$here/granted"; else echo "${FAKE_FN_ACCESS:-authorized}"; fi ;;
+  --request-fn-chord)
+    echo "request" >> "$here/fn-request.log"
+    [ -z "${FAKE_FN_AFTER_REQUEST:-}" ] || printf '%s\n' "$FAKE_FN_AFTER_REQUEST" > "$here/granted"
+    "$0" --probe-fn-chord ;;
+  *) echo "daemon args: $*" ;;
+esac
+SH
+  chmod +x "$bin"
+  printf '%s\n' "$home"
+}
+
+fn_run() {  # <home> <subcommand...>: fm-voice.sh in that home with the fake daemon bound
+  local home=$1 fakebin
+  shift
+  fakebin=$(make_fakes "$home")
+  fm_fake_exit0 "$fakebin" swiftc
+  PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" TMPDIR="$home/tmp" \
+    FM_VOICE_OS_OVERRIDE=Darwin XDG_CACHE_HOME="$home/cache" FM_VOICE_NO_WARMUP=1 \
+    FM_VOICE_SOURCE_HASH_OVERRIDE=fakefn "$VOICE" "$@"
+}
+
+test_fn_chord_refused_until_granted() {
+  local home out rc log
+  # Input Monitoring missing, and the request does not flip it: the state every
+  # new machine starts in.
+  home=$(fn_home fn-no-input-monitoring fn+v)
+  log="$home/cache/firstmate/voice/fn-request.log"
+  out=$(FAKE_FN_ACCESS=input-monitoring fn_run "$home" doctor); rc=$?
+  expect_code 1 "$rc" "doctor: fn+v without Input Monitoring is not ready"
+  assert_contains "$out" 'VOICE: not ready - Input Monitoring is not granted' "doctor names the missing grant"
+  assert_contains "$out" 'System Settings > Privacy & Security > Input Monitoring' "doctor names the Input Monitoring pane"
+  assert_absent "$log" "doctor never asks macOS for a grant"
+  out=$(FAKE_FN_ACCESS=input-monitoring fn_run "$home" status); rc=$?
+  expect_code 0 "$rc" "status exits 0"
+  [ "$out" = "not ready" ] || fail "status: expected 'not ready', got '$out'"
+
+  out=$(FAKE_FN_ACCESS=input-monitoring fn_run "$home" start); rc=$?
+  expect_code 3 "$rc" "start: fn+v without Input Monitoring exits 3"
+  assert_contains "$out" 'asking macOS for Input Monitoring for the terminal app hosting Herdr' "start says what it asks for"
+  assert_contains "$out" 'Input Monitoring is not granted to the terminal app hosting Herdr' "start refuses after the request is not switched on"
+  assert_contains "$out" 'System Settings > Privacy & Security > Input Monitoring, then start again' "start names the pane and the next step"
+  assert_not_contains "$out" 'daemon args:' "start never reaches the daemon without the grant"
+  assert_present "$log" "start asked macOS exactly once"
+  [ "$(wc -l < "$log" | tr -d ' ')" = 1 ] || fail "start asked macOS more than once: $(cat "$log")"
+  assert_absent "$home/state/voice.pid" "start writes no pid without the grant"
+
+  # Input Monitoring on, Accessibility missing: the pane named changes with it.
+  home=$(fn_home fn-no-accessibility fn+v)
+  out=$(FAKE_FN_ACCESS=accessibility fn_run "$home" doctor); rc=$?
+  expect_code 1 "$rc" "doctor: fn+v without Accessibility is not ready"
+  assert_contains "$out" 'System Settings > Privacy & Security > Accessibility' "doctor names the Accessibility pane"
+  assert_not_contains "$out" 'Input Monitoring' "doctor does not name a pane that is already granted"
+  out=$(FAKE_FN_ACCESS=accessibility fn_run "$home" start); rc=$?
+  expect_code 3 "$rc" "start: fn+v without Accessibility exits 3"
+  assert_contains "$out" 'asking macOS for Accessibility' "start asks for Accessibility"
+  assert_contains "$out" 'System Settings > Privacy & Security > Accessibility, then start again' "start names the Accessibility pane"
+
+  # A daemon that cannot answer is a refusal too, never a silent start.
+  home=$(fn_home fn-unknown-access fn+v)
+  out=$(FAKE_FN_ACCESS=garbage fn_run "$home" start); rc=$?
+  expect_code 3 "$rc" "start: an unreadable probe result refuses"
+  assert_contains "$out" 'could not report whether the fn chord fn+v may observe the keyboard' "start explains an unreadable probe"
+  assert_not_contains "$out" 'daemon args:' "start never reaches the daemon on an unreadable probe"
+  pass "fn chord: doctor and start refuse with the exact pane until the grant is on"
+}
+
+test_fn_chord_starts_once_granted() {
+  local home out rc log
+  # The request is answered by the operator switching the app on before start
+  # re-checks: start proceeds to the daemon with the fn chord, no second ask.
+  home=$(fn_home fn-granted-by-request fn+v)
+  log="$home/cache/firstmate/voice/fn-request.log"
+  out=$(FAKE_FN_ACCESS=input-monitoring FAKE_FN_AFTER_REQUEST=authorized fn_run "$home" start); rc=$?
+  expect_code 0 "$rc" "start reaches the daemon once the grant is on"
+  assert_contains "$out" 'asking macOS for Input Monitoring' "start still says what it asked for"
+  assert_contains "$out" "daemon args: --hotkey fn+v --max-seconds 120 --submit $VOICE --sounds off --tmpdir $home/tmp" \
+    "start passes fn+v to the daemon"
+  [ "$(wc -l < "$log" | tr -d ' ')" = 1 ] || fail "start asked macOS more than once: $(cat "$log")"
+  assert_present "$home/state/voice.pid" "start records the daemon pid"
+
+  # Already granted: nothing is asked, and cmd+fn+v is a valid fn chord too.
+  home=$(fn_home fn-already-granted cmd+fn+v)
+  out=$(FAKE_FN_ACCESS=authorized fn_run "$home" doctor); rc=$?
+  expect_code 0 "$rc" "doctor: a granted fn chord is ready"
+  assert_contains "$out" 'VOICE: ready' "doctor reports ready"
+  out=$(FAKE_FN_ACCESS=authorized fn_run "$home" start); rc=$?
+  expect_code 0 "$rc" "start: a granted fn chord starts"
+  assert_contains "$out" 'daemon args: --hotkey cmd+fn+v' "start passes cmd+fn+v to the daemon"
+  assert_not_contains "$out" 'asking macOS' "start asks nothing when already granted"
+  assert_absent "$home/cache/firstmate/voice/fn-request.log" "no request when already granted"
+  pass "fn chord: start proceeds once granted and asks nothing when already granted"
+}
+
+test_non_fn_chord_never_asks() {
+  local home out rc
+  # The default chord on a machine with no grants at all: never probed, never
+  # asked, started exactly as before.
+  home=$(fn_home carbon-chord-no-grants ctrl+alt+space)
+  out=$(FAKE_FN_ACCESS=input-monitoring fn_run "$home" doctor); rc=$?
+  expect_code 0 "$rc" "doctor: ctrl+alt+space is ready with no Input Monitoring"
+  assert_not_contains "$out" 'Input Monitoring' "doctor never mentions Input Monitoring for a Carbon chord"
+  out=$(FAKE_FN_ACCESS=input-monitoring fn_run "$home" start); rc=$?
+  expect_code 0 "$rc" "start: ctrl+alt+space starts with no Input Monitoring"
+  assert_contains "$out" 'daemon args: --hotkey ctrl+alt+space' "start passes the Carbon chord to the daemon"
+  assert_not_contains "$out" 'asking macOS' "start asks for nothing on a Carbon chord"
+  assert_absent "$home/cache/firstmate/voice/fn-request.log" "no grant request on a Carbon chord"
+  pass "ctrl+alt+space keeps working with no grant and is never asked about one"
+}
+
+# --- the daemon source must still compile -------------------------------------
+
+# The shell suite drives a fake daemon, so nothing above can notice a Swift edit
+# that no longer compiles; CI typechecks on macOS, and this does the same
+# locally wherever a Swift toolchain exists. Elsewhere it is skipped by name.
+test_daemon_typechecks() {
+  local out
+  if [ "$(uname -s)" != Darwin ] || ! command -v swiftc >/dev/null 2>&1; then
+    echo "skip: swiftc not available - daemon typecheck left to CI"
+    return 0
+  fi
+  if ! out=$(swiftc -typecheck "$ROOT/bin/fm-voice-hotkey.swift" 2>&1); then
+    fail "bin/fm-voice-hotkey.swift does not typecheck:"$'\n'"$out"
+  fi
+  pass "bin/fm-voice-hotkey.swift typechecks with the local swiftc"
 }
 
 # --- AC-6: happy path types without Enter --------------------------------------
@@ -761,6 +912,10 @@ test_cue() {
 test_inert_without_config
 test_doctor_and_bootstrap_relay
 test_invalid_hotkey
+test_fn_chord_refused_until_granted
+test_fn_chord_starts_once_granted
+test_non_fn_chord_never_asks
+test_daemon_typechecks
 test_happy_path_types_without_enter
 test_refusals
 test_silence_gate

@@ -22,8 +22,14 @@ The feature is off until you create `config/voice`; a home without that file beh
 
 macOS attributes microphone use to the terminal app hosting Herdr, not to firstmate.
 If that app has never been asked, the standard microphone dialog appears at `start`, never on the first key press; denying it exits with a hint naming System Settings > Privacy & Security > Microphone.
-No Accessibility or Input Monitoring grant is requested: the chord is observed through a plain global hot key, which is also why it must be a modifier plus a key.
-A bare modifier, or the Fn/Globe key, would need Input Monitoring and is refused rather than approximated.
+Ordinary modifier chords, including the default `ctrl+alt+space`, use a plain global hot key and request neither Accessibility nor Input Monitoring; nothing about them changes when an Fn chord is configured elsewhere.
+An Fn/Globe chord such as `fn+v` cannot be a global hot key, because macOS carries the Fn state only inside keyboard events.
+The daemon then watches the keyboard through an event tap, exactly as long as it runs and not a moment longer, and swallows the chord's key so the letter is never typed into the pane.
+macOS gates that tap behind Input Monitoring, and swallowing a key behind Accessibility, both granted to the terminal app hosting Herdr rather than to firstmate.
+`start` asks for whichever grant is still missing: the system dialog appears, adds that app to the named pane switched off, and `start` stops with that pane's name and exit 3, because a chord that is not observed is refused rather than started.
+Switch the app on in System Settings > Privacy & Security > Input Monitoring, or > Accessibility when that is the pane named, and run `start` again; a fresh machine may need one round for each.
+`doctor` and `status` report the same missing grant without asking for it.
+Nothing is recorded until the complete chord is held, and stopping the daemon removes the tap.
 
 ## Using it
 
@@ -35,6 +41,7 @@ A bare modifier, or the Fn/Globe key, would need Input Monitoring and is refused
 - Pause briefly between separate items in a long request.
   Whisper decodes in 30-second windows, and a sentence that straddles a window boundary with no pause can be dropped or garbled; the composer shows you the result before anything is sent.
 - Recording stops on its own at the configured cap (120 s by default) and proceeds as a release.
+- To use `fn+v`, set `hotkey=fn+v` in `config/voice`; the default remains `ctrl+alt+space`.
 
 ## When nothing is typed
 
@@ -68,6 +75,9 @@ The compiled daemon and the downloaded weights stay under `~/.cache/firstmate/vo
 
 - Hot-key delivery is verified on the operator's own machine, not by automated tests: run `start`, hold the chord for two seconds while another app is frontmost, and confirm the `recording` and `transcribing` lines appear.
   If they do not, the hold-to-talk design cannot work on that setup, and a Herdr key binding that toggles recording is the documented alternative.
+- `fn+v` is verified the same way, and the only Fn-plus-letter shortcut macOS ships on is Quick Note (`fn+q`), so nothing swallows `fn+v` before the daemon sees it.
+  The Globe/Fn key's own action, Emoji & Symbols, Dictation, or input-source switching under System Settings > Keyboard > "Press 🌐 key to", fires when Fn is pressed and released on its own; if it opens after a hold, set that action to Do Nothing.
+  A keyboard that does not report a Globe/Fn key, as many non-Apple keyboards do not, cannot send an Fn chord at all; keep `ctrl+alt+space` there.
 - Secure Input (a password field in front) can keep the chord from being delivered.
 - Two Herdr sessions are not supported; the CLI addresses the default socket only.
 - Follow-ups, deliberately not in this version: starting the daemon under session-start supervision, a resident whisper server to save the per-utterance model load, and a direct-submit option.

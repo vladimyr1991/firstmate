@@ -1,13 +1,20 @@
 // fm-voice-hotkey: the hold-to-talk daemon behind bin/fm-voice.sh.
 //
 // It does exactly three things and knows nothing about Herdr, whisper, or
-// firstmate: register one global modifier chord with Carbon (no Accessibility
-// or Input Monitoring grant needed), record the default microphone into a
+// firstmate: observe one global chord, record the default microphone into a
 // fresh 0700 temp directory ONLY while the chord is held, and hand the WAV to
-// `<submit> submit <dir>/rec.wav` on release. It also removes the directory it
-// made once submit exits: the creator is the only deleter, submit never deletes
-// a recording, so nothing handed to submit can aim a deletion at a directory
-// it did not create. Every policy decision - focus rule,
+// `<submit> submit <dir>/rec.wav` on release. An ordinary modifier chord is a
+// Carbon hot key and needs no Accessibility or Input Monitoring grant. An fn
+// chord cannot be a Carbon hot key (Fn is not a Carbon modifier), so it is an
+// active CGEvent tap on the session's keyboard events that swallows the chord's
+// key, so the letter is never typed; that tap exists only while this process
+// runs, and macOS gates creating it behind Input Monitoring (to see key events)
+// and, for an active tap, Accessibility. bin/fm-voice.sh start asks for them
+// through --request-fn-chord before launching, never on a press, and a missing
+// grant is a refusal that names its pane, here and there. It also
+// removes the directory it made once submit exits: the creator is the only
+// deleter, submit never deletes a recording, so nothing handed to submit can
+// aim a deletion at a directory it did not create. Every policy decision - focus rule,
 // silence gates, hallucination list, sound names, exit codes - lives in
 // bin/fm-voice.sh so the shell test suite covers it; this file stays a thin,
 // dependency-free (Carbon, Cocoa, AVFoundation) recorder.
@@ -16,9 +23,17 @@
 //   fm-voice-hotkey --hotkey <spec> --max-seconds <n> --submit <path>
 //                   --sounds on|off --tmpdir <dir>
 //   fm-voice-hotkey --probe-mic       prints authorized|denied|restricted|notDetermined
+//   fm-voice-hotkey --probe-fn-chord  prints authorized when an fn chord tap can
+//                                     be created right now, otherwise the pane
+//                                     still missing: input-monitoring|accessibility
+//   fm-voice-hotkey --request-fn-chord  asks macOS for whatever --probe-fn-chord
+//                                     reports missing (the system dialog adds the
+//                                     hosting app to that pane), then prints the
+//                                     --probe-fn-chord result afterwards
 //
-// Exit codes: 0 on SIGTERM/SIGINT, 2 bad arguments, 3 microphone denied,
-// 4 hot key registration failed.
+// Exit codes: 0 on SIGTERM/SIGINT, 2 bad arguments, 3 a permission is denied
+// (microphone, or Input Monitoring/Accessibility for an fn chord), 4 hot key
+// registration or tap creation failed.
 //
 // Pane lines (stdout, one per state): "HH:MM:SS recording",
 // "HH:MM:SS transcribing (N.N s[, stopped at cap])", the submit line verbatim,
@@ -47,6 +62,56 @@ func probeMic() -> String {
     }
 }
 
+let fnKeyboardEventMask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+    | CGEventMask(1 << CGEventType.keyUp.rawValue)
+    | CGEventMask(1 << CGEventType.flagsChanged.rawValue)
+
+// A tap that passes every event through unchanged; used only to learn whether
+// macOS lets this process create an active keyboard tap at all.
+let fnPassthroughCallback: CGEventTapCallBack = { _, _, event, _ in
+    Unmanaged.passUnretained(event)
+}
+
+// The real test, not a preflight API: try to create the exact kind of tap the
+// fn chord needs and drop it again at once. Input Monitoring alone lets a
+// process listen; swallowing the chord's key needs an active tap, which macOS
+// additionally gates behind Accessibility. The tap is disabled and invalidated
+// before this returns, so nothing is observed.
+func probeFnChord() -> String {
+    guard CGPreflightListenEventAccess() else { return "input-monitoring" }
+    guard let tap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+        eventsOfInterest: fnKeyboardEventMask, callback: fnPassthroughCallback, userInfo: nil
+    ) else { return "accessibility" }
+    CGEvent.tapEnable(tap: tap, enable: false)
+    CFMachPortInvalidate(tap)
+    return "authorized"
+}
+
+// Raise the system dialog for whichever grant is missing. macOS adds the hosting
+// app to that pane switched off and returns at once; the operator switches it on.
+func requestFnChord() -> String {
+    switch probeFnChord() {
+    case "input-monitoring":
+        CGRequestListenEventAccess()
+    case "accessibility":
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        AXIsProcessTrustedWithOptions(options)
+    default:
+        break
+    }
+    return probeFnChord()
+}
+
+func fnChordDenial(_ missing: String) -> String {
+    switch missing {
+    case "input-monitoring":
+        return "Input Monitoring is not granted to the terminal app hosting Herdr, and an fn chord can only be seen through keyboard events; switch that app on in System Settings > Privacy & Security > Input Monitoring, then start again"
+    default:
+        return "Accessibility is not granted to the terminal app hosting Herdr, and only Accessibility lets the fn chord's key be swallowed instead of typed; switch that app on in System Settings > Privacy & Security > Accessibility, then start again"
+    }
+}
+
 func usage(_ message: String) -> Never {
     FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
     exit(2)
@@ -58,6 +123,12 @@ while !args.isEmpty {
     switch flag {
     case "--probe-mic":
         print(probeMic())
+        exit(0)
+    case "--probe-fn-chord":
+        print(probeFnChord())
+        exit(0)
+    case "--request-fn-chord":
+        print(requestFnChord())
         exit(0)
     case "--hotkey", "--max-seconds", "--submit", "--sounds", "--tmpdir":
         guard !args.isEmpty else { usage("missing value for \(flag)") }
@@ -141,23 +212,42 @@ func keyCode(for key: String) -> UInt32? {
     return table[key].map { UInt32($0) }
 }
 
-func parseHotkey(_ spec: String) -> (UInt32, UInt32)? {
+enum Hotkey {
+    case carbon(UInt32, UInt32)
+    case fn(CGEventFlags, UInt16)
+}
+
+func parseHotkey(_ spec: String) -> Hotkey? {
     var parts = spec.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
     guard parts.count >= 2, let key = parts.popLast(), let code = keyCode(for: key) else { return nil }
-    var mods: UInt32 = 0
+    var carbonMods: UInt32 = 0
+    var eventMods: CGEventFlags = []
+    var hasFn = false
     for m in parts {
         switch m {
-        case "ctrl": mods |= UInt32(controlKey)
-        case "alt": mods |= UInt32(optionKey)
-        case "shift": mods |= UInt32(shiftKey)
-        case "cmd": mods |= UInt32(cmdKey)
+        case "ctrl":
+            carbonMods |= UInt32(controlKey)
+            eventMods.insert(.maskControl)
+        case "alt":
+            carbonMods |= UInt32(optionKey)
+            eventMods.insert(.maskAlternate)
+        case "shift":
+            carbonMods |= UInt32(shiftKey)
+            eventMods.insert(.maskShift)
+        case "cmd":
+            carbonMods |= UInt32(cmdKey)
+            eventMods.insert(.maskCommand)
+        case "fn":
+            guard !hasFn else { return nil }
+            hasFn = true
         default: return nil
         }
     }
-    return (mods, code)
+    if hasFn { return .fn(eventMods, UInt16(code)) }
+    return .carbon(carbonMods, code)
 }
 
-guard let (modifiers, virtualKey) = parseHotkey(hotkeySpec) else {
+guard let hotkey = parseHotkey(hotkeySpec) else {
     usage("invalid hotkey: \(hotkeySpec)")
 }
 
@@ -287,31 +377,93 @@ final class Recorder {
 
 let recorder = Recorder()
 
-// MARK: - Carbon hot key
+// MARK: - hot key
 
 var hotKeyRef: EventHotKeyRef?
+var inputTap: CFMachPort?
 let hotKeyID = EventHotKeyID(signature: OSType(0x464D_5643), id: 1) // "FMVC"
-var eventTypes = [
-    EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
-    EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
-]
-let handlerStatus = InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
-    guard let event = event else { return noErr }
-    switch GetEventKind(event) {
-    case UInt32(kEventHotKeyPressed): recorder.press()
-    case UInt32(kEventHotKeyReleased): recorder.release()
-    default: break
+
+// The fn chord the tap matches. Globals because a CGEventTapCallBack is a C
+// function pointer and cannot capture anything.
+var fnRequiredModifiers: CGEventFlags = []
+var fnVirtualKey: Int64 = -1
+let chordModifierMask: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
+
+// Press = key down with Fn held and exactly the chord's other modifiers; it and
+// its autorepeats and its key up are swallowed so the letter is never typed.
+// Releasing Fn first ends the recording too, via flagsChanged; the key's own
+// later key up then carries no Fn flag and passes through as a harmless stray.
+// Every other event passes through untouched.
+let fnChordCallback: CGEventTapCallBack = { _, type, event, _ in
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let tap = inputTap { CGEvent.tapEnable(tap: tap, enable: true) }
+        return Unmanaged.passUnretained(event)
     }
-    return noErr
-}, eventTypes.count, &eventTypes, nil, nil)
-if handlerStatus != noErr {
-    print("hot key handler installation failed (status \(handlerStatus))")
-    exit(4)
+    let flags = event.flags
+    if type == .flagsChanged {
+        if recorder.held && !flags.contains(.maskSecondaryFn) { recorder.release() }
+        return Unmanaged.passUnretained(event)
+    }
+    guard event.getIntegerValueField(.keyboardEventKeycode) == fnVirtualKey,
+          flags.contains(.maskSecondaryFn),
+          flags.intersection(chordModifierMask) == fnRequiredModifiers else {
+        return Unmanaged.passUnretained(event)
+    }
+    switch type {
+    case .keyDown:
+        recorder.press()
+        return nil
+    case .keyUp:
+        recorder.release()
+        return nil
+    default:
+        return Unmanaged.passUnretained(event)
+    }
 }
-let registerStatus = RegisterEventHotKey(virtualKey, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
-if registerStatus != noErr {
-    print("hot key registration failed (status \(registerStatus))")
-    exit(4)
+
+switch hotkey {
+case let .carbon(modifiers, virtualKey):
+    var eventTypes = [
+        EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+        EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+    ]
+    let handlerStatus = InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
+        guard let event = event else { return noErr }
+        switch GetEventKind(event) {
+        case UInt32(kEventHotKeyPressed): recorder.press()
+        case UInt32(kEventHotKeyReleased): recorder.release()
+        default: break
+        }
+        return noErr
+    }, eventTypes.count, &eventTypes, nil, nil)
+    if handlerStatus != noErr {
+        print("hot key handler installation failed (status \(handlerStatus))")
+        exit(4)
+    }
+    let registerStatus = RegisterEventHotKey(virtualKey, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+    if registerStatus != noErr {
+        print("hot key registration failed (status \(registerStatus))")
+        exit(4)
+    }
+case let .fn(requiredModifiers, virtualKey):
+    let access = probeFnChord()
+    if access != "authorized" {
+        print(fnChordDenial(access))
+        exit(3)
+    }
+    fnRequiredModifiers = requiredModifiers
+    fnVirtualKey = Int64(virtualKey)
+    inputTap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+        eventsOfInterest: fnKeyboardEventMask, callback: fnChordCallback, userInfo: nil
+    )
+    guard let tap = inputTap else {
+        print("fn chord event tap could not be created although the probe allowed it; retry start, and if this persists check System Settings > Privacy & Security > Accessibility and > Input Monitoring for the terminal app hosting Herdr")
+        exit(4)
+    }
+    let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+    CGEvent.tapEnable(tap: tap, enable: true)
 }
 
 // MARK: - lifecycle
@@ -321,6 +473,7 @@ sweepLeftovers()
 func shutdown() {
     recorder.abort()
     if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
+    if let tap = inputTap { CFMachPortInvalidate(tap) }
     recorder.cancelSubmit(timeout: 3)
     sweepLeftovers()
     exit(0)
