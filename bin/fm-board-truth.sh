@@ -33,7 +33,16 @@
 #                       standalone subject when no --card precedes it.
 #   --artifact <re>     an extended regex `git grep -E` must match somewhere in
 #                       the staging tree for the card's named artifact to count
-#                       as present. Attaches to the most recent subject.
+#                       as present. Attaches to the most recent subject. The
+#                       files that matched are always shown next to the verdict
+#                       (artifact_matches=, artifact_files=): a pattern only
+#                       proves that SOME file holds the text, never that the
+#                       file is the card's subject, and the one time a pattern
+#                       was accepted on its verdict alone (2026-09-09,
+#                       `mcp_server|booking_mcp`) its single match was
+#                       .mcp.json, the harness's own MCP config, and a card
+#                       whose work had never started came out landed. Read the
+#                       listing before acting on an artifact-based landing.
 #   --all-index         every card the index currently holds a live link for;
 #                       an index with no live card prints nothing and exits 0.
 #
@@ -47,12 +56,22 @@
 #                       proves the stand is alive (default deploy.yml)
 #   --deploy none       do not consult the forge; deploy= is reported unknown
 #   --index <path>      the card index (default <FM_HOME>/data/notion-cards.tsv)
+#   --artifact-files <n>  how many matched paths artifact_files= lists before
+#                       folding the rest into `+K more` (default 5, minimum 1).
+#                       The count in artifact_matches= is always exact.
 #
 # Output: one line per subject, tab-separated key=value fields, in subject order:
 #   card=<url|->  task=<id|->  branch=<name|->  branch_exists=yes|no|-
 #   in_staging=yes|no|-  in_develop=yes|no|-  artifact_in_staging=yes|no|-
-#   deploy=alive|dead|unknown  truth=<verdict>
-# where truth is one of:
+#   artifact_matches=<count|->  artifact_files=<paths|->
+#   deploy=alive|dead|unknown  basis=branch|artifact|-  truth=<verdict>
+# where artifact_matches is the exact number of staging-tree files the pattern
+# matched (0 when it missed, - when no pattern was given or staging could not be
+# read), artifact_files lists the first --artifact-files of them separated by
+# commas with `+K more` folded at the end when there are more (- when none),
+# basis names what a landed verdict rests on - `branch` when the branch itself is
+# an ancestor of staging, `artifact` when only the pattern matched, so the reader
+# knows the verdict is exactly as good as the listed files - and truth is one of:
 #   landed-on-stand      the branch (or the named artifact) is in staging and the
 #                        staging deployment is alive - the work is physically on
 #                        the stand
@@ -83,7 +102,7 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-notion-index-lib.sh"
 
 usage() { sed -n '2,/^set -u/{/^set -u/d;s/^# \{0,1\}//p;}' "$0" >&2; }
-die() { echo "fm-board-truth: $*" >&2; exit "${2:-1}"; }
+die() { echo "fm-board-truth: $1" >&2; exit "${2:-1}"; }
 
 REPO=
 REMOTE=origin
@@ -93,6 +112,7 @@ FETCH=1
 DEPLOY_WORKFLOW=deploy.yml
 INDEX=
 ALL_INDEX=0
+ARTIFACT_FILES_MAX=5
 # Parallel arrays: one subject per slot.
 S_CARD=()
 S_BRANCH=()
@@ -116,6 +136,10 @@ while [ $# -gt 0 ]; do
     --deploy-workflow) [ $# -ge 2 ] || die "--deploy-workflow needs a file" 2; DEPLOY_WORKFLOW=$2; shift 2 ;;
     --deploy) [ $# -ge 2 ] || die "--deploy needs none" 2; [ "$2" = none ] || die "--deploy accepts only none" 2; DEPLOY_WORKFLOW=; shift 2 ;;
     --index) [ $# -ge 2 ] || die "--index needs a path" 2; INDEX=$2; shift 2 ;;
+    --artifact-files)
+      [ $# -ge 2 ] || die "--artifact-files needs a count" 2
+      case "$2" in ''|*[!0-9]*|0) die "--artifact-files needs a positive integer: $2" 2 ;; esac
+      ARTIFACT_FILES_MAX=$2; shift 2 ;;
     --all-index) ALL_INDEX=1; shift ;;
     --card)
       [ $# -ge 2 ] || die "--card needs a url" 2
@@ -165,13 +189,31 @@ is_ancestor() {  # <branch> <base-branch> -> yes|no|-
     printf 'no'
   fi
 }
-artifact_in() {  # <pattern> <base-branch> -> yes|no|-
-  ref_exists "$2" || { printf -- '-'; return; }
-  if git -C "$REPO" grep -q -E -e "$1" "refs/remotes/$REMOTE/$2" -- 2>/dev/null; then
-    printf 'yes'
-  else
-    printf 'no'
-  fi
+# The files a pattern matched in the base branch's tree, one path per line, in
+# tree order; empty when nothing matched. `-` on stdout means the ref itself
+# could not be read. git grep prefixes every path with "<ref>:", which is
+# stripped exactly, so a path holding a colon survives.
+artifact_files_in() {  # <pattern> <base-branch>
+  local ref line
+  ref="refs/remotes/$REMOTE/$2"
+  ref_exists "$2" || { printf -- '-\n'; return; }
+  git -C "$REPO" grep -l -E -e "$1" "$ref" -- 2>/dev/null | while IFS= read -r line; do
+    printf '%s\n' "${line#"$ref:"}"
+  done
+}
+# Fold a path list into the artifact_files= cell: the first ARTIFACT_FILES_MAX
+# paths comma-separated, then `+K more` when the list is longer.
+artifact_files_cell() {  # <count> <files...>
+  local count=$1 shown=0 cell=
+  shift
+  [ "$count" -gt 0 ] || { printf -- '-'; return; }
+  for f in "$@"; do
+    [ "$shown" -lt "$ARTIFACT_FILES_MAX" ] || break
+    cell="${cell:+$cell,}$f"
+    shown=$((shown + 1))
+  done
+  [ "$shown" -ge "$count" ] || cell="$cell,+$((count - shown)) more"
+  printf '%s' "$cell"
 }
 
 # Deploy liveness: the latest run of the deploy workflow on the staging branch.
@@ -217,7 +259,7 @@ while [ "$i" -lt "$n" ]; do
   fi
   [ -n "$branch" ] || branch=-
 
-  exists=- staging=- develop=- art=-
+  exists=- staging=- develop=- art=- art_count=- art_files=- basis=-
   if [ "$branch" != - ]; then
     if ref_exists "$branch"; then
       exists=yes
@@ -227,9 +269,22 @@ while [ "$i" -lt "$n" ]; do
       exists=no
     fi
   fi
-  [ -z "$artifact" ] || art=$(artifact_in "$artifact" "$STAGING")
+  if [ -n "$artifact" ]; then
+    matched=()
+    while IFS= read -r line; do
+      [ -n "$line" ] && matched+=("$line")
+    done < <(artifact_files_in "$artifact" "$STAGING")
+    if [ "${#matched[@]}" -eq 1 ] && [ "${matched[0]}" = - ]; then
+      art=-
+    else
+      art_count=${#matched[@]}
+      if [ "$art_count" -gt 0 ]; then art=yes; else art=no; fi
+      art_files=$(artifact_files_cell "$art_count" "${matched[@]+"${matched[@]}"}")
+    fi
+  fi
 
   if [ "$staging" = yes ] || [ "$art" = yes ]; then
+    if [ "$staging" = yes ]; then basis=branch; else basis=artifact; fi
     if [ "$DEPLOY" = alive ]; then truth=landed-on-stand; else truth=landed-not-deployed; fi
   elif [ "$exists" = yes ] && [ "$staging" = no ]; then
     truth=in-flight
@@ -239,7 +294,7 @@ while [ "$i" -lt "$n" ]; do
     truth=unresolved
   fi
 
-  printf 'card=%s\ttask=%s\tbranch=%s\tbranch_exists=%s\tin_staging=%s\tin_develop=%s\tartifact_in_staging=%s\tdeploy=%s\ttruth=%s\n' \
-    "$card" "$task" "$branch" "$exists" "$staging" "$develop" "$art" "$DEPLOY" "$truth"
+  printf 'card=%s\ttask=%s\tbranch=%s\tbranch_exists=%s\tin_staging=%s\tin_develop=%s\tartifact_in_staging=%s\tartifact_matches=%s\tartifact_files=%s\tdeploy=%s\tbasis=%s\ttruth=%s\n' \
+    "$card" "$task" "$branch" "$exists" "$staging" "$develop" "$art" "$art_count" "$art_files" "$DEPLOY" "$basis" "$truth"
   i=$((i + 1))
 done

@@ -230,11 +230,18 @@ The brief names the repository to read as `truth_repo: <path>` (the PM's own wor
 A brief with no `truth_repo:` line skips reconciliation for that scan and reports it as unarmed, exactly as a missing `linked_cards` line is handled by the orphaned-status sweep, because a truth the PM cannot read is not evidence about any card.
 Start from `--all-index`, which resolves every card the durable index still holds a live link for to its task branch.
 For each active card the index does not name, infer the branch from the card body or the backlog note and pass it with `--card <url> --branch <name>`; when the branch may have been deleted after a squash merge, add `--artifact <pattern>` naming the file, route, model field, or test the card promises, so the staging tree can answer instead of the branch.
+An artifact pattern is used exactly where the branch is gone and nothing else can check the verdict, so a match that is not the card's work does not look like an error, it looks like landed work.
+Make the pattern specific to the card's subject - the function, module, route, or test that card and no other promises - and never a word the whole repository uses: on 2026-09-09 `mcp_server|booking_mcp` matched one staging file, `.mcp.json`, the harness's own MCP configuration, and a card whose work had never started came out `landed-on-stand`, while `booking_mcp|BookingMCP|list_slots|mcp/booking` correctly matched nothing.
+No tool can judge whether a pattern names the card's subject, so the script instead prints the basis on the verdict line: `basis=artifact` says the branch itself was not found in staging and only the pattern matched, and `artifact_matches=` with `artifact_files=` names how many files matched and which.
+Read that listing before acting on any `basis=artifact` landing: a listing that names only tooling or harness configuration, documentation, or files outside the card's subject means the pattern lied, so rerun with a specific pattern and treat the card as `unresolved` until one holds.
+A count in the tens or hundreds is the same signal in another form, because no single card's artifact lives in hundreds of files; the listing folds after a few paths (`--artifact-files` widens it) so the report stays readable, but the count is always exact.
 The script's `truth=` verdict is a fact about the work; this table is the only owner of what the PM does with it:
 
 | `truth=` | Card is at | Action |
 |---|---|---|
-| `landed-on-stand`, and the staging tree holds everything the card names | `В работе`, `На ревью`, `Нужны исправления` | set `Тестирование` |
+| `landed-on-stand` with `basis=branch`, and the staging tree holds everything the card names | `В работе`, `На ревью`, `Нужны исправления` | set `Тестирование` |
+| `landed-on-stand` with `basis=artifact`, every listed `artifact_files=` path is the card's own subject, and the staging tree holds everything the card names | `В работе`, `На ревью`, `Нужны исправления` | set `Тестирование`, and name the matched files in the report as the basis |
+| `landed-on-stand` with `basis=artifact` and a listing that is not the card's subject | any | leave it; rerun with a specific pattern, and report it as `unresolved` if none holds |
 | `landed-on-stand`, but the card names more than the branch delivered | any | leave it; report as partial, naming what is missing |
 | `landed-not-deployed` | any | leave it; report that the stand is not proven |
 | `in-flight` with a live linked task | `В работе` | nothing, the card is right |
