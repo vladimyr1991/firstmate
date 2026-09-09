@@ -709,7 +709,7 @@ $GATE_SECTION
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+2. Stay inside this worktree; the only things you may write outside it are the status file below and the test-gate queue hold that `bin/fm-gate.sh` creates and removes for you when you take and release the queue above - both are prescribed by this brief, so this rule is never a reason to skip either of them.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`

@@ -581,8 +581,9 @@ test_a_hold_taken_without_its_home_records_the_working_directory() {
   local empty_home wt recorded out rc
   empty_home=$(new_home no-meta-home)
   GATE_LOCK=$(new_lock no-meta-home)
+  # A real task worktree, because the fallback accepts only a git worktree root.
   wt="$TMP_ROOT/no-meta-wt"
-  mkdir -p "$wt"
+  fm_git_worktree "$TMP_ROOT/no-meta-repo" "$wt" no-meta-branch
   wt=$(cd "$wt" && pwd -P)
 
   # The home knows nothing about task-a. The wrapper takes the hold from inside
@@ -605,6 +606,42 @@ test_a_hold_taken_without_its_home_records_the_working_directory() {
   assert_contains "$out" "QUEUE NOT YOURS - held by: task-a" \
     "the hold recorded without a home must still be defended by its worktree"
   pass "fm-gate.sh: a hold taken without its home records the acquiring worktree"
+}
+
+# The other side of that fallback. A directory the mandated one-liner never
+# produces must not be recorded as the holder's worktree: the recorded string is
+# what the argv probe greps for, so a home recorded there makes `pgrep -f $HOME`
+# match nearly every process on the machine, one unrelated pytest beneath it
+# votes a dead holder alive, and the hold survives every break until the two-hour
+# ceiling - the machine-wide question this design refuses, reached through the
+# fallback instead of through the probe.
+test_an_acquire_from_the_home_directory_records_no_worktree() {
+  local state fake_home recorded out rc
+  state=$(new_state home-cwd)
+  GATE_LOCK=$(new_lock home-cwd)
+  # A git repo, so only the home rule itself can reject this directory.
+  fake_home="$TMP_ROOT/home-cwd-home"
+  fm_git_init_commit "$fake_home"
+  fake_home=$(cd "$fake_home" && pwd -P)
+
+  ( cd "$fake_home" && HOME="$fake_home" FM_STATE_OVERRIDE="$state" \
+      FM_GATE_LOCK_DIR="$GATE_LOCK" "$GATE" acquire task-a >/dev/null 2>&1 ) \
+    || fail "acquire must still succeed when the working directory is a home"
+  recorded=$(cat "$GATE_LOCK/owner_worktree" 2>/dev/null)
+  [ -n "$recorded" ] || fail "a hold must never record an empty owner worktree"
+  [ "$recorded" != "$fake_home" ] \
+    || fail "the hold must not record the user's home directory as a worktree"
+
+  # The hold must therefore stay breakable: check work anywhere under that home
+  # is not evidence that this dead holder is alive.
+  start_fixture_process "$fake_home/pytest-suite" >/dev/null
+  age_path "$GATE_LOCK" 3600
+  out=$(HOME="$fake_home" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    FM_GATE_STALE_SECONDS=0 "$GATE" acquire task-b 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "a hold that recorded no worktree must stay breakable once its holder is gone"
+  assert_contains "$out" "queue held by you: task-b" \
+    "the abandoned hold must be handed to the next task rather than held to the ceiling"
+  pass "fm-gate.sh: an acquire from the home directory records no worktree and stays breakable"
 }
 
 # The mirror image, and the direction with no recovery: $PPID can name something
@@ -829,7 +866,7 @@ exec "$real_date" "\$@"
 EOF
   chmod +x "$fakebin/date"
 
-  for poll in not-a-number 0; do
+  for poll in not-a-number 0 00; do
     gate "$state" acquire task-a >/dev/null 2>&1 || fail "the holder must take the queue"
     : > "$counter"
     PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
@@ -909,6 +946,7 @@ test_abandoned_hold_is_broken_but_a_live_run_is_not
 test_a_live_run_in_another_home_keeps_its_hold
 test_a_holder_whose_runner_is_invisible_to_argv_keeps_its_hold
 test_a_hold_taken_without_its_home_records_the_working_directory
+test_an_acquire_from_the_home_directory_records_no_worktree
 test_a_hold_taken_during_the_decision_is_not_broken
 test_an_orphaned_runner_keeps_the_holders_hold
 test_a_hold_past_the_ceiling_is_broken_however_alive

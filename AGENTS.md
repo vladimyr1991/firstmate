@@ -117,7 +117,7 @@ state/               volatile runtime signals; gitignored
   x-poll.error x-poll.claim-error  generated X-mode relay and offer-claim diagnostic dedupe markers
   .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
-  (no .gate-lock here)  the full-test-gate queue hold is MACHINE-wide, not per-home: it lives at /tmp/fm-gate-lock (override with FM_GATE_LOCK_DIR) so every home on one machine contends for one hold; workers take and release it themselves through `bin/fm-gate.sh` and firstmate is never in that loop
+  (no .gate-lock here)  the full-test-gate queue hold is MACHINE-wide, not per-home: it lives at ${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/fm-gate-lock (override with FM_GATE_LOCK_DIR) so every home of this user on the machine contends for one hold; workers take and release it themselves through `bin/fm-gate.sh` and firstmate is never in that loop
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
   .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch

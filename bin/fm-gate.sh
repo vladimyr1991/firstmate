@@ -17,14 +17,21 @@
 # CORRECTNESS does not depend on FM_HOME. The hold path, the recorded holder
 # identity and the recorded owner worktree are all resolved without it: the owner
 # worktree comes from this home's metadata when it is there and otherwise from
-# the acquiring process's own working directory, which is the task worktree by
-# construction of the mandated one-liner. This matters because a crewmate pane
+# the git working tree the acquiring process sits in, which is the task worktree
+# by construction of the mandated one-liner. This matters because a crewmate pane
 # inherits no FM_HOME at all, so anything that needed one would be blank in
-# exactly the panes this contract is written for. When neither source yields a
-# path the hold records `(unknown)` rather than an empty value, and the argv
-# check-work signal below is then simply unavailable for that hold: its liveness
-# rests on the recorded holder process alone. The RESOURCE probe that backs
-# issuance is the one thing FM_HOME still selects, and it deliberately
+# exactly the panes this contract is written for. That fallback is GUARDED: only
+# a git worktree root is accepted, and never the user's home directory nor an
+# ancestor of it. The recorded worktree is the string the argv probe greps for,
+# so recording a home would turn that deliberately narrow probe into the
+# machine-wide "is any check work running anywhere" question this design refuses
+# below, and one unrelated pytest under the home would keep a dead holder's hold
+# alive until the ceiling - the wedge direction with no recovery.
+# When neither source yields a path the hold records `(unknown)` rather than an
+# empty value, and the argv check-work signal below is then simply unavailable
+# for that hold: its liveness rests on the recorded holder process alone.
+# The RESOURCE probe that backs issuance is the one thing FM_HOME still selects,
+# and it deliberately
 # stays HOME-SCOPED - it scans this home's state/*.meta and nothing else - because
 # the hold is what serializes the fleet across homes, and that probe only has to
 # catch a run that went around the hold inside this home; there is no machine-wide
@@ -153,8 +160,10 @@ case "$STALE" in ''|*[!0-9]*) STALE=1500 ;; esac
 MAX_HOLD="${FM_GATE_MAX_HOLD_SECONDS:-7200}"
 case "$MAX_HOLD" in ''|*[!0-9]*) MAX_HOLD=7200 ;; esac
 POLL="${FM_GATE_POLL_SECONDS:-30}"
-# Zero is rejected as well as non-numeric: `sleep 0` succeeds and spins.
-case "$POLL" in ''|*[!0-9]*|0) POLL=30 ;; esac
+# Every zero form is rejected as well as non-numeric: `sleep 0` and `sleep 00`
+# both succeed and spin, and only a value test catches all of them.
+case "$POLL" in ''|*[!0-9]*) POLL=30 ;; esac
+[ "$POLL" -gt 0 ] || POLL=30
 BREAK_MUTEX="$LOCK.breaking"
 # Deliberately NOT $STALE: a marker held for the length of one decision must not
 # be aged out on the hold's 25-minute clock, and a suite that drives
@@ -188,6 +197,24 @@ owner_worktree() { cat "$LOCK/owner_worktree" 2>/dev/null; }
 # process's directory named a worktree. Never blank: an empty recorded worktree
 # read as "no worktree to ask about" and as "ask about everything" at once.
 WORKTREE_UNKNOWN='(unknown)'
+
+# The acquiring process's own worktree, when its directory plausibly is one: the
+# root of the git working tree it sits in, never the user's home directory and
+# never an ancestor of it. See the header for what a home recorded here would do
+# to the argv probe.
+cwd_worktree() {
+  local top
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -n "$top" ] || return 1
+  top=$(cd "$top" 2>/dev/null && pwd -P) || return 1
+  [ -n "$top" ] || return 1
+  [ "$top" = "/" ] && return 1
+  if [ -n "${HOME:-}" ]; then
+    [ "$top" = "$HOME" ] && return 1
+    case "$HOME" in "$top"/*) return 1 ;; esac
+  fi
+  printf '%s\n' "$top"
+}
 
 owner_pid() { cat "$LOCK/owner_pid" 2>/dev/null; }
 owner_pid_start() { cat "$LOCK/owner_pid_start" 2>/dev/null; }
@@ -381,13 +408,12 @@ case "${1:-}" in
     [ -n "$ID" ] || { echo "error: acquire needs a task id" >&2; exit 2; }
     WAIT=${3:-}
     [ -z "$WAIT" ] || [ "$WAIT" = "--wait" ] || { echo "error: unknown argument: $WAIT" >&2; exit 2; }
-    mkdir -p "$STATE" 2>/dev/null || true
     mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
     # Resolved once, before any hold exists: a crewmate pane carries no FM_HOME,
-    # so the metadata lookup finds nothing there and the worker's own directory
-    # is the task worktree by construction of the mandated one-liner.
+    # so the metadata lookup finds nothing there and the worker's own worktree is
+    # the task worktree by construction of the mandated one-liner.
     OWNER_WT=$(worktree_of "$ID")
-    [ -n "$OWNER_WT" ] || OWNER_WT=$(pwd -P 2>/dev/null)
+    [ -n "$OWNER_WT" ] || OWNER_WT=$(cwd_worktree)
     [ -n "$OWNER_WT" ] || OWNER_WT="$WORKTREE_UNKNOWN"
     OWNER_READS=0
     while :; do

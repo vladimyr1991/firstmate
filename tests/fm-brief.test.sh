@@ -1220,6 +1220,13 @@ test_gate_queue_contract_reaches_ship_and_scout() {
         "$id ($kind): scout rule 2 excludes the queue hold the same brief mandates"
       assert_grep "this rule is never a reason to skip the queue" "$brief" \
         "$id ($kind): scout rule 2 lost the reason it does not excuse skipping the queue"
+    else
+      assert_grep "the only things you may write outside it are the status file below and the test-gate queue hold" "$brief" \
+        "$id ($kind): ship rule 2 forbids the queue hold and the status file the same brief mandates"
+      assert_grep "this rule is never a reason to skip either of them" "$brief" \
+        "$id ($kind): ship rule 2 lost the reason it does not excuse skipping the queue"
+      assert_no_grep "modify nothing outside it" "$brief" \
+        "$id ($kind): ship rule 2 kept the categorical wording its own queue command breaks"
     fi
   done
   pass "fm-brief.sh: ship and scout briefs carry the self-service test-gate queue contract"
