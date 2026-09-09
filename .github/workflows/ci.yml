@@ -347,6 +347,12 @@ jobs:
           done < "$shell_inventory"
           [ "$parse_fail" -eq 0 ] || { echo "::error::stock macOS Bash 3.2 parse sweep failed"; exit 1; }
 
+          # The voice-input daemon is macOS-only Swift (Carbon, Cocoa,
+          # AVFoundation) and no other job has a Swift toolchain; typecheck it
+          # here so a source edit that no longer compiles cannot land.
+          swiftc -typecheck bin/fm-voice-hotkey.swift \
+            || { echo "::error::bin/fm-voice-hotkey.swift failed to typecheck"; exit 1; }
+
           snapshot_output=$(/bin/bash tests/fm-fleet-snapshot-view.test.sh)
           printf '%s\n' "$snapshot_output"
           snapshot_count=$(printf '%s\n' "$snapshot_output" | grep -c '^ok - ')

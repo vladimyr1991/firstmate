@@ -45,6 +45,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   A local `config/backend` file explicitly overrides runtime auto-detection for new task endpoints and stays gitignored; spawn-supported values are `tmux` plus experimental `herdr`, `zellij`, `orca`, and `cmux`, while `codex-app` is documented only in `docs/codex-app-backend.md`.
   It does not make `data/` tracked.
 - Helper scripts in `bin/` are plain bash.
+  The one exception is `bin/fm-voice-hotkey.swift`, the macOS-only voice-input daemon: it is compiled by `bin/fm-voice.sh build` rather than executed, `shellcheck` and the Bash 3.2 sweep skip it, and the `macos-stock-bash` CI job typechecks it with `swiftc -typecheck` because no other job has a Swift toolchain.
   Each starts with a usage header comment; keep it accurate when you change behavior.
   Test scripts and helpers in `tests/` are plain bash too.
   Every file `bin/fm-lint.sh --list-files` names must also parse under stock macOS Bash 3.2 (`/bin/bash -n <file>`), which the `macos-stock-bash` CI job enforces across that whole list.
