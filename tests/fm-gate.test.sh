@@ -907,6 +907,61 @@ test_a_live_run_outside_the_hold_refuses_a_free_queue() {
   pass "fm-gate.sh: a full run outside the hold refuses the queue"
 }
 
+# The HOLD ages out into a grant; the RESOURCE refusal never can, because
+# granting it would put the second full run on the machine. Left unbounded under
+# the mandated --wait, a neighbouring run that hangs rather than ends - an
+# orphaned browser half waiting on a dead dev server - parks every other worker
+# in this home forever, inside the one command their whole turn is blocked in.
+# That is the standing-forever failure this queue exists to remove, arriving
+# through the queue. So the wait is bounded and then GIVEN UP, loudly, naming the
+# task whose run is live, and it stays quiet in between rather than burying the
+# blocked turn in one refusal per poll.
+test_a_resource_refusal_is_given_up_rather_than_waited_out_forever() {
+  local state wt outf errf rcf waiter tries=0 out refusals
+  state=$(new_state resource-giveup)
+  GATE_LOCK=$(new_lock resource-giveup)
+  wt="$TMP_ROOT/resource-giveup-wt"
+  register_task "$state" task-a "$wt"
+  register_task "$state" task-b "$TMP_ROOT/resource-giveup-wt-b"
+  # A neighbouring full run that never finishes within this test.
+  start_fixture_process "$wt/pytest-suite" >/dev/null
+
+  outf="$TMP_ROOT/resource-giveup.out"; errf="$TMP_ROOT/resource-giveup.err"
+  rcf="$TMP_ROOT/resource-giveup.rc"
+  ( FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_POLL_SECONDS=1 \
+    FM_GATE_RESOURCE_WAIT_SECONDS=3 "$GATE" acquire task-b --wait \
+    >"$outf" 2>"$errf"; printf '%s\n' "$?" > "$rcf" ) &
+  waiter=$!
+  FIXTURE_PIDS+=("$waiter")
+  while kill -0 "$waiter" 2>/dev/null && [ "$tries" -lt 200 ]; do
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  if kill -0 "$waiter" 2>/dev/null; then
+    kill "$waiter" 2>/dev/null
+    fail "acquire --wait never gave up on a resource refusal that cannot clear"
+  fi
+  wait "$waiter" 2>/dev/null
+
+  expect_code 1 "$(cat "$rcf")" "giving up on a resource refusal must exit non-zero"
+  out=$(cat "$outf")
+  assert_contains "$out" "QUEUE GIVEN UP" \
+    "the give-up must be visible on stdout, like every other refusal a worker reads"
+  assert_contains "$out" "task-a" "the give-up must name the task whose run is live"
+  assert_contains "$out" "abandoned rather than satisfied" \
+    "the give-up must say the wait ended without the queue"
+  assert_not_contains "$out" "queue held by you" \
+    "giving up must never grant the queue - that is the second full run"
+  assert_contains "$(cat "$errf")" "gave up after" "the give-up must reach stderr too"
+  # Quiet while waiting: the refusal names the live task once, not once per poll.
+  refusals=$(grep -c "QUEUE NOT GRANTED" "$outf" | tr -d " ")
+  [ "$refusals" -le 1 ] \
+    || fail "the resource refusal was re-printed $refusals times while waiting"
+  assert_contains "$(gate "$state" status 2>&1)" "free" \
+    "a refused acquire must not leave a hold behind"
+  pass "fm-gate.sh: a resource refusal is given up rather than waited out forever"
+}
+
 test_waiting_workers_do_not_block_each_other() {
   local state wt out rc
   state=$(new_state waiters)
@@ -1195,6 +1250,7 @@ test_a_hold_path_resolved_through_dotdot_works_under_the_platform_bash
 test_a_foreign_break_marker_is_refused_visibly
 test_an_active_break_marker_survives_a_low_stale_age
 test_a_live_run_outside_the_hold_refuses_a_free_queue
+test_a_resource_refusal_is_given_up_rather_than_waited_out_forever
 test_waiting_workers_do_not_block_each_other
 test_a_waiting_worker_holding_the_gate_command_does_not_block_issuance
 test_a_dev_server_does_not_block_issuance

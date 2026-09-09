@@ -1167,6 +1167,14 @@ test_gate_queue_contract_reaches_ship_and_scout() {
       "$id ($kind): queue contract lost the measured reason it exists"
     assert_grep "deliberately not a single targeted test or a look at the app in a browser" "$brief" \
       "$id ($kind): queue contract lost its measured upper bound"
+    # The queue serialises the gates the worker runs; a delivery pipeline's own
+    # test step runs outside it. Left unsaid, a worker reads a green pipeline as
+    # proof the machine was serialised - the same false safety as reporting a
+    # neighbour's deployment.
+    assert_grep "a validation pipeline you drive runs its own test step outside this queue and takes no hold" "$brief" \
+      "$id ($kind): queue contract no longer says where the hold stops"
+    assert_grep "a green pipeline is never evidence that the machine was serialised while it ran" "$brief" \
+      "$id ($kind): the pipeline boundary lost the false-safety it exists to prevent"
 
     # One command carries wait, run, and release, because the wait dies with the
     # turn that started it; the release hangs off ';' so a failed run still frees

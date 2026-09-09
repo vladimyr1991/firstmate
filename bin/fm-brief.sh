@@ -459,6 +459,7 @@ IFS= read -r -d '' GATE_SECTION <<EOF || true
 This machine sustains one full gate run; two at once starve each other for memory, and one such pair cost an hour when the system killed one of them halfway through.
 Do not ask firstmate for the queue and do not wait to be given it - taking it is your job, not a request.
 The queue covers FULL runs, the whole suite and its browser half, and deliberately not a single targeted test or a look at the app in a browser; those were measured to be far lighter, and widening the queue to cover them would halve the fleet's parallelism against a hazard that is not there.
+The hold covers the gate runs you launch yourself: a validation pipeline you drive runs its own test step outside this queue and takes no hold, so a green pipeline is never evidence that the machine was serialised while it ran.
 
 Take the queue, run the gate, and release it in ONE command, and do not end your turn before that command returns:
    \`rc=1; $GATE_CMD acquire $ID --wait && { echo "working: queue taken, gate running" >> $STATUS_FILE; {the project's full gate command}; rc=\$?; }; $GATE_CMD release $ID; (exit \$rc)\`

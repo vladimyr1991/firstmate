@@ -67,10 +67,16 @@
 #   full run that went around the hold and still names its worktree.
 #   It also cannot tell a FULL run from the targeted run this queue explicitly
 #   exempts, so `pytest tests/one_test.py` in a worktree refuses issuance with a
-#   message that overstates what is live. That cost is bounded - the refusal
-#   clears when the targeted test ends and --wait rides it out - so it spends
-#   parallelism rather than pinning the queue, and no argv-based probe can
-#   separate the two.
+#   message that overstates what is live. That cost clears by itself only while
+#   the neighbouring process actually ends, which is not something this script
+#   can promise: an orphaned runner that hangs - a browser half waiting on a dead
+#   dev server - would otherwise refuse every other task in this home forever,
+#   with each worker's whole turn parked inside `acquire --wait`. So the wait on
+#   a RESOURCE refusal is bounded by FM_GATE_RESOURCE_WAIT_SECONDS (default 3600)
+#   and then GIVEN UP loudly, naming the task whose run is live. Giving up is not
+#   granting: the queue is never handed over on that path, because that would put
+#   the second full run on the machine. The worker re-reads state and escalates,
+#   which is what the end of any wait obliges it to do.
 #   What it does count is CHECK WORK (pytest, playwright, make, vitest, jest),
 #   never "any process in the worktree", never a bare `node`, and never a process
 #   whose argv carries this script's own name. A worker WAITING for the queue
@@ -78,8 +84,8 @@
 #   each other and would have deadlocked the whole fleet after the first release.
 #   A bare `node` matched the vite dev server of the browser inspection this queue
 #   explicitly does NOT cover, so one idle dev server would have pinned the queue
-#   for the whole fleet with no staleness path out of it, since only HOLDS age out
-#   and a resource refusal never does. And the mandated worker one-liner carries
+#   for the whole fleet with no staleness path out of it, since a HOLD ages out
+#   into a grant and a resource refusal never does - it is only ever given up. And the mandated worker one-liner carries
 #   `acquire ... --wait && <the gate command>` in a single argv, so a harness that
 #   shells out via `bash -c` leaves the worktree path and the runner name in a
 #   MERELY WAITING shell: counting that text would have put two waiters in a
@@ -154,8 +160,12 @@
 #   nothing else; FM_STATE_OVERRIDE overrides that state directory;
 #   FM_GATE_STALE_SECONDS sets the abandoned-hold age; FM_GATE_MAX_HOLD_SECONDS
 #   sets the absolute ceiling; FM_GATE_POLL_SECONDS (default 30) sets the --wait
-#   poll. A non-numeric age, a non-numeric or zero ceiling, and a non-numeric or
-#   zero poll each fall back to their default, LOUDLY on stderr, rather than
+#   poll; FM_GATE_RESOURCE_WAIT_SECONDS (default 3600) bounds how long --wait
+#   sits on a RESOURCE refusal before giving up, generous enough that an ordinary
+#   full run in a neighbouring worktree never trips it. A non-numeric age, a
+#   non-numeric or zero ceiling, a non-numeric or zero resource wait, and a
+#   non-numeric or zero poll each fall back to their default, LOUDLY on stderr,
+#   rather than
 #   silently disabling the rule they govern: a zero ceiling breaks every hold
 #   instantly however alive its holder is, granting the queue twice, and a poll
 #   of zero - or one that every `sleep` refuses - turns --wait into a hot spin
@@ -263,6 +273,21 @@ if [ "$MAX_HOLD" -le 0 ]; then
   note_tunable_fallback FM_GATE_MAX_HOLD_SECONDS "$MAX_HOLD" \
     "a zero ceiling breaks every hold instantly, however alive its holder is" 7200
   MAX_HOLD=7200
+fi
+RESOURCE_WAIT="${FM_GATE_RESOURCE_WAIT_SECONDS:-3600}"
+case "$RESOURCE_WAIT" in
+  ''|*[!0-9]*)
+    [ -z "${FM_GATE_RESOURCE_WAIT_SECONDS:-}" ] ||
+      note_tunable_fallback FM_GATE_RESOURCE_WAIT_SECONDS "$FM_GATE_RESOURCE_WAIT_SECONDS" \
+        "not a whole number of seconds" 3600
+    RESOURCE_WAIT=3600
+    ;;
+esac
+# Zero would give up on the first refusal, which is not a wait at all.
+if [ "$RESOURCE_WAIT" -le 0 ]; then
+  note_tunable_fallback FM_GATE_RESOURCE_WAIT_SECONDS "$RESOURCE_WAIT" \
+    "a zero wait gives up before the neighbouring run has any chance to end" 3600
+  RESOURCE_WAIT=3600
 fi
 POLL="${FM_GATE_POLL_SECONDS:-30}"
 case "$POLL" in
@@ -575,6 +600,8 @@ case "${1:-}" in
     [ -n "$OWNER_WT" ] || OWNER_WT="$WORKTREE_UNKNOWN"
     OWNER_READS=0
     MISSING_READS=0
+    RESOURCE_SINCE=
+    RESOURCE_NAMED=
     while :; do
       # Waiting cannot help a hold this user may not touch, so --wait refuses too.
       if hold_is_foreign; then
@@ -593,10 +620,28 @@ case "${1:-}" in
         if OTHER=$(other_task_running "$ID"); then
           [ "$(owner)" = "$ID" ] && rm -rf "$LOCK"
           # Printed on stdout as well as stderr: a worker reading only stdout
-          # took a refusal for a success on 2026-09-08.
-          echo "QUEUE NOT GRANTED - a full run is already live in $OTHER, although the hold was free"
-          echo "a full run is live outside the hold, in $OTHER" >&2
-          [ "$WAIT" = "--wait" ] || exit 1
+          # took a refusal for a success on 2026-09-08. Under --wait it is
+          # printed once per named task rather than once per poll, so a long
+          # wait does not bury the turn it is blocking in repeated lines.
+          if [ "$WAIT" != "--wait" ]; then
+            echo "QUEUE NOT GRANTED - a full run is already live in $OTHER, although the hold was free"
+            echo "a full run is live outside the hold, in $OTHER" >&2
+            exit 1
+          fi
+          NOW=$(date +%s)
+          case "$NOW" in ''|*[!0-9]*) NOW=0 ;; esac
+          [ -n "$RESOURCE_SINCE" ] || RESOURCE_SINCE=$NOW
+          if [ "$RESOURCE_NAMED" != "$OTHER" ]; then
+            echo "QUEUE NOT GRANTED - a full run is already live in $OTHER, although the hold was free"
+            echo "a full run is live outside the hold, in $OTHER" >&2
+            RESOURCE_NAMED=$OTHER
+          fi
+          WAITED=$(( NOW - RESOURCE_SINCE ))
+          if [ "$WAITED" -ge "$RESOURCE_WAIT" ]; then
+            echo "QUEUE GIVEN UP - a full run in $OTHER stayed live for the whole ${RESOURCE_WAIT}s wait; the queue was never granted and this wait was abandoned rather than satisfied"
+            echo "gave up after ${WAITED}s: a full run is still live in $OTHER" >&2
+            exit 1
+          fi
           sleep "$POLL"
           continue
         fi
