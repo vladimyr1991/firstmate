@@ -1083,17 +1083,22 @@ test_ship_baseline_and_no_placeholder_contract() {
       "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
     brief="$home/data/$id/brief.md"
     assert_present "$brief" "$id: brief was not scaffolded"
-    assert_grep "Establish a test baseline before your first edit." "$brief" \
-      "$id ($mode): brief lost the baseline-before-editing contract"
+    # The captain withdrew the mandatory pre-edit baseline (five workers stalled
+    # on it in one evening, one of them holding the gate queue for it). The
+    # withdrawal must be stated, not merely implied by a deleted paragraph.
+    assert_grep "A baseline gate run before your first edit is NOT required." "$brief" \
+      "$id ($mode): brief lost the withdrawal of the mandatory pre-edit baseline"
+    assert_no_grep "Establish a test baseline before your first edit." "$brief" \
+      "$id ($mode): brief still mandates the withdrawn pre-edit baseline"
     assert_grep "treat that as inherited breakage" "$brief" \
       "$id ($mode): baseline contract lost the inherited-breakage stop condition"
     # A changed-file selector on a clean tree exits 0 having selected nothing;
     # that success was once recorded as a green baseline and proved nothing.
     # The carve-out must stay inside the existing baseline instruction, and it
     # must say what to run instead, so assert both halves.
-    assert_grep "a gate run that selects zero tests is a no-op rather than a baseline" "$brief" \
-      "$id ($mode): baseline contract lost the zero-selection carve-out"
-    assert_grep "run the project's documented nonempty gate instead or record that no executable baseline exists" "$brief" \
+    assert_grep "A gate run that selects zero tests is a no-op rather than evidence" "$brief" \
+      "$id ($mode): gate contract lost the zero-selection carve-out"
+    assert_grep "run the project's documented nonempty gate instead" "$brief" \
       "$id ($mode): zero-selection carve-out lost its what-to-do-instead remedy"
     assert_grep "never call a zero-selection or never-executed result green evidence" "$brief" \
       "$id ($mode): zero-selection carve-out lost its prohibition on claiming green evidence"
@@ -1106,18 +1111,18 @@ test_ship_baseline_and_no_placeholder_contract() {
     # A task commissioned to fix the very failure the gate shows would otherwise
     # stop itself on its own starting condition. The carve-out must stay narrow:
     # it names only that failure, and every other one still stops the task.
-    assert_grep "a baseline that fails in exactly the way this task was commissioned to fix is the task's starting condition" "$brief" \
-      "$id ($mode): baseline contract lost the commissioned-failure starting condition"
+    assert_grep "a failure in exactly the way this task was commissioned to fix is the task's starting condition" "$brief" \
+      "$id ($mode): gate contract lost the commissioned-failure starting condition"
     assert_grep "is still inherited breakage and still stops the task" "$brief" \
       "$id ($mode): the commissioned-failure carve-out lost its narrowing clause"
     # Green-before and green-after says nothing about coverage the change deleted.
     assert_grep "never that what it was asserting is still there" "$brief" \
       "$id ($mode): baseline contract lost the removed-coverage limit of a green gate"
-    # A long gate run is a declared wait, not a wedge: pause for it, resume after.
-    assert_grep "If the gate will run longer than a few minutes, append one \`paused:\` line naming the gate you are waiting on" "$brief" \
-      "$id ($mode): the long-gate wait lost its declared pause"
-    assert_grep "and a \`working:\` line when it returns" "$brief" \
-      "$id ($mode): the long-gate pause lost its resume line"
+    # The long-gate wait is now owned in full by the test-gate queue section
+    # below, which fixes the order of the two status lines rather than only
+    # asking for them; the old free-standing sentence would be a second copy.
+    assert_no_grep "If the gate will run longer than a few minutes" "$brief" \
+      "$id ($mode): the long-gate wait kept a second owner beside the queue contract"
     # git archive extracts many paths at once into scratch and needs no restore,
     # unlike the git checkout fallback the same paragraph warns about.
     assert_grep "git archive <base-sha> [-- <paths>] | tar -x -C <scratch-dir>" "$brief" \
@@ -1127,7 +1132,105 @@ test_ship_baseline_and_no_placeholder_contract() {
     assert_grep "an element a user can click and get nothing from is not done" "$brief" \
       "$id ($mode): no-placeholder rule lost its works-not-compiles bar"
   done
-  pass "fm-brief.sh: every ship mode carries the baseline and no-placeholder contracts"
+  pass "fm-brief.sh: every ship mode carries the gate-evidence and no-placeholder contracts"
+}
+
+# The test-gate queue contract replaced a spoken agreement that firstmate had to
+# re-state twelve times in one day, so each rule is asserted together with the
+# reason that makes a worker keep it: a rule whose reason is invisible is talked
+# around by the first inconvenient case, which is how the spoken version died.
+test_gate_queue_contract_reaches_ship_and_scout() {
+  local home id brief kind id_kind
+  home="$TMP_ROOT/gate-queue-home"
+  write_registry "$home"
+
+  for id_kind in "brief-gate-d1:no-mistakes" "brief-gate-d2:direct-PR" "brief-gate-d3:local-only" "brief-gate-d4:scout"; do
+    id=${id_kind%%:*}
+    kind=${id_kind##*:}
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+        "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+        "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$kind" >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+
+    # Self-service: the worker takes the queue, firstmate is not in the loop.
+    assert_grep "you take the queue yourself" "$brief" \
+      "$id ($kind): queue contract lost its self-service rule"
+    assert_grep "Do not ask firstmate for the queue" "$brief" \
+      "$id ($kind): queue contract still routes the queue through firstmate"
+    # The queue exists for two FULL runs, and deliberately not for inspections.
+    assert_grep "two at once starve each other for memory" "$brief" \
+      "$id ($kind): queue contract lost the measured reason it exists"
+    assert_grep "deliberately not a single targeted test or a look at the app in a browser" "$brief" \
+      "$id ($kind): queue contract lost its measured upper bound"
+
+    # One command carries wait, run, and release, because the wait dies with the
+    # turn that started it; the release hangs off ';' so a failed run still frees
+    # the queue.
+    assert_grep "$ROOT/bin/fm-gate.sh acquire $id --wait && {the project's full gate command}; $ROOT/bin/fm-gate.sh release $id" "$brief" \
+      "$id ($kind): queue contract lost the single acquire-run-release command"
+    assert_grep "The wait lives only inside your turn and dies with it" "$brief" \
+      "$id ($kind): queue contract lost the reason the wait cannot span turns"
+    assert_grep "Release even when the run fails" "$brief" \
+      "$id ($kind): queue contract lost the mandatory release"
+
+    # Status-line ORDER, not merely the presence of two lines: waiting before the
+    # command, running only after it returns, and the gate started with that line.
+    assert_grep "Write the waiting status line BEFORE that command and the running one only AFTER it returns" "$brief" \
+      "$id ($kind): queue contract lost the status-line ordering"
+    assert_grep "\`paused: waiting for the test-gate queue\`" "$brief" \
+      "$id ($kind): queue contract lost its waiting status line"
+    assert_grep "\`working: queue taken, gate running\`" "$brief" \
+      "$id ($kind): queue contract lost its running status line"
+    assert_grep "The gate starts together with that \`working:\` line and never after it" "$brief" \
+      "$id ($kind): queue contract lost the owner-with-nothing-running stop"
+
+    # The end-of-wait rule must stay UNCONDITIONAL. An enumeration of failure
+    # shapes is exactly what let the unlisted shape through seven times in a day,
+    # so the rule may name shapes only as the thing it refuses to rely on.
+    assert_grep "The end of a wait, in any form whatsoever, is a reason to read the ground again and never a reason to wait again." "$brief" \
+      "$id ($kind): queue contract lost the unconditional end-of-wait rule"
+    assert_grep "Read that as unconditional, because it deliberately names no shapes" "$brief" \
+      "$id ($kind): the end-of-wait rule lost its unconditional framing"
+    assert_grep "Whenever a wait of yours ends, for any reason at all" "$brief" \
+      "$id ($kind): the end-of-wait rule narrowed to enumerated endings"
+  done
+  pass "fm-brief.sh: ship and scout briefs carry the self-service test-gate queue contract"
+}
+
+# A worker once closed on a neighbour's build numbers after the neighbour merged
+# the shared branch and carried the change out. The rule must state both
+# directions, because the second one - a green landing that does NOT contain your
+# work - is what closed eight tasks over a red deployment.
+test_own_deployment_reporting_rule() {
+  local home id mode brief id_mode
+  home="$TMP_ROOT/own-deployment-home"
+  write_registry "$home"
+
+  for id_mode in "brief-deploy-d1:no-mistakes" "brief-deploy-d2:direct-PR" "brief-deploy-d3:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+    assert_grep "Report only the deployment you ran yourself" "$brief" \
+      "$id ($mode): brief lost the own-deployment reporting rule"
+    assert_grep "name its run, its commit, and its build number" "$brief" \
+      "$id ($mode): own-deployment rule lost what a report must name"
+    assert_grep "The danger runs" "$brief" \
+      "$id ($mode): own-deployment rule lost its second, worse direction"
+    assert_grep "sees the same green landing and concludes the job is done" "$brief" \
+      "$id ($mode): own-deployment rule lost the false-completion failure"
+    assert_grep "If a neighbour carried your work out, write exactly that, naming their" "$brief" \
+      "$id ($mode): own-deployment rule lost the neighbour-carried-it-out remedy"
+    assert_grep "do not borrow their result as your own" "$brief" \
+      "$id ($mode): own-deployment rule lost its prohibition on borrowed numbers"
+  done
+  pass "fm-brief.sh: every ship mode reports only its own deployment"
 }
 
 test_herdr_lab_contract_is_explicit_and_complete() {
@@ -1867,6 +1970,8 @@ test_no_mistakes_dod_states_what_done_requires
 test_no_mistakes_dod_requires_verified_gate_claims
 test_ship_project_memory_wording
 test_ship_baseline_and_no_placeholder_contract
+test_gate_queue_contract_reaches_ship_and_scout
+test_own_deployment_reporting_rule
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
