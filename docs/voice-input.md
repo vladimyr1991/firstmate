@@ -57,7 +57,8 @@ A bare modifier, or the Fn/Globe key, would need Input Monitoring and is refused
 
 ## Turning it off
 
-Delete `config/voice` and run `bin/fm-voice.sh stop`; the home is immediately back to its pre-voice behavior.
+Run `bin/fm-voice.sh stop` first, then delete `config/voice`; the home is immediately back to its pre-voice behavior.
+The order matters: once `config/voice` is gone every subcommand including `stop` exits 2, so a daemon still running would keep the hot key.
 The compiled daemon and the downloaded weights stay under `~/.cache/firstmate/voice/` (or `$XDG_CACHE_HOME/firstmate/voice/`); remove that directory to reclaim the space.
 
 ## Known limits and follow-ups

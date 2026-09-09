@@ -189,11 +189,16 @@ final class Recorder {
     var directory: String?
     var capTimer: Timer?
     var transcribing = false
+    var held = false                // Carbon repeats the press event while the chord is held
 
     func press() {
+        let firstPress = !held
+        held = true
         if transcribing {
-            say("busy: still transcribing")
-            cue("busy")
+            if firstPress {
+                say("busy: still transcribing")
+                cue("busy")
+            }
             return
         }
         guard recorder == nil else { return }
@@ -229,7 +234,10 @@ final class Recorder {
         }
     }
 
-    func release() { finish(atCap: false) }
+    func release() {
+        held = false
+        finish(atCap: false)
+    }
 
     func finish(atCap: Bool) {
         guard let r = recorder, let dir = directory else { return }

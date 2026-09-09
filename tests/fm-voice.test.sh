@@ -389,6 +389,11 @@ test_failures() {
   [ "$(cat "$home/pbcopy.log")" = "Почини тест" ] || fail "AC-14: transcript on the clipboard"
   assert_absent "$dir" "AC-14: directory deleted"
   assert_no_grep "send-text" "$home/herdr.log" "AC-14: nothing typed"
+
+  dir=$(rec_dir "$home")
+  run_submit "$home" "$fakebin" "$dir/rec.wav"
+  expect_code 5 "$RC" "missing recording"
+  [ "$OUT" = "failed: no recording" ] || fail "missing recording must not print the path, got: $OUT"
   pass "AC-13/AC-14: whisper and herdr failures report, clean up, and keep the transcript when there is one"
 }
 
@@ -423,18 +428,47 @@ test_signal_cleanup() {
 # --- AC-16: concurrent submit refused -----------------------------------------
 
 test_concurrent_submit() {
-  local home fakebin dir wav
+  local home fakebin dir wav holder
   home=$(make_home concurrent "")
   fakebin=$(make_fakes "$home")
+  sleep 30 & holder=$!
   mkdir -p "$home/state/voice.submit.lock"
+  echo "$holder" > "$home/state/voice.submit.lock/pid"
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
   expect_code 9 "$RC" "AC-16: second submit"
   [ "$OUT" = "busy: another transcription is running" ] || fail "AC-16: stdout, got: $OUT"
   assert_absent "$dir" "AC-16: its own recording directory deleted"
   assert_present "$home/state/voice.submit.lock" "AC-16: the other submit's lock is left alone"
+  [ "$(cat "$home/state/voice.submit.lock/pid")" = "$holder" ] || fail "AC-16: the live holder's pid is kept"
   [ ! -s "$home/whisper.log" ] || fail "AC-16: whisper must not run"
+  kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
   pass "AC-16: a concurrent submit is refused and cleans up only its own recording"
+}
+
+# --- stale lock: a holder that died without its trap never wedges submit ------
+
+test_stale_lock_reclaimed() {
+  local home fakebin dir wav dead
+  home=$(make_home stale-lock "")
+  fakebin=$(make_fakes "$home")
+  sleep 30 & dead=$!; kill "$dead"; wait "$dead" 2>/dev/null
+  mkdir -p "$home/state/voice.submit.lock"
+  echo "$dead" > "$home/state/voice.submit.lock/pid"
+  dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  expect_code 0 "$RC" "stale lock (dead pid): submit proceeds"
+  case "$OUT" in "typed into claude "*"(wA2:p2): Привет") ;; *) fail "stale lock: stdout, got: $OUT" ;; esac
+  assert_grep "pane send-text wA2:p2 Привет" "$home/herdr.log" "stale lock: transcript typed"
+  assert_absent "$home/state/voice.submit.lock" "stale lock: released after the submit"
+  assert_absent "$dir" "stale lock: recording directory deleted"
+
+  mkdir -p "$home/state/voice.submit.lock"
+  dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  expect_code 0 "$RC" "stale lock (no pid): submit proceeds"
+  assert_absent "$home/state/voice.submit.lock" "stale lock (no pid): released after the submit"
+  pass "stale lock: a lock whose holder is dead or unrecorded is reclaimed by the next submit"
 }
 
 # --- AC-17: single daemon instance ---------------------------------------------
@@ -461,12 +495,15 @@ test_single_instance() {
 
   sleep 30 & sleeper=$!; kill "$sleeper"; wait "$sleeper" 2>/dev/null
   echo "$sleeper" > "$home/state/voice.pid"
+  mkdir -p "$home/state/voice.submit.lock"
+  echo "$sleeper" > "$home/state/voice.submit.lock/pid"
   out=$(PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" \
     FM_VOICE_OS_OVERRIDE=Darwin XDG_CACHE_HOME="$home/cache" "$VOICE" start); rc=$?
   expect_code 2 "$rc" "AC-17: dead pid proceeds to the build check"
   [ "$out" = "daemon not built (run bin/fm-voice.sh build)" ] || fail "AC-17: stale pid message, got: $out"
   assert_absent "$home/state/voice.pid" "AC-17: stale pid file replaced"
+  assert_absent "$home/state/voice.submit.lock" "AC-17: a dead holder's submit lock is cleared by start"
   out=$(PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" "$VOICE" stop); rc=$?
   expect_code 1 "$rc" "stop with nothing running"
@@ -585,6 +622,7 @@ test_hallucinations
 test_failures
 test_signal_cleanup
 test_concurrent_submit
+test_stale_lock_reclaimed
 test_single_instance
 test_model_checksum
 test_doctor_model_mismatch

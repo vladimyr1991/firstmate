@@ -344,6 +344,33 @@ running_pid() {  # prints the live daemon pid, or nothing
   fi
 }
 
+# The submit lock is a directory holding the owner's pid, so a holder that died
+# without running its trap (SIGKILL, a closed pane, power loss) never wedges
+# later submits: a lock whose pid is absent or dead is stale and reclaimed.
+lock_is_stale() {
+  local pid
+  [ -d "$LOCK_DIR" ] || return 1
+  pid=$(tr -d '[:space:]' < "$LOCK_DIR/pid" 2>/dev/null) || pid=
+  ! pid_alive "$pid"
+}
+
+clear_stale_lock() {
+  lock_is_stale && rm -rf -- "$LOCK_DIR"
+  return 0
+}
+
+acquire_submit_lock() {  # succeeds once the lock is held with our pid inside
+  local attempt
+  for attempt in 1 2; do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      echo $$ > "$LOCK_DIR/pid"
+      return 0
+    fi
+    [ "$attempt" -eq 1 ] && lock_is_stale && rm -rf -- "$LOCK_DIR"
+  done
+  return 1
+}
+
 # Fills NOT_READY (comma-separated reasons) and prints the MISSING lines.
 collect_readiness() {
   local reasons='' r bin
@@ -499,7 +526,7 @@ cmd_install_model() {
 
 sweep_leftovers() {
   local d
-  for d in "${TMPDIR:-/tmp}"/fm-voice.*; do
+  for d in "${TMPDIR:-/tmp}"/fm-voice.* "${TMPDIR:-/tmp}"/fm-voice-submit.*; do
     [ -d "$d" ] && rm -rf -- "$d"
   done
   return 0
@@ -537,6 +564,7 @@ cmd_start() {
     exit 5
   fi
   rm -f "$PID_FILE"
+  clear_stale_lock
   bin=$(daemon_binary)
   if [ ! -x "$bin" ]; then
     echo "daemon not built (run bin/fm-voice.sh build)"
@@ -578,7 +606,7 @@ SUBMIT_WORK=
 SUBMIT_CHILD=
 SUBMIT_LOCKED=0
 
-# Runs on every exit path, including SIGTERM/SIGINT: the recording's directory
+# Runs on every exit path, including SIGTERM/SIGINT/SIGHUP: the recording's directory
 # (only when it is one the daemon made), the private work directory, and the
 # lock all go, and a still-running whisper-cli child is killed first.
 submit_cleanup() {
@@ -590,7 +618,7 @@ submit_cleanup() {
     esac
   fi
   [ -n "$SUBMIT_WORK" ] && rm -rf -- "$SUBMIT_WORK"
-  [ "$SUBMIT_LOCKED" -eq 1 ] && rmdir "$LOCK_DIR" 2>/dev/null
+  [ "$SUBMIT_LOCKED" -eq 1 ] && rm -rf -- "$LOCK_DIR"
   return 0
 }
 
@@ -642,7 +670,7 @@ cmd_submit() {
   require_enabled
   wav=${1:-}
   if [ -z "$wav" ] || [ ! -f "$wav" ]; then
-    echo "failed: no recording at ${wav:-<missing argument>}"
+    echo "failed: no recording"
     exit 5
   fi
   load_config
@@ -651,8 +679,9 @@ cmd_submit() {
   trap submit_cleanup EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT
+  trap 'exit 129' HUP
   mkdir -p "$STATE"
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  if ! acquire_submit_lock; then
     play_cue busy
     echo "busy: another transcription is running"
     exit 9
