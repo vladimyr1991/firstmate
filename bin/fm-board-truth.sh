@@ -42,7 +42,11 @@
 #                       `mcp_server|booking_mcp`) its single match was
 #                       .mcp.json, the harness's own MCP config, and a card
 #                       whose work had never started came out landed. Read the
-#                       listing before acting on an artifact-based landing.
+#                       listing before acting on an artifact-based landing. A
+#                       pattern git grep refuses (an unbalanced parenthesis,
+#                       most often) is reported as `-`, never as a miss, and
+#                       one warning line on stderr names the subject and the
+#                       pattern.
 #   --all-index         every card the index currently holds a live link for;
 #                       an index with no live card prints nothing and exits 0.
 #
@@ -57,7 +61,8 @@
 #   --deploy none       do not consult the forge; deploy= is reported unknown
 #   --index <path>      the card index (default <FM_HOME>/data/notion-cards.tsv)
 #   --artifact-files <n>  how many matched paths artifact_files= lists before
-#                       folding the rest into `+K more` (default 5, minimum 1).
+#                       folding the rest into `+K more` (default 5, minimum 1;
+#                       0, 00 and anything but a decimal integer are refused).
 #                       The count in artifact_matches= is always exact.
 #
 # Output: one line per subject, tab-separated key=value fields, in subject order:
@@ -66,9 +71,12 @@
 #   artifact_matches=<count|->  artifact_files=<paths|->
 #   deploy=alive|dead|unknown  basis=branch|artifact|-  truth=<verdict>
 # where artifact_matches is the exact number of staging-tree files the pattern
-# matched (0 when it missed, - when no pattern was given or staging could not be
-# read), artifact_files lists the first --artifact-files of them separated by
-# commas with `+K more` folded at the end when there are more (- when none),
+# matched (0 when it missed, - when no pattern was given, staging could not be
+# read, or git grep refused the pattern - the same - artifact_in_staging then
+# shows, with a warning on stderr), artifact_files lists the first
+# --artifact-files of them separated by commas with `+K more` folded at the end
+# when there are more (- when none; a non-ASCII path is listed as typed, not as
+# octal escapes),
 # basis names what a landed verdict rests on - `branch` when the branch itself is
 # an ancestor of staging, `artifact` when only the pattern matched, so the reader
 # knows the verdict is exactly as good as the listed files - and truth is one of:
@@ -83,9 +91,10 @@
 #   unresolved           no branch could be resolved for the card, or the branch
 #                        is absent and no artifact pattern was given to fall back
 #                        on (a squash-merged branch is deleted after landing, so
-#                        absence alone never proves not-started), or the branch
-#                        exists but the staging ref itself could not be read, so
-#                        in_staging is `-` and in-flight cannot be claimed
+#                        absence alone never proves not-started), or the pattern
+#                        could not be evaluated, or the branch exists but the
+#                        staging ref itself could not be read, so in_staging is
+#                        `-` and in-flight cannot be claimed
 # Facts that cannot be established are reported as `-`, never guessed.
 #
 # Exit 0 when every subject produced a line, 2 on usage error, 1 when the repo
@@ -138,8 +147,9 @@ while [ $# -gt 0 ]; do
     --index) [ $# -ge 2 ] || die "--index needs a path" 2; INDEX=$2; shift 2 ;;
     --artifact-files)
       [ $# -ge 2 ] || die "--artifact-files needs a count" 2
-      case "$2" in ''|*[!0-9]*|0) die "--artifact-files needs a positive integer: $2" 2 ;; esac
-      ARTIFACT_FILES_MAX=$2; shift 2 ;;
+      case "$2" in ''|*[!0-9]*) die "--artifact-files needs a positive integer: $2" 2 ;; esac
+      [ "$2" -gt 0 ] || die "--artifact-files needs a positive integer: $2" 2
+      ARTIFACT_FILES_MAX=$((10#$2)); shift 2 ;;
     --all-index) ALL_INDEX=1; shift ;;
     --card)
       [ $# -ge 2 ] || die "--card needs a url" 2
@@ -189,17 +199,31 @@ is_ancestor() {  # <branch> <base-branch> -> yes|no|-
     printf 'no'
   fi
 }
-# The files a pattern matched in the base branch's tree, one path per line, in
-# tree order; empty when nothing matched. `-` on stdout means the ref itself
-# could not be read. git grep prefixes every path with "<ref>:", which is
-# stripped exactly, so a path holding a colon survives.
+# The files a pattern matched in the base branch's tree, in tree order, into
+# ARTIFACT_MATCHED, with ARTIFACT_STATE saying how far the question got: `hit`
+# or `miss` when git grep answered it (exit 0 or 1), `unreadable` when the ref
+# itself could not be read, `failed` when git grep refused the pattern (a
+# malformed extended regex exits 128). The status is taken from git grep
+# itself, never from an empty listing, so a pattern that was never evaluated is
+# never reported as a miss. git grep prefixes every path with "<ref>:", which is
+# stripped exactly, so a path holding a colon survives; core.quotePath is off
+# so a non-ASCII path is listed as typed, not as octal escapes.
+ARTIFACT_MATCHED=()
+ARTIFACT_STATE=
 artifact_files_in() {  # <pattern> <base-branch>
-  local ref line
+  local ref out line rc=0
+  ARTIFACT_MATCHED=()
   ref="refs/remotes/$REMOTE/$2"
-  ref_exists "$2" || { printf -- '-\n'; return; }
-  git -C "$REPO" grep -l -E -e "$1" "$ref" -- 2>/dev/null | while IFS= read -r line; do
-    printf '%s\n' "${line#"$ref:"}"
-  done
+  ref_exists "$2" || { ARTIFACT_STATE=unreadable; return; }
+  out=$(git -C "$REPO" -c core.quotePath=false grep -l -E -e "$1" "$ref" -- 2>/dev/null) || rc=$?
+  case "$rc" in
+    0) ARTIFACT_STATE=hit ;;
+    1) ARTIFACT_STATE=miss; return ;;
+    *) ARTIFACT_STATE=failed; return ;;
+  esac
+  while IFS= read -r line; do
+    [ -n "$line" ] && ARTIFACT_MATCHED+=("${line#"$ref:"}")
+  done <<< "$out"
 }
 # Fold a path list into the artifact_files= cell: the first ARTIFACT_FILES_MAX
 # paths comma-separated, then `+K more` when the list is longer.
@@ -270,17 +294,16 @@ while [ "$i" -lt "$n" ]; do
     fi
   fi
   if [ -n "$artifact" ]; then
-    matched=()
-    while IFS= read -r line; do
-      [ -n "$line" ] && matched+=("$line")
-    done < <(artifact_files_in "$artifact" "$STAGING")
-    if [ "${#matched[@]}" -eq 1 ] && [ "${matched[0]}" = - ]; then
-      art=-
-    else
-      art_count=${#matched[@]}
-      if [ "$art_count" -gt 0 ]; then art=yes; else art=no; fi
-      art_files=$(artifact_files_cell "$art_count" "${matched[@]+"${matched[@]}"}")
-    fi
+    artifact_files_in "$artifact" "$STAGING"
+    case "$ARTIFACT_STATE" in
+      unreadable) ;;
+      failed)
+        echo "fm-board-truth: warning: card=$card branch=$branch: git grep -E refused the artifact pattern, reported as -: $artifact" >&2 ;;
+      *)
+        art_count=${#ARTIFACT_MATCHED[@]}
+        if [ "$art_count" -gt 0 ]; then art=yes; else art=no; fi
+        art_files=$(artifact_files_cell "$art_count" "${ARTIFACT_MATCHED[@]+"${ARTIFACT_MATCHED[@]}"}") ;;
+    esac
   fi
 
   if [ "$staging" = yes ] || [ "$art" = yes ]; then

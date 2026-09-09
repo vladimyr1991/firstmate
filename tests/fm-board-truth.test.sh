@@ -49,7 +49,11 @@
 #       pattern for the same card matches nothing and yields not-started
 #   (n) many matches fold: the exact count is always printed, the listing shows
 #       the first --artifact-files paths (default 5) and `+K more`; the option
-#       refuses 0 and non-integers; an unreadable staging ref reports - for both
+#       refuses 0, 00 and non-integers; an unreadable staging ref reports - for both
+#   (o) a pattern git grep refuses (`list_slots(`, unbalanced) is not a miss:
+#       every artifact field is -, the verdict is unresolved, never not-started,
+#       exit stays 0 and one warning on stderr names the subject and the pattern;
+#       a staging file with a Cyrillic path is listed as typed, not octal-escaped
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -98,7 +102,11 @@ build_case() {
   # Eight files that all hold one token, for the fold test.
   mkdir -p "$seed/many"
   for k in 1 2 3 4 5 6 7 8; do printf 'many_token %s\n' "$k" > "$seed/many/f$k.txt"; done
-  git -C "$seed" add .mcp.json many
+  # A file whose path is Cyrillic, as a project whose cards are named in
+  # Cyrillic may well carry.
+  mkdir -p "$seed/модули"
+  printf 'cyrillic_token\n' > "$seed/модули/бронирование.py"
+  git -C "$seed" add .mcp.json many модули
   gitc -C "$seed" commit -q -m "harness config and many files"
   git -C "$seed" push -q origin staging
   git -C "$seed" checkout -q -b fm/wip main
@@ -278,12 +286,40 @@ expect_code 2 "$RC" "(n) --artifact-files 0 refused"
 assert_contains "$OUT" 'positive integer' "(n) refusal names the rule"
 run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files two
 expect_code 2 "$RC" "(n) --artifact-files two refused"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files 00
+expect_code 2 "$RC" "(n) --artifact-files 00 refused"
+assert_contains "$OUT" 'positive integer' "(n) all-zero refusal names the rule"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files 000
+expect_code 2 "$RC" "(n) --artifact-files 000 refused"
+run_truth "$C" --branch fm/gone --artifact 'many_token' --artifact-files 02
+[ "$(field "$OUT" artifact_files)" = 'many/f1.txt,many/f2.txt,+6 more' ] || fail "(n) a leading zero still counts as 2: $OUT"
 run_truth "$C" --branch fm/gone --artifact 'many_token' --staging no-such-stand
 [ "$(field "$OUT" artifact_in_staging)" = - ] || fail "(n) unreadable staging: $OUT"
 [ "$(field "$OUT" artifact_matches)" = - ] || fail "(n) unreadable staging counts nothing: $OUT"
 [ "$(field "$OUT" artifact_files)" = - ] || fail "(n) unreadable staging lists nothing: $OUT"
 [ "$(field "$OUT" truth)" = unresolved ] || fail "(n) unreadable staging is unresolved: $OUT"
 pass "(n) counts are exact, listings fold, refusals and unreadable refs are honest"
+
+# --- (o) a refused pattern is not a miss; non-ASCII paths are listed as typed -------
+OUT=$(PATH="$C/fakebin:$PATH" FM_HOME="$C" "$TRUTH" --repo "$C/repo" --branch fm/gone --artifact 'list_slots(' 2>"$C/err"); RC=$?
+expect_code 0 "$RC" "(o) a refused pattern does not abort the run"
+[ "$(field "$OUT" artifact_in_staging)" = - ] || fail "(o) never evaluated is not no: $OUT"
+[ "$(field "$OUT" artifact_matches)" = - ] || fail "(o) never evaluated counts nothing: $OUT"
+[ "$(field "$OUT" artifact_files)" = - ] || fail "(o) never evaluated lists nothing: $OUT"
+[ "$(field "$OUT" truth)" = unresolved ] || fail "(o) an unevaluated pattern is unresolved, never not-started: $OUT"
+[ "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" = 1 ] || fail "(o) stdout carries the subject line only: $OUT"
+assert_grep 'warning' "$C/err" "(o) a warning is printed on stderr"
+assert_grep 'branch=fm/gone' "$C/err" "(o) the warning names the subject"
+assert_grep 'list_slots(' "$C/err" "(o) the warning names the pattern"
+[ "$(wc -l < "$C/err" | tr -d ' ')" = 1 ] || fail "(o) exactly one warning line: $(cat "$C/err")"
+run_truth "$C" --branch fm/gone --artifact 'list_slots(' --card https://www.notion.so/booking --branch fm/gone2 --artifact 'many_token'
+expect_code 0 "$RC" "(o) the next subject is still answered"
+[ "$(printf '%s\n' "$OUT" | grep -c 'artifact_matches=8')" = 1 ] || fail "(o) the second subject counts its matches: $OUT"
+run_truth "$C" --branch fm/gone --artifact 'cyrillic_token'
+[ "$(field "$OUT" artifact_files)" = 'модули/бронирование.py' ] || fail "(o) a Cyrillic path is listed as typed: $OUT"
+[ "$(field "$OUT" artifact_matches)" = 1 ] || fail "(o) the Cyrillic file counts once: $OUT"
+[ "$(field "$OUT" truth)" = landed-on-stand ] || fail "(o) and it lands: $OUT"
+pass "(o) a refused pattern reports - with a warning; non-ASCII paths are readable"
 
 # --- (j) reverse half: task torn down by force -------------------------------------
 # Same scenario twice. The only difference between the two runs is whether the
