@@ -1211,6 +1211,17 @@ test_gate_queue_contract_reaches_ship_and_scout() {
     assert_grep "Whenever a wait of yours ends, for any reason at all" "$brief" \
       "$id ($kind): the end-of-wait rule narrowed to enumerated endings"
 
+    # The pause enumeration in rule 4 must not contradict this contract: naming a
+    # gate the worker "started" as a legitimate idle reads as permission to end
+    # the turn on a running gate, which is the dead wait this section exists to
+    # stop. It names the wait held open inside the one command, and defers.
+    assert_grep "That queue-and-gate wait is one you are still sitting in, never one you left running" "$brief" \
+      "$id ($kind): the pause enumeration lost the wait-you-are-in qualification"
+    assert_grep "a \`paused:\` line is never a reason to end your turn while" "$brief" \
+      "$id ($kind): the pause enumeration no longer refuses to end the turn on a running gate"
+    assert_grep "contract above owns that rule" "$brief" \
+      "$id ($kind): the pause qualification no longer defers to the queue contract"
+
     # The scout's rule 2 keeps a CLOSED list of what may be written outside the
     # worktree, and the queue hold is written outside it. Missing from that list,
     # the same brief that mandates the queue also hands a worker a literal reason
@@ -1758,10 +1769,14 @@ test_pause_examples_name_pipeline_and_ci_waits() {
       "$label: pause examples omitted a CI run"
     assert_grep "an upstream release, a rate-limit reset" "$brief" \
       "$label: pause examples lost their original external waits"
-    # A long gate the worker started here is the same declared wait: without it
-    # named, an 11-minute suite leaves `working:` last and reads as a wedge.
-    assert_grep "a long test gate you started in this worktree to finish" "$brief" \
-      "$label: pause examples omitted a long in-repo gate run"
+    # The gate wait is still a declared wait - without it named, a 40-minute suite
+    # leaves `working:` last and reads as a wedge - but it is now named as the
+    # wait held open INSIDE the queue contract's single command, because the old
+    # wording read as permission to start a gate and end the turn.
+    assert_grep "the test-gate queue and the gate run you are holding open inside the one command" "$brief" \
+      "$label: pause examples omitted the queue-and-gate wait"
+    assert_no_grep "a long test gate you started in this worktree to finish" "$brief" \
+      "$label: pause examples still license pausing on a gate left running across turns"
     # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
     assert_grep 'the slug may use only letters, digits, `.`, `_`, and `-`, never spaces' "$brief" \
       "$label: status-reporting block did not state the key slug charset"

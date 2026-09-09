@@ -163,7 +163,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-LOCK="${FM_GATE_LOCK_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/fm-gate-lock}"
+# Resolved without ever dereferencing an unset variable: with none of the three
+# set, the path stays empty and each subcommand refuses by name rather than the
+# whole script aborting on `set -u` before it can dispatch anything.
+LOCK=
+if [ -n "${FM_GATE_LOCK_DIR:-}" ]; then
+  LOCK=$FM_GATE_LOCK_DIR
+elif [ -n "${XDG_STATE_HOME:-}" ]; then
+  LOCK="$XDG_STATE_HOME/firstmate/fm-gate-lock"
+elif [ -n "${HOME:-}" ]; then
+  LOCK="$HOME/.local/state/firstmate/fm-gate-lock"
+fi
+# A trailing slash on the configured path put the break marker INSIDE the hold,
+# where `mkdir` refreshed the hold's own mtime and every age read back as 0 -
+# silently and permanently disabling both the 25-minute rule and the ceiling.
+while [ -n "$LOCK" ] && [ "$LOCK" != / ] && [ "${LOCK%/}" != "$LOCK" ]; do
+  LOCK=${LOCK%/}
+done
 STALE="${FM_GATE_STALE_SECONDS:-1500}"
 case "$STALE" in ''|*[!0-9]*) STALE=1500 ;; esac
 MAX_HOLD="${FM_GATE_MAX_HOLD_SECONDS:-7200}"
@@ -173,7 +189,10 @@ POLL="${FM_GATE_POLL_SECONDS:-30}"
 # both succeed and spin, and only a value test catches all of them.
 case "$POLL" in ''|*[!0-9]*) POLL=30 ;; esac
 [ "$POLL" -gt 0 ] || POLL=30
-BREAK_MUTEX="$LOCK.breaking"
+# Derived from the hold's own parent and name rather than by concatenation, so
+# the marker is a sibling of the hold whatever the configured path looked like.
+BREAK_MUTEX=
+[ -n "$LOCK" ] && BREAK_MUTEX="$(dirname "$LOCK")/$(basename "$LOCK").breaking"
 # Deliberately NOT $STALE: a marker held for the length of one decision must not
 # be aged out on the hold's 25-minute clock, and a suite that drives
 # FM_GATE_STALE_SECONDS low must not start removing markers other contenders are
@@ -276,6 +295,20 @@ refuse_foreign_hold() {
   # On stdout as well as stderr, for the same reason the busy refusals are.
   echo "QUEUE NOT AVAILABLE - the hold at $LOCK is not owned by this user; refusing to touch it"
   echo "hold at $LOCK is not owned by this user" >&2
+}
+
+# No hold path could be resolved at all, so there is nothing to hold, wait for or
+# refuse ownership of. Named on both streams like every other refusal a worker
+# reads, rather than as a `set -u` abort with a bash diagnostic.
+refuse_unresolvable_hold() {
+  echo "QUEUE NOT AVAILABLE - the hold path cannot be resolved: none of FM_GATE_LOCK_DIR, XDG_STATE_HOME or HOME is set in this environment"
+  echo "cannot resolve the hold path: set FM_GATE_LOCK_DIR, XDG_STATE_HOME or HOME" >&2
+}
+
+require_hold_path() {
+  [ -n "$LOCK" ] && return 0
+  refuse_unresolvable_hold
+  exit 1
 }
 
 # A hold that cannot be created is not a hold someone else is holding, and the
@@ -421,6 +454,7 @@ break_if_abandoned() {
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   acquire)
+    require_hold_path
     ID=${2:-}
     [ -n "$ID" ] || { echo "error: acquire needs a task id" >&2; exit 2; }
     WAIT=${3:-}
@@ -507,6 +541,7 @@ case "${1:-}" in
     done
     ;;
   release)
+    require_hold_path
     ID=${2:-}
     [ -n "$ID" ] || { echo "error: release needs a task id" >&2; exit 2; }
     if hold_is_foreign; then
@@ -527,6 +562,7 @@ case "${1:-}" in
     exit 0
     ;;
   status)
+    require_hold_path
     if hold_is_foreign; then
       refuse_foreign_hold
       exit 1

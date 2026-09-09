@@ -521,9 +521,13 @@ $GATE_SECTION
    FYI progress lines; firstmate reads your pane for that.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
-   run to finish, a long test gate you started in this worktree to finish,
+   run to finish, the test-gate queue and the gate run you are holding open inside the one command
+   the test-gate queue contract above prescribes,
    an upstream release, a rate-limit reset): firstmate then leaves your idle pane alone and rechecks
    it on a long cadence instead of treating it as a possible wedge.
+   That queue-and-gate wait is one you are still sitting in, never one you left running: the queue
+   contract above owns that rule, and a \`$PAUSED_VERB:\` line is never a reason to end your turn while
+   that command has not returned.
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
@@ -723,9 +727,13 @@ $RULE1
    turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
-   run to finish, a long test gate you started in this worktree to finish,
+   run to finish, the test-gate queue and the gate run you are holding open inside the one command
+   the test-gate queue contract above prescribes,
    an upstream release, a rate-limit reset, a scheduled window): firstmate then leaves your idle
    pane alone and rechecks it on a long cadence instead of treating it as a possible wedge.
+   That queue-and-gate wait is one you are still sitting in, never one you left running: the queue
+   contract above owns that rule, and a \`$PAUSED_VERB:\` line is never a reason to end your turn while
+   that command has not returned.
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),

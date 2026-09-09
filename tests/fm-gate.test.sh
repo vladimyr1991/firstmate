@@ -214,7 +214,7 @@ test_a_real_race_produces_exactly_one_winner() {
   dir="$TMP_ROOT/race-results"
   go="$TMP_ROOT/race-go"
   mkdir -p "$dir"
-  n=12
+  n=20
   local pids=()
   for i in $(seq 1 "$n"); do
     (
@@ -703,6 +703,63 @@ test_a_ceiling_below_the_stale_age_still_breaks_the_hold() {
   pass "fm-gate.sh: a ceiling below the stale age still breaks the hold"
 }
 
+# The worst failure shape this script has, and it arrives from operator
+# configuration alone: with a trailing slash on the configured path the marker
+# was built by concatenation and landed INSIDE the hold, so `mkdir` refreshed the
+# hold's own mtime and every age read back as 0. Both the 25-minute rule and the
+# ceiling were then permanently disabled - one machine-wide hold nothing could
+# break, with every home queued behind it and nothing on stderr to say why.
+test_a_trailing_slash_on_the_hold_path_still_breaks_an_abandoned_hold() {
+  local state wt out err rc base
+  state=$(new_state trailing-slash)
+  base=$(new_lock trailing-slash)
+  GATE_LOCK="$base"
+  wt="$TMP_ROOT/trailing-slash-wt"
+  register_task "$state" task-a "$wt"
+  # A hold whose holder is gone, well past the stale age and the ceiling.
+  mkdir -p "$GATE_LOCK"
+  printf '%s\n' task-dead > "$GATE_LOCK/owner"
+  printf '%s\n' "$wt" > "$GATE_LOCK/owner_worktree"
+  printf '%s\n' token-of-the-stale-hold > "$GATE_LOCK/token"
+  age_path "$GATE_LOCK" 90000
+
+  err="$TMP_ROOT/trailing-slash.err"
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$base/" \
+    "$GATE" acquire task-b 2>"$err"); rc=$?
+  expect_code 0 "$rc" "a hold configured with a trailing slash must still be broken when abandoned"
+  assert_contains "$out" "queue held by you: task-b" \
+    "the break must hand the queue over however the hold path was spelled"
+  assert_contains "$(cat "$err")" "breaking an abandoned hold" \
+    "the break must still say what it did"
+  [ ! -e "$GATE_LOCK/.breaking" ] \
+    || fail "the break marker must never be created inside the hold directory"
+  pass "fm-gate.sh: a trailing slash on the hold path still breaks an abandoned hold"
+}
+
+# The hold path is resolved from three environment variables, none of which is
+# guaranteed. Dereferencing an unset HOME under `set -u` aborted the whole script
+# before it dispatched anything - a bash diagnostic instead of one of this
+# script's own refusals, on the one command a worker's whole turn is blocked in.
+test_an_unresolvable_hold_path_refuses_by_name() {
+  local out rc
+  out=$(env -u HOME -u XDG_STATE_HOME -u FM_GATE_LOCK_DIR "$GATE" --help 2>&1); rc=$?
+  expect_code 0 "$rc" "--help must work without any hold path in the environment"
+  assert_contains "$out" "Usage: fm-gate.sh acquire <id> [--wait]" \
+    "--help must still render the usage block"
+
+  out=$(env -u HOME -u XDG_STATE_HOME -u FM_GATE_LOCK_DIR "$GATE" acquire task-a 2>&1); rc=$?
+  expect_code 1 "$rc" "an acquire with no resolvable hold path must fail"
+  assert_contains "$out" "QUEUE NOT AVAILABLE" \
+    "the refusal must be visible on stdout, like every other refusal a worker reads"
+  assert_contains "$out" "FM_GATE_LOCK_DIR" "the refusal must name what to set"
+  assert_not_contains "$out" "unbound variable" \
+    "the script must refuse by name rather than abort on an unset variable"
+  out=$(env -u HOME -u XDG_STATE_HOME -u FM_GATE_LOCK_DIR "$GATE" status 2>&1); rc=$?
+  expect_code 1 "$rc" "status with no resolvable hold path must fail too"
+  assert_not_contains "$out" "unbound variable" "status must refuse by name as well"
+  pass "fm-gate.sh: an unresolvable hold path refuses by name instead of aborting"
+}
+
 # The break marker is a second fixed name in the same shared directory as the
 # hold. Unguarded, one `mkdir` by another user disabled the abandoned-hold rule
 # for every home on the machine - permanently, and without printing anything.
@@ -1002,6 +1059,8 @@ test_a_hold_taken_during_the_decision_is_not_broken
 test_an_orphaned_runner_keeps_the_holders_hold
 test_a_hold_past_the_ceiling_is_broken_however_alive
 test_a_ceiling_below_the_stale_age_still_breaks_the_hold
+test_a_trailing_slash_on_the_hold_path_still_breaks_an_abandoned_hold
+test_an_unresolvable_hold_path_refuses_by_name
 test_a_foreign_break_marker_is_refused_visibly
 test_an_active_break_marker_survives_a_low_stale_age
 test_a_live_run_outside_the_hold_refuses_a_free_queue
