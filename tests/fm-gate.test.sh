@@ -703,6 +703,34 @@ test_a_ceiling_below_the_stale_age_still_breaks_the_hold() {
   pass "fm-gate.sh: a ceiling below the stale age still breaks the hold"
 }
 
+# The ceiling breaks a hold however alive its holder is, so a zero there grants
+# the queue twice on every acquire - two full runs on one machine, the hazard this
+# queue exists to prevent, arriving through the rule added to bound it. Zero is
+# also the spelling an operator reaches for to DISABLE a maximum-age knob, so it
+# must fall back to the documented default and say so rather than be obeyed.
+test_a_zero_ceiling_falls_back_rather_than_breaking_a_live_hold() {
+  local state wt out err rc spelling
+  state=$(new_state zero-ceiling)
+  GATE_LOCK=$(new_lock zero-ceiling)
+  wt="$TMP_ROOT/zero-ceiling-wt"
+  register_task "$state" task-a "$wt"
+  start_holder_wrapper state "$state" task-a "$wt" >/dev/null
+  err="$TMP_ROOT/zero-ceiling.err"
+
+  for spelling in 0 00 000 not-a-number; do
+    out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+      FM_GATE_MAX_HOLD_SECONDS="$spelling" "$GATE" acquire task-b 2>"$err"); rc=$?
+    expect_code 1 "$rc" "a ceiling of '$spelling' must not break a live holder's fresh hold"
+    assert_contains "$out" "QUEUE NOT YOURS - held by: task-a" \
+      "the live holder must keep the queue whatever the ceiling was set to"
+    assert_contains "$(cat "$err")" "ignoring FM_GATE_MAX_HOLD_SECONDS=$spelling" \
+      "an ignored ceiling must be named on stderr rather than silently dropped"
+    assert_not_contains "$(cat "$err")" "breaking an abandoned hold" \
+      "a rejected ceiling must never break a hold"
+  done
+  pass "fm-gate.sh: a zero ceiling falls back to the default rather than breaking a live hold"
+}
+
 # The worst failure shape this script has, and it arrives from operator
 # configuration alone: with a trailing slash on the configured path the marker
 # was built by concatenation and landed INSIDE the hold, so `mkdir` refreshed the
@@ -1158,6 +1186,7 @@ test_a_hold_taken_during_the_decision_is_not_broken
 test_an_orphaned_runner_keeps_the_holders_hold
 test_a_hold_past_the_ceiling_is_broken_however_alive
 test_a_ceiling_below_the_stale_age_still_breaks_the_hold
+test_a_zero_ceiling_falls_back_rather_than_breaking_a_live_hold
 test_a_trailing_slash_on_the_hold_path_still_breaks_an_abandoned_hold
 test_dot_terminated_hold_paths_still_break_an_abandoned_hold
 test_an_unresolvable_hold_path_refuses_by_name

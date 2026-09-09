@@ -154,11 +154,15 @@
 #   nothing else; FM_STATE_OVERRIDE overrides that state directory;
 #   FM_GATE_STALE_SECONDS sets the abandoned-hold age; FM_GATE_MAX_HOLD_SECONDS
 #   sets the absolute ceiling; FM_GATE_POLL_SECONDS (default 30) sets the --wait
-#   poll. A non-numeric age or ceiling, and a non-numeric or zero poll, falls
-#   back to its default rather than silently disabling the rule it governs: a
-#   poll of zero, or one that every `sleep` refuses, turns --wait into a hot spin
+#   poll. A non-numeric age, a non-numeric or zero ceiling, and a non-numeric or
+#   zero poll each fall back to their default, LOUDLY on stderr, rather than
+#   silently disabling the rule they govern: a zero ceiling breaks every hold
+#   instantly however alive its holder is, granting the queue twice, and a poll
+#   of zero - or one that every `sleep` refuses - turns --wait into a hot spin
 #   that re-runs the whole probe as fast as the machine allows, on the worker
-#   whose entire turn is blocked inside that one command.
+#   whose entire turn is blocked inside that one command. A stale age of zero is
+#   legal and is what the suite drives: that rule still asks both liveness
+#   signals, so it hurries an abandoned hold rather than breaking a live one.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -224,15 +228,58 @@ if [ -n "$LOCK" ]; then
     esac
   fi
 fi
+# A configured value that would disable the rule it governs falls back to the
+# documented default AND says so, because the operator who mistyped it must learn
+# it here rather than discover it as a rule that quietly stopped applying.
+note_tunable_fallback() {
+  echo "ignoring $1=$2: $3; using the default $4 instead" >&2
+}
+
 STALE="${FM_GATE_STALE_SECONDS:-1500}"
-case "$STALE" in ''|*[!0-9]*) STALE=1500 ;; esac
+case "$STALE" in
+  ''|*[!0-9]*)
+    [ -z "${FM_GATE_STALE_SECONDS:-}" ] ||
+      note_tunable_fallback FM_GATE_STALE_SECONDS "$FM_GATE_STALE_SECONDS" \
+        "not a whole number of seconds" 1500
+    STALE=1500
+    ;;
+esac
+# A stale age of 0 stays legal: that rule is still gated by both liveness
+# signals, so it hurries an abandoned hold rather than breaking a live one. The
+# CEILING has no such gate - it breaks a hold however alive its holder is - so a
+# zero there grants the queue twice on every acquire, which is the hazard this
+# queue exists to prevent arriving through the rule added to bound it. Every
+# all-zero spelling is rejected, which only a value test catches.
 MAX_HOLD="${FM_GATE_MAX_HOLD_SECONDS:-7200}"
-case "$MAX_HOLD" in ''|*[!0-9]*) MAX_HOLD=7200 ;; esac
+case "$MAX_HOLD" in
+  ''|*[!0-9]*)
+    [ -z "${FM_GATE_MAX_HOLD_SECONDS:-}" ] ||
+      note_tunable_fallback FM_GATE_MAX_HOLD_SECONDS "$FM_GATE_MAX_HOLD_SECONDS" \
+        "not a whole number of seconds" 7200
+    MAX_HOLD=7200
+    ;;
+esac
+if [ "$MAX_HOLD" -le 0 ]; then
+  note_tunable_fallback FM_GATE_MAX_HOLD_SECONDS "$MAX_HOLD" \
+    "a zero ceiling breaks every hold instantly, however alive its holder is" 7200
+  MAX_HOLD=7200
+fi
 POLL="${FM_GATE_POLL_SECONDS:-30}"
-# Every zero form is rejected as well as non-numeric: `sleep 0` and `sleep 00`
-# both succeed and spin, and only a value test catches all of them.
-case "$POLL" in ''|*[!0-9]*) POLL=30 ;; esac
-[ "$POLL" -gt 0 ] || POLL=30
+case "$POLL" in
+  ''|*[!0-9]*)
+    [ -z "${FM_GATE_POLL_SECONDS:-}" ] ||
+      note_tunable_fallback FM_GATE_POLL_SECONDS "$FM_GATE_POLL_SECONDS" \
+        "not a whole number of seconds" 30
+    POLL=30
+    ;;
+esac
+# `sleep 0` and `sleep 00` both succeed and spin, so the poll needs the same
+# value test rather than a check against the literal string.
+if [ "$POLL" -le 0 ]; then
+  note_tunable_fallback FM_GATE_POLL_SECONDS "$POLL" \
+    "a zero poll turns --wait into a hot spin" 30
+  POLL=30
+fi
 # Derived from the canonical hold's own parent and name, so the marker is a
 # sibling of the hold and never an entry inside it, for every spelling of the
 # configured path.
