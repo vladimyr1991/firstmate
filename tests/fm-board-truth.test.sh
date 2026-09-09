@@ -12,11 +12,18 @@
 #
 # Matrix:
 #   (a) link appends a live index line; archive appends an archive line; the
-#       card then has no live link and --all-index skips it
+#       card then has no live link and --all-index skips it; the handover order
+#       link spec1 / link impl1 / archive spec1 leaves the card live on impl1,
+#       and archiving impl1 afterwards retires it; a project path with a space
+#       still links
 #   (b) index append refused (unwritable data dir) -> meta untouched, exit 1
-#   (c) branch in staging + deploy run success       -> landed-on-stand
-#   (d) branch in staging + deploy run failure       -> landed-not-deployed
-#   (e) branch exists, not in staging (in develop)   -> in-flight, in_develop=yes
+#   (c) branch in staging + deploy run success       -> landed-on-stand, parsed
+#       from the real gh-axi default row whose quoted title holds a comma
+#   (d) branch in staging + deploy run failure       -> landed-not-deployed, parsed
+#       from a row whose title is bare (unquoted)
+#   (e) branch exists, not in staging (in develop)   -> in-flight, in_develop=yes;
+#       with an unreadable staging ref in_staging is - and the verdict is
+#       unresolved, never in-flight
 #   (f) branch absent, artifact pattern misses       -> not-started
 #   (g) branch absent, artifact pattern hits staging -> landed-on-stand (squash-merged)
 #   (h) branch absent, no artifact pattern           -> unresolved (never guessed)
@@ -38,11 +45,13 @@ TMP_ROOT=$(fm_test_tmproot fm-board-truth-tests)
 
 gitc() { git -c user.email=t@t -c user.name=t "$@"; }
 
-# Build one sandbox: a bare origin with main, develop, staging; fm/landed merged
-# into staging; fm/wip only on develop; a clone at $case/repo; a fake gh-axi whose
-# deploy conclusion is $2 (default success). Echoes the case dir.
+# Build one sandbox: a bare origin with main, develop, staging; fm/t1 (the branch
+# fm-notion-link.sh records for task t1) merged into staging; fm/wip only on
+# develop; a clone at $case/repo; a fake gh-axi that prints the real default
+# `run list` shape with deploy conclusion $2 (default success) and title cell $3
+# (default a quoted title holding a comma). Echoes the case dir.
 build_case() {
-  local name=$1 conclusion=${2:-success} case_dir seed
+  local name=$1 conclusion=${2:-success} title=${3:-'"deploy: staging, nightly"'} case_dir seed
   case_dir="$TMP_ROOT/$name"
   mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/fakebin"
   git init -q --bare "$case_dir/origin.git"
@@ -58,13 +67,13 @@ build_case() {
   git -C "$seed" push -q origin develop
   git -C "$seed" checkout -q -b staging main
   git -C "$seed" push -q origin staging
-  git -C "$seed" checkout -q -b fm/landed main
+  git -C "$seed" checkout -q -b fm/t1 main
   printf 'route /api/subject_requests/search\n' > "$seed/feature.py"
   git -C "$seed" add feature.py
   gitc -C "$seed" commit -q -m "feature"
-  git -C "$seed" push -q origin fm/landed
+  git -C "$seed" push -q origin fm/t1
   git -C "$seed" checkout -q staging
-  gitc -C "$seed" merge -q --no-ff fm/landed -m "merge landed"
+  gitc -C "$seed" merge -q --no-ff fm/t1 -m "merge landed"
   git -C "$seed" push -q origin staging
   git -C "$seed" checkout -q -b fm/wip main
   gitc -C "$seed" commit -q --allow-empty -m "wip"
@@ -79,8 +88,10 @@ case "\${1:-} \${2:-}" in
   "run list")
     case " \$* " in
       *" --workflow deploy.yml"*" --branch staging"*)
-        printf 'count: 1 (showing first 1)\nruns[1]{id,status,conclusion}:\n  1,completed,$conclusion\n' ;;
-      *) printf 'count: 0 (showing first 0)\nruns[]: []\n' ;;
+        printf 'count: 1 (showing first 1)\nruns[1]{id,title,status,conclusion,workflow,branch,event,created}:\n'
+        printf '  34349271842,%s,completed,$conclusion,Deploy,staging,push,30m ago\n' '$title'
+        printf 'help[1]:\n  Run \`gh-axi run view <id>\` to view details\n' ;;
+      *) printf 'count: 0\nruns: []\nhelp[1]:\n  Run \`gh-axi run view <id>\` to view details\n' ;;
     esac
     exit 0 ;;
 esac
@@ -113,6 +124,29 @@ assert_contains "$OUT" 'card=https://www.notion.so/card-1' "(a) live card listed
 assert_not_contains "$OUT" 'card-2' "(a) archived card not listed"
 run_truth "$C" --card https://www.notion.so/card-2 --no-fetch
 assert_contains "$OUT" 'truth=unresolved' "(a) archived card resolves to nothing"
+# Handover: the implementation task is linked first, then the spec task archived.
+fm_write_meta "$C/state/spec1.meta" "window=firstmate:fm-spec1" "project=$C/repo"
+fm_write_meta "$C/state/impl1.meta" "window=firstmate:fm-impl1" "project=$C/repo"
+FM_HOME="$C" FM_NOW_OVERRIDE=110 "$LINK" spec1 https://www.notion.so/card-h >/dev/null || fail "(a) link spec1"
+FM_HOME="$C" FM_NOW_OVERRIDE=111 "$LINK" impl1 https://www.notion.so/card-h >/dev/null || fail "(a) link impl1"
+FM_HOME="$C" FM_NOW_OVERRIDE=112 "$LINK" --archive spec1 >/dev/null || fail "(a) archive spec1"
+run_truth "$C" --card https://www.notion.so/card-h --no-fetch
+[ "$(field "$OUT" task)" = impl1 ] || fail "(a) handover card resolves to impl1: $OUT"
+[ "$(field "$OUT" branch)" = fm/impl1 ] || fail "(a) handover card resolves to impl1's branch: $OUT"
+run_truth "$C" --all-index --no-fetch
+assert_contains "$OUT" 'card=https://www.notion.so/card-h' "(a) handover card still live in --all-index"
+FM_HOME="$C" FM_NOW_OVERRIDE=113 "$LINK" --archive impl1 >/dev/null || fail "(a) archive impl1"
+run_truth "$C" --card https://www.notion.so/card-h --no-fetch
+[ "$(field "$OUT" task)" = - ] || fail "(a) archiving the last task retires the card: $OUT"
+run_truth "$C" --all-index --no-fetch
+assert_not_contains "$OUT" 'card-h' "(a) retired handover card not listed"
+# A project path with a space is an ordinary macOS path and must still link.
+mkdir -p "$C/with space"
+fm_write_meta "$C/state/t3.meta" "window=firstmate:fm-t3" "project=$C/with space/repo"
+FM_HOME="$C" FM_NOW_OVERRIDE=120 "$LINK" t3 https://www.notion.so/card-3 >/dev/null || fail "(a) link with a space in the project path"
+assert_grep $'120\tlink\tt3\thttps://www.notion.so/card-3\tfm/t3\t'"$C/with space/repo" "$C/data/notion-cards.tsv" "(a) spaced project recorded"
+run_truth "$C" --card https://www.notion.so/card-3 --no-fetch
+[ "$(field "$OUT" task)" = t3 ] || fail "(a) spaced project line still parses: $OUT"
 pass "(a) index lifecycle"
 
 # --- (b) index append refused -> meta untouched ---------------------------------
@@ -129,7 +163,7 @@ pass "(b) index append refused leaves meta untouched"
 
 # --- (c)..(i) verdicts ------------------------------------------------------------
 C=$(build_case c)
-run_truth "$C" --branch fm/landed
+run_truth "$C" --branch fm/t1
 expect_code 0 "$RC" "(c) exit"
 [ "$(field "$OUT" truth)" = landed-on-stand ] || fail "(c) expected landed-on-stand: $OUT"
 [ "$(field "$OUT" in_staging)" = yes ] || fail "(c) in_staging"
@@ -137,8 +171,8 @@ expect_code 0 "$RC" "(c) exit"
 [ "$(field "$OUT" deploy)" = alive ] || fail "(c) deploy alive"
 pass "(c) branch in staging with live deploy -> landed-on-stand"
 
-D=$(build_case d failure)
-run_truth "$D" --branch fm/landed
+D=$(build_case d failure 'deploy')
+run_truth "$D" --branch fm/t1
 [ "$(field "$OUT" truth)" = landed-not-deployed ] || fail "(d) expected landed-not-deployed: $OUT"
 [ "$(field "$OUT" deploy)" = dead ] || fail "(d) deploy dead"
 pass "(d) failed deploy run -> landed-not-deployed"
@@ -146,7 +180,10 @@ pass "(d) failed deploy run -> landed-not-deployed"
 run_truth "$C" --branch fm/wip
 [ "$(field "$OUT" truth)" = in-flight ] || fail "(e) expected in-flight: $OUT"
 [ "$(field "$OUT" in_develop)" = yes ] || fail "(e) in_develop"
-pass "(e) branch outside staging -> in-flight"
+run_truth "$C" --branch fm/wip --staging no-such-stand
+[ "$(field "$OUT" in_staging)" = - ] || fail "(e) unreadable staging ref reports -: $OUT"
+[ "$(field "$OUT" truth)" = unresolved ] || fail "(e) unknown staging is never in-flight: $OUT"
+pass "(e) branch outside staging -> in-flight; unknown staging -> unresolved"
 
 run_truth "$C" --branch fm/never --artifact 'webhook-test|webhook_test'
 [ "$(field "$OUT" truth)" = not-started ] || fail "(f) expected not-started: $OUT"
@@ -162,17 +199,19 @@ run_truth "$C" --branch fm/never
 [ "$(field "$OUT" truth)" = unresolved ] || fail "(h) expected unresolved: $OUT"
 pass "(h) absent branch with no artifact pattern -> unresolved"
 
-run_truth "$C" --branch fm/landed --deploy none
+run_truth "$C" --branch fm/t1 --deploy none
 [ "$(field "$OUT" deploy)" = unknown ] || fail "(i) deploy none"
 [ "$(field "$OUT" truth)" = landed-not-deployed ] || fail "(i) unknown deploy never counts as on the stand"
-OUT=$(PATH="/usr/bin:/bin" FM_HOME="$C" "$TRUTH" --repo "$C/repo" --branch fm/landed --no-fetch 2>&1)
+OUT=$(PATH="/usr/bin:/bin" FM_HOME="$C" "$TRUTH" --repo "$C/repo" --branch fm/t1 --no-fetch 2>&1)
 [ "$(field "$OUT" deploy)" = unknown ] || fail "(i) no gh-axi -> unknown: $OUT"
 pass "(i) unreadable deploy -> unknown, never alive"
 
 # --- (j) reverse half: task torn down by force -------------------------------------
 # Same scenario twice. The only difference between the two runs is whether the
 # durable index exists. Both tear the task down with --force, the harshest exit a
-# task can have, which erases state/<id>.meta and its notion_page= line.
+# task can have, which erases state/<id>.meta and its notion_page= line. The
+# task is t1, so the index records fm/t1, the branch the fixture merged into
+# staging.
 J=$(build_case j)
 fm_fake_exit0 "$J/fakebin" treehouse tmux
 touch "$J/state/.last-watcher-beat"
@@ -190,8 +229,6 @@ run_truth "$J" --card https://www.notion.so/card-j --no-fetch
 [ "$(field "$OUT" task)" = - ] || fail "(j) no task resolvable without index"
 # Fixed world: the index is back; nothing else changed and the task is still gone.
 mv "$J/index.saved" "$J/data/notion-cards.tsv"
-# Rename the recorded branch to the one that landed, so the index resolves to real work.
-sed -i.bak 's#\tfm/t1\t#\tfm/landed\t#' "$J/data/notion-cards.tsv" && rm -f "$J/data/notion-cards.tsv.bak"
 run_truth "$J" --card https://www.notion.so/card-j --no-fetch
 [ "$(field "$OUT" truth)" = landed-on-stand ] || fail "(j) with the index the card still reconciles: $OUT"
 [ "$(field "$OUT" task)" = t1 ] || fail "(j) task resolved from index after teardown"
@@ -204,7 +241,7 @@ run_truth "$C" --card 'https://www.notion.so/x y'
 expect_code 2 "$RC" "(k) whitespace url"
 run_truth "$C" --branch '--upload-pack=x'
 expect_code 2 "$RC" "(k) option-shaped branch"
-OUT=$("$TRUTH" --branch fm/landed 2>&1); RC=$?
+OUT=$("$TRUTH" --branch fm/t1 2>&1); RC=$?
 expect_code 2 "$RC" "(k) missing --repo"
 run_truth "$C"
 expect_code 2 "$RC" "(k) no subject"

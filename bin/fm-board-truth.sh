@@ -57,13 +57,15 @@
 #                        the stand
 #   landed-not-deployed  in staging, but the latest deploy run failed or could
 #                        not be read - do not call it on the stand
-#   in-flight            the branch exists and is not in staging
+#   in-flight            the branch exists and is known not to be in staging
 #   not-started          no branch anywhere on the remote and, when an artifact
 #                        pattern was given, no match in the staging tree
 #   unresolved           no branch could be resolved for the card, or the branch
 #                        is absent and no artifact pattern was given to fall back
 #                        on (a squash-merged branch is deleted after landing, so
-#                        absence alone never proves not-started)
+#                        absence alone never proves not-started), or the branch
+#                        exists but the staging ref itself could not be read, so
+#                        in_staging is `-` and in-flight cannot be claimed
 # Facts that cannot be established are reported as `-`, never guessed.
 #
 # Exit 0 when every subject produced a line, 2 on usage error, 1 when the repo
@@ -175,13 +177,17 @@ deploy_state() {
   [ -n "$DEPLOY_WORKFLOW" ] || { printf 'unknown'; return; }
   command -v gh-axi >/dev/null 2>&1 || { printf 'unknown'; return; }
   out=$( (cd "$REPO" && gh-axi run list --workflow "$DEPLOY_WORKFLOW" --branch "$STAGING" \
-           --limit 1 --fields id,status,conclusion) 2>/dev/null) || { printf 'unknown'; return; }
-  # Row shape: "  <id>,<status>,<conclusion>" after the "runs[N]{...}:" header.
-  row=$(printf '%s\n' "$out" | sed -n '/^runs\[/,$p' | sed -n '2p')
-  row=${row#"${row%%[![:space:]]*}"}
+           --limit 1) 2>/dev/null) || { printf 'unknown'; return; }
+  # Default row shape after the "runs[N]{id,title,status,conclusion,...}:" header:
+  #   <id>,"<title>",<status>,<conclusion>,<workflow>,<branch>,<event>,<created>
+  # The title is double-quoted and may itself hold commas (a literal quote inside
+  # it is doubled), or it may be bare when it needs no quoting. Strip the id and
+  # the title with one quote-aware substitution; status and conclusion follow.
+  row=$(printf '%s\n' "$out" | sed -n '/^runs\[[0-9]/,$p' | sed -n '2p')
+  row=$(printf '%s' "$row" | sed -E 's/^[[:space:]]*[^,]*,("([^"]|"")*"|[^,]*),//')
   [ -n "$row" ] || { printf 'unknown'; return; }
-  status=$(printf '%s' "$row" | cut -d, -f2)
-  conclusion=$(printf '%s' "$row" | cut -d, -f3 | tr -d '"')
+  status=$(printf '%s' "$row" | cut -d, -f1)
+  conclusion=$(printf '%s' "$row" | cut -d, -f2)
   if [ "$status" = completed ] && [ "$conclusion" = success ]; then
     printf 'alive'
   elif [ "$status" = completed ]; then
@@ -221,7 +227,7 @@ while [ "$i" -lt "$n" ]; do
 
   if [ "$staging" = yes ] || [ "$art" = yes ]; then
     if [ "$DEPLOY" = alive ]; then truth=landed-on-stand; else truth=landed-not-deployed; fi
-  elif [ "$exists" = yes ]; then
+  elif [ "$exists" = yes ] && [ "$staging" = no ]; then
     truth=in-flight
   elif [ "$exists" = no ] && [ "$art" = no ]; then
     truth=not-started

@@ -134,21 +134,12 @@ if [ "$MODE" = archive ]; then
   exit 0
 fi
 
-# The URL lands in a line-oriented meta file and is echoed into later prompts,
-# so reject anything with whitespace, a newline, or a shell/control character
-# before it is ever written.
-case "$URL" in
-  https://*) ;;
-  *) echo "fm-notion-link: page url must start with https:// - got: $URL" >&2; exit 2 ;;
-esac
-case "$URL" in
-  *notion.so/*|*notion.com/*) ;;
-  *) echo "fm-notion-link: page url must be a notion.so or notion.com link" >&2; exit 2 ;;
-esac
-case "$URL" in
-  *[[:space:]]*|*'$'*|*'`'*|*'"'*|*"'"*|*"\\"*|*'<'*|*'>'*)
-    echo "fm-notion-link: page url contains an unsafe character" >&2; exit 2 ;;
-esac
+# The URL lands in a line-oriented meta file and is echoed into later prompts;
+# the index lib owns the rule for what is safe to write.
+if ! fm_notion_index_url_safe "$URL"; then
+  echo "fm-notion-link: page url must be an https:// notion.so or notion.com link with no whitespace or shell characters - got: $URL" >&2
+  exit 2
+fi
 
 # FM_NOW_OVERRIDE keeps tests deterministic; production uses the wall clock.
 LINK_TS=${FM_NOW_OVERRIDE:-$(date +%s)}

@@ -12,12 +12,16 @@
 # Format - data/notion-cards.tsv, append-only, one event per line:
 #   <epoch>\t<event>\t<task-id>\t<card-url>\t<branch>\t<project>
 #   event = link     the card was bound to the task; branch is the task branch
-#   event = archive  the link was retired (recycle step 3); the card is about to
-#                    belong to someone else, so no lookup resolves it to this
-#                    task any more
-# The latest line for a card wins. A card whose latest line is `archive` has no
-# live link. Fields are tab-separated and the url and branch are validated to
-# contain no whitespace before they are written, so the file always parses.
+#   event = archive  the link was retired (recycle step 3, or a spec task handed
+#                    its card to the implementation task); this task no longer
+#                    owns the card
+# Links are tracked per task: a `link` adds the task to the card's live set and
+# an `archive` removes only that task, so the handover order "link impl, then
+# archive spec" leaves the card live and owned by impl. A card is live while any
+# linked task remains, and a lookup resolves it to the most recently linked task
+# still live. Fields are tab-separated; the url and branch are validated to
+# contain no whitespace and the project no tab or newline before they are
+# written, so the file always parses.
 
 # shellcheck disable=SC2034 # Read by bin/fm-notion-link.sh and bin/fm-board-truth.sh after sourcing.
 FM_NOTION_INDEX_NAME='notion-cards.tsv'
@@ -41,7 +45,8 @@ fm_notion_index_url_safe() {  # <url>
 fm_notion_index_append() {
   local index=$1 event=$2 id=$3 url=$4 branch=$5 project=$6 dir ts
   case "$event" in link|archive) ;; *) return 1 ;; esac
-  case "$branch$project" in *[[:space:]]*) return 1 ;; esac
+  case "$branch" in *[[:space:]]*) return 1 ;; esac
+  case "$project" in *$'\t'*|*$'\n'*) return 1 ;; esac
   dir=${index%/*}
   [ "$dir" != "$index" ] || dir=.
   mkdir -p "$dir" || return 1
@@ -49,23 +54,31 @@ fm_notion_index_append() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$event" "$id" "$url" "$branch" "$project" >> "$index"
 }
 
-# Resolve a card to its live task and branch: prints "<task-id>\t<branch>" or
-# nothing when the card has no live link. Args: <index> <url>
+# Resolve a card to its live task and branch: prints "<task-id>\t<branch>" for
+# the most recently linked task that has not been archived, or nothing when no
+# live link remains. Args: <index> <url>
 fm_notion_index_lookup() {
   local index=$1 url=$2
   [ -f "$index" ] || return 0
   awk -F'\t' -v url="$url" '
-    $4 == url { ev = $2; id = $3; br = $5 }
-    END { if (ev == "link") printf "%s\t%s\n", id, br }' "$index"
+    $4 != url { next }
+    $2 == "link" { live[$3] = ++seq; br[$3] = $5 }
+    $2 == "archive" { delete live[$3] }
+    END {
+      best = ""
+      for (id in live) if (best == "" || live[id] > live[best]) best = id
+      if (best != "") printf "%s\t%s\n", best, br[best]
+    }' "$index"
 }
 
-# Every card whose latest event is a live link, one url per line, in first-seen
-# order. Args: <index>
+# Every card that still has at least one live linked task, one url per line, in
+# first-seen order. Args: <index>
 fm_notion_index_live_cards() {
   local index=$1
   [ -f "$index" ] || return 0
   awk -F'\t' '
     !($4 in order) { order[$4] = ++n; urls[n] = $4 }
-    { ev[$4] = $2 }
-    END { for (i = 1; i <= n; i++) if (ev[urls[i]] == "link") print urls[i] }' "$index"
+    $2 == "link" && !(($4 SUBSEP $3) in live) { live[$4, $3] = 1; cnt[$4]++ }
+    $2 == "archive" && (($4 SUBSEP $3) in live) { delete live[$4, $3]; cnt[$4]-- }
+    END { for (i = 1; i <= n; i++) if (cnt[urls[i]] > 0) print urls[i] }' "$index"
 }
