@@ -466,9 +466,16 @@ test_stale_lock_reclaimed() {
   mkdir -p "$home/state/voice.submit.lock"
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
-  expect_code 0 "$RC" "stale lock (no pid): submit proceeds"
-  assert_absent "$home/state/voice.submit.lock" "stale lock (no pid): released after the submit"
-  pass "stale lock: a lock whose holder is dead or unrecorded is reclaimed by the next submit"
+  expect_code 9 "$RC" "fresh lock without a pid yet: a holder mid-acquire is not evicted"
+  assert_present "$home/state/voice.submit.lock" "fresh lock without a pid: left alone"
+  [ ! -s "$home/whisper.log" ] || fail "fresh lock without a pid: whisper must not run"
+
+  python3 -c 'import os, sys, time; t = time.time() - 60; os.utime(sys.argv[1], (t, t))' "$home/state/voice.submit.lock"
+  dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  expect_code 0 "$RC" "old lock without a pid: submit proceeds"
+  assert_absent "$home/state/voice.submit.lock" "old lock without a pid: released after the submit"
+  pass "stale lock: a dead holder or an old unrecorded lock is reclaimed; a fresh unrecorded lock is not"
 }
 
 # --- AC-17: single daemon instance ---------------------------------------------

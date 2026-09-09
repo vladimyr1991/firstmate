@@ -74,7 +74,7 @@
 #
 # Audio at rest: the daemon records into a fresh 0700 directory
 # $TMPDIR/fm-voice.XXXXXX; submit deletes that directory on every exit path
-# (EXIT/INT/TERM trap) and start sweeps any leftover fm-voice.* directory.
+# (EXIT/INT/TERM/HUP trap) and start sweeps any leftover fm-voice.* directory.
 # No audio is ever written under data/, state/, projects/, or the repository,
 # and no audio path is printed.
 #
@@ -346,12 +346,30 @@ running_pid() {  # prints the live daemon pid, or nothing
 
 # The submit lock is a directory holding the owner's pid, so a holder that died
 # without running its trap (SIGKILL, a closed pane, power loss) never wedges
-# later submits: a lock whose pid is absent or dead is stale and reclaimed.
+# later submits: a lock whose pid is dead is stale and reclaimed. A lock with no
+# pid yet is stale only once it is older than LOCK_GRACE_SECONDS, so a holder
+# that has just created the directory and not written its pid is never evicted.
+LOCK_GRACE_SECONDS=5
+
+mtime_of() {
+  case "$(uname)" in
+    Darwin|*BSD) stat -f %m "$1" 2>/dev/null ;;
+    *) stat -c %Y "$1" 2>/dev/null ;;
+  esac
+}
+
 lock_is_stale() {
-  local pid
+  local pid mtime now
   [ -d "$LOCK_DIR" ] || return 1
-  pid=$(tr -d '[:space:]' < "$LOCK_DIR/pid" 2>/dev/null) || pid=
-  ! pid_alive "$pid"
+  if [ -f "$LOCK_DIR/pid" ]; then
+    pid=$(tr -d '[:space:]' < "$LOCK_DIR/pid" 2>/dev/null) || pid=
+    ! pid_alive "$pid"
+    return
+  fi
+  mtime=$(mtime_of "$LOCK_DIR") || return 1
+  now=$(date +%s)
+  case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
+  [ $((now - mtime)) -gt "$LOCK_GRACE_SECONDS" ]
 }
 
 clear_stale_lock() {

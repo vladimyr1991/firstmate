@@ -192,13 +192,11 @@ final class Recorder {
     var held = false                // Carbon repeats the press event while the chord is held
 
     func press() {
-        let firstPress = !held
+        guard !held else { return }
         held = true
         if transcribing {
-            if firstPress {
-                say("busy: still transcribing")
-                cue("busy")
-            }
+            say("busy: still transcribing")
+            cue("busy")
             return
         }
         guard recorder == nil else { return }
@@ -310,12 +308,16 @@ func shutdown() {
 
 signal(SIGTERM, SIG_IGN)
 signal(SIGINT, SIG_IGN)
+signal(SIGHUP, SIG_IGN)
 let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 termSource.setEventHandler { shutdown() }
 termSource.resume()
 let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 intSource.setEventHandler { shutdown() }
 intSource.resume()
+let hupSource = DispatchSource.makeSignalSource(signal: SIGHUP, queue: .main)
+hupSource.setEventHandler { shutdown() }
+hupSource.resume()
 
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
