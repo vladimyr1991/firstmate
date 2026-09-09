@@ -543,6 +543,121 @@ SH
   pass "fm-gate.sh: a hold taken while a break is being decided is not broken"
 }
 
+# Recording the holder process fixed the argv probe lying about a live holder; it
+# must not become the ONLY signal. A harness tool-call timeout or interrupt kills
+# the wrapper shell while the suite it started survives as an orphan re-parented
+# to init - a run that is genuinely live - and breaking that hold puts a second
+# full run on the machine, the same hazard from the other side.
+test_an_orphaned_runner_keeps_the_holders_hold() {
+  local state wt out rc
+  state=$(new_state orphan-runner)
+  GATE_LOCK=$(new_lock orphan-runner)
+  wt="$TMP_ROOT/orphan-runner-wt"
+  register_task "$state" task-a "$wt"
+  # The wrapper takes the hold and then exits: the recorded holder process is gone.
+  FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    bash -c '"$1" acquire "$2" >/dev/null 2>&1' _ "$GATE" task-a
+  # Its runner did not die with it, and still carries the recorded worktree.
+  start_fixture_process "$wt/pytest-suite" >/dev/null
+  age_path "$GATE_LOCK" 3600
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_STALE_SECONDS=0 \
+    "$GATE" acquire task-b 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "a hold whose runner outlived its wrapper must not be broken"
+  # The hold surviving is the evidence; the refusal wording is secondary.
+  assert_contains "$(gate "$state" status 2>&1)" "held by: task-a" \
+    "the orphan's hold must survive the stale rule"
+  assert_contains "$out" "QUEUE NOT YOURS - held by: task-a" "the orphaned run must keep the queue"
+  pass "fm-gate.sh: an orphaned runner keeps its holder's hold"
+}
+
+# The mirror image, and the direction with no recovery: $PPID can name something
+# long-lived (a harness reusing one shell across tool calls), and a machine-wide
+# hold that can never be broken wedges every home with no escape but a manual
+# delete. Past the ceiling the hold goes however alive it looks, and loudly.
+test_a_hold_past_the_ceiling_is_broken_however_alive() {
+  local state wt out err rc
+  state=$(new_state hold-ceiling)
+  GATE_LOCK=$(new_lock hold-ceiling)
+  wt="$TMP_ROOT/hold-ceiling-wt"
+  register_task "$state" task-a "$wt"
+  start_holder_wrapper state "$state" task-a "$wt" >/dev/null
+
+  # Well past the 25-minute rule but under the ceiling: the live holder keeps it.
+  age_path "$GATE_LOCK" 3600
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    "$GATE" acquire task-b 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "a live holder must keep its hold below the ceiling"
+  assert_contains "$out" "QUEUE NOT YOURS - held by: task-a" "the live holder must still be named"
+
+  # Past the ceiling, with the very same live holder, the hold goes.
+  err="$TMP_ROOT/hold-ceiling.err"
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_MAX_HOLD_SECONDS=60 \
+    "$GATE" acquire task-b 2>"$err"); rc=$?
+  expect_code 0 "$rc" "a hold past the ceiling must be broken however alive its holder looks"
+  assert_contains "$out" "queue held by you: task-b" "the ceiling break must hand the queue over"
+  # Never silent: the break names the owner it displaced and the age it reached.
+  assert_contains "$(cat "$err")" "breaking an abandoned hold (owner task-a" \
+    "a ceiling break must name the owner it displaced"
+  assert_contains "$(cat "$err")" "ceiling" "a ceiling break must say the ceiling is why"
+  pass "fm-gate.sh: a hold past the ceiling is broken however alive its holder looks"
+}
+
+# The break marker is a second fixed name in the same shared directory as the
+# hold. Unguarded, one `mkdir` by another user disabled the abandoned-hold rule
+# for every home on the machine - permanently, and without printing anything.
+test_a_foreign_break_marker_is_refused_visibly() {
+  local state target out err rc
+  state=$(new_state foreign-marker)
+  GATE_LOCK=$(new_lock foreign-marker)
+  target="$TMP_ROOT/foreign-marker-target"
+  mkdir -p "$target"
+
+  # An abandoned hold that the rule would otherwise break.
+  mkdir -p "$GATE_LOCK"
+  printf '%s\n' "task-dead" > "$GATE_LOCK/owner"
+  printf '%s\n' "$TMP_ROOT/foreign-marker-wt" > "$GATE_LOCK/owner_worktree"
+  printf '%s\n' "token-of-the-stale-hold" > "$GATE_LOCK/token"
+  age_path "$GATE_LOCK" 3600
+  ln -s "$target" "$GATE_LOCK.breaking"
+
+  err="$TMP_ROOT/foreign-marker.err"
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_STALE_SECONDS=0 \
+    "$GATE" acquire task-b 2>"$err"); rc=$?
+  expect_code 1 "$rc" "a break blocked by a foreign marker must refuse rather than proceed"
+  assert_contains "$(cat "$err")" "BREAK NOT POSSIBLE" \
+    "a foreign break marker must produce a visible refusal, never silence"
+  [ -L "$GATE_LOCK.breaking" ] || fail "a foreign break marker must never be removed"
+  [ -d "$target" ] || fail "a foreign break marker must never be followed and emptied"
+  assert_contains "$out" "QUEUE NOT YOURS - held by: task-dead" "the hold must be left intact"
+  pass "fm-gate.sh: a foreign break marker is refused visibly and never removed"
+}
+
+# The marker's own recovery clock is independent of FM_GATE_STALE_SECONDS. Reusing
+# the hold's clock meant a suite driving the stale age to 0 removed a marker
+# another contender was actively holding, silently reopening the double-grant
+# window the marker exists to close.
+test_an_active_break_marker_survives_a_low_stale_age() {
+  local state out rc
+  state=$(new_state marker-clock)
+  GATE_LOCK=$(new_lock marker-clock)
+
+  mkdir -p "$GATE_LOCK"
+  printf '%s\n' "task-dead" > "$GATE_LOCK/owner"
+  printf '%s\n' "$TMP_ROOT/marker-clock-wt" > "$GATE_LOCK/owner_worktree"
+  printf '%s\n' "token-of-the-stale-hold" > "$GATE_LOCK/token"
+  age_path "$GATE_LOCK" 3600
+  # A marker another contender is holding right now: brand new, ours, present.
+  mkdir "$GATE_LOCK.breaking"
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_STALE_SECONDS=0 \
+    "$GATE" acquire task-b 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "a contender must not break while another holds the marker"
+  assert_contains "$out" "QUEUE NOT YOURS - held by: task-dead" "the hold must be left to the active breaker"
+  [ -d "$GATE_LOCK.breaking" ] || fail "an actively held break marker must not be removed"
+  pass "fm-gate.sh: an active break marker survives a low stale age"
+}
+
 test_a_live_run_outside_the_hold_refuses_a_free_queue() {
   local state wt out rc
   state=$(new_state resource)
@@ -686,6 +801,10 @@ test_abandoned_hold_is_broken_but_a_live_run_is_not
 test_a_live_run_in_another_home_keeps_its_hold
 test_a_holder_whose_runner_is_invisible_to_argv_keeps_its_hold
 test_a_hold_taken_during_the_decision_is_not_broken
+test_an_orphaned_runner_keeps_the_holders_hold
+test_a_hold_past_the_ceiling_is_broken_however_alive
+test_a_foreign_break_marker_is_refused_visibly
+test_an_active_break_marker_survives_a_low_stale_age
 test_a_live_run_outside_the_hold_refuses_a_free_queue
 test_waiting_workers_do_not_block_each_other
 test_a_waiting_worker_holding_the_gate_command_does_not_block_issuance

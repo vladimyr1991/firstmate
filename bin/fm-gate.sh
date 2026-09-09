@@ -55,23 +55,40 @@
 #   permanent two-way stall, each reading the other's unrun command as a live run.
 #   A process holding this script's invocation is a waiter or a wrapper by
 #   contract and never the run itself, so it is skipped before the runner match.
-#   A hold is abandoned when its recorded HOLDER PROCESS is gone AND the hold is
-#   older than FM_GATE_STALE_SECONDS (default 1500, 25 minutes). That process is
-#   the parent of this script - the shell running the mandated one-liner, which by
-#   construction lives exactly as long as wait plus run plus release - and its pid
-#   and start time are written into the hold at acquire time. Liveness is a
-#   recorded FACT, never an inference from process command text: the one-liner
-#   makes that inference impossible, because the only process whose argv carries
-#   the task worktree is the wrapper shell (which must be skipped, being also a
-#   waiter) while the real runner carries no path at all - `make test`, a system
-#   `pytest tests/`, or a bare `bash tests/foo.test.sh` are all invisible to argv
-#   matching, and a genuinely running suite lost its hold at 25 minutes because of
-#   it. The start time is compared as well as the pid so a recycled pid cannot
-#   masquerade as the holder; when the start time cannot be read the holder counts
-#   as ALIVE, because uncertainty must never break a hold. A hold written by an
-#   older copy of this script records no process and falls back to the argv probe,
-#   so it is no worse off than before. The owner's worktree is recorded too, so
-#   nothing here needs another home's metadata.
+#   A hold is abandoned when it is older than FM_GATE_STALE_SECONDS (default 1500,
+#   25 minutes) and NEITHER holder-liveness signal answers. The two signals are
+#   ORed, and the OR is the point: each one is blind exactly where the other sees.
+#     - The recorded HOLDER PROCESS: the parent of this script, the shell running
+#       the mandated one-liner, whose pid and start time are written into the hold
+#       at acquire time. This exists because argv cannot answer the question at
+#       all - the only process whose argv carries the task worktree is the wrapper
+#       shell, which must be skipped for being a waiter, while the real runner
+#       carries no path (`make test`, a system `pytest tests/`, a bare
+#       `bash tests/foo.test.sh`), and a genuinely running suite lost its hold at
+#       25 minutes because of it. The start time is compared as well as the pid so
+#       a recycled pid cannot masquerade as the holder; an unreadable start time
+#       counts as ALIVE, because uncertainty must never break a hold.
+#     - The argv CHECK-WORK probe against the hold's own recorded worktree. This
+#       exists because the recorded process can die while the run does not: a
+#       harness tool-call timeout kills the wrapper and the suite it started keeps
+#       going as an orphan re-parented to init, and breaking that hold puts a
+#       second full run on the machine - the same hazard from the other side.
+#       Asked only about one hold's recorded worktree, it cannot deadlock waiters
+#       the way a fleet-wide "is anybody busy" question once did.
+#   A hold written by an older copy of this script records no process; the probe
+#   alone then answers, exactly as it used to.
+#   FM_GATE_MAX_HOLD_SECONDS (default 7200) is the absolute ceiling: past it the
+#   hold is broken however alive it looks, loudly, on stderr. Without it a
+#   recorded parent that outlives its run - a harness reusing one shell across
+#   tool calls, or a caller whose `bash -c` exec-optimises the wrapper away so
+#   $PPID names the session - would wedge every home on the machine forever with
+#   no escape but a manual delete. The 25-minute rule is unchanged for the
+#   ordinary case.
+#   NOT compatible across paths: a home still running an older PRIVATE copy of
+#   this script holds $FM_HOME/state/.gate-lock, which this machine-wide hold does
+#   not touch, so the two do NOT serialize against each other and a private copy
+#   must be retired or repointed at this script. Reading a legacy hold that
+#   records no process is a different and still-supported compatibility.
 #   Only ONE contender breaks at a time, behind <hold>.breaking, and the break is
 #   a COMPARE AND SWAP: the hold's identity is captured before the liveness
 #   decision and re-verified immediately before the removal, still inside the
@@ -86,8 +103,10 @@
 # Environment: FM_GATE_LOCK_DIR overrides the machine-wide hold path (default
 #   /tmp/fm-gate-lock); FM_HOME selects the home whose state/ the home-scoped
 #   issuance probe scans; FM_STATE_OVERRIDE overrides that state directory;
-#   FM_GATE_STALE_SECONDS sets the abandoned-hold age; FM_GATE_POLL_SECONDS
-#   (default 30) sets the --wait poll.
+#   FM_GATE_STALE_SECONDS sets the abandoned-hold age; FM_GATE_MAX_HOLD_SECONDS
+#   sets the absolute ceiling; FM_GATE_POLL_SECONDS (default 30) sets the --wait
+#   poll. A non-numeric age or ceiling falls back to its default rather than
+#   silently disabling the rule it governs.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,8 +115,16 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 LOCK="${FM_GATE_LOCK_DIR:-/tmp/fm-gate-lock}"
 STALE="${FM_GATE_STALE_SECONDS:-1500}"
+case "$STALE" in ''|*[!0-9]*) STALE=1500 ;; esac
+MAX_HOLD="${FM_GATE_MAX_HOLD_SECONDS:-7200}"
+case "$MAX_HOLD" in ''|*[!0-9]*) MAX_HOLD=7200 ;; esac
 POLL="${FM_GATE_POLL_SECONDS:-30}"
 BREAK_MUTEX="$LOCK.breaking"
+# Deliberately NOT $STALE: a marker held for the length of one decision must not
+# be aged out on the hold's 25-minute clock, and a suite that drives
+# FM_GATE_STALE_SECONDS low must not start removing markers other contenders are
+# actively holding, which silently reopens the double-grant window.
+BREAK_MUTEX_MAX=120
 GATE_SELF="$(basename "${BASH_SOURCE[0]}")"
 GATE_SELF_INVOCATION="${GATE_SELF//./\\.}[\"']?[[:space:]]+(acquire|release|status)([[:space:]]|\$)"
 
@@ -151,19 +178,22 @@ path_uid() {
   fi
 }
 
-# True when something sits at the hold path that this uid does not own: a
-# symlink, a non-directory, or another user's directory.
-hold_is_foreign() {
-  local uid me
-  [ -e "$LOCK" ] || [ -L "$LOCK" ] || return 1
-  [ -L "$LOCK" ] && return 0
-  [ -d "$LOCK" ] || return 0
-  uid=$(path_uid "$LOCK")
+# True when something sits at $1 that this uid does not own: a symlink, a
+# non-directory, or another user's directory. Both fixed names this script uses
+# live in a shared directory, so both get this.
+path_is_foreign() {
+  local path=$1 uid me
+  [ -e "$path" ] || [ -L "$path" ] || return 1
+  [ -L "$path" ] && return 0
+  [ -d "$path" ] || return 0
+  uid=$(path_uid "$path")
   case "$uid" in ''|*[!0-9]*) return 0 ;; esac
   me=$(id -u)
   [ "$uid" = "$me" ] && return 1
   return 0
 }
+
+hold_is_foreign() { path_is_foreign "$LOCK"; }
 
 refuse_foreign_hold() {
   # On stdout as well as stderr, for the same reason the busy refusals are.
@@ -204,12 +234,13 @@ owner_process_alive() {
   [ "$current" = "$recorded" ]
 }
 
+# Either signal votes the holder alive; only silence from both is abandonment.
+# The OR is strictly fail-safe - it can never turn a live holder into a dead one -
+# and the header says what each signal is blind to.
 owner_running() {
   [ -n "$(owner)" ] || return 1
-  case "$(owner_pid)" in
-    ''|*[!0-9]*) check_work_live "$(owner_worktree)" ;;
-    *) owner_process_alive ;;
-  esac
+  owner_process_alive && return 0
+  check_work_live "$(owner_worktree)"
 }
 
 # Print the id of another task with a live full run, if any. Home-scoped by
@@ -242,17 +273,26 @@ path_age() {
 # identity is captured before the liveness check and re-verified immediately
 # before the removal. See the header for both failures this closes.
 break_if_abandoned() {
-  local now age holder identity broke=1
+  local now age holder identity why broke=1
   [ -d "$LOCK" ] || return 1
   hold_is_foreign && return 1
   now=$(date +%s)
   case "$now" in ''|*[!0-9]*) return 1 ;; esac
-  # Cheap pre-filter, so contenders do not queue on the mutex for a fresh hold.
+  # Cheap pre-filter, so contenders do not queue on the marker for a fresh hold.
+  # The ceiling is checked here too, in case it is configured below the stale age.
   age=$(path_age "$now" "$LOCK")
-  [ "$age" -ge "$STALE" ] || return 1
+  [ "$age" -ge "$STALE" ] || [ "$age" -ge "$MAX_HOLD" ] || return 1
 
+  # The marker is a second fixed name in the same shared directory, so it carries
+  # the hold's own protections. Left unguarded, one `mkdir` by another user
+  # disabled the abandoned-hold rule for every home on the machine, permanently
+  # and without printing anything.
+  if path_is_foreign "$BREAK_MUTEX"; then
+    echo "BREAK NOT POSSIBLE - the break marker at $BREAK_MUTEX is not owned by this user; the abandoned-hold rule stays disabled until it is removed by hand" >&2
+    return 1
+  fi
   # A breaker killed mid-decision must not wedge the rule for every later one.
-  if [ -d "$BREAK_MUTEX" ] && [ "$(path_age "$now" "$BREAK_MUTEX")" -ge "$STALE" ]; then
+  if [ -d "$BREAK_MUTEX" ] && [ "$(path_age "$now" "$BREAK_MUTEX")" -ge "$BREAK_MUTEX_MAX" ]; then
     rmdir "$BREAK_MUTEX" 2>/dev/null
   fi
   mkdir "$BREAK_MUTEX" 2>/dev/null || return 1
@@ -261,12 +301,20 @@ break_if_abandoned() {
   case "$now" in ''|*[!0-9]*) now=0 ;; esac
   age=$(path_age "$now" "$LOCK")
   identity=$(hold_identity)
-  if [ -d "$LOCK" ] && ! hold_is_foreign && [ "$age" -ge "$STALE" ] && ! owner_running; then
+  why=
+  if [ -d "$LOCK" ] && ! hold_is_foreign; then
+    if [ "$age" -ge "$MAX_HOLD" ]; then
+      why="past the ${MAX_HOLD}s ceiling, broken however alive it looks"
+    elif [ "$age" -ge "$STALE" ] && ! owner_running; then
+      why="holder process gone and no check work in its worktree"
+    fi
+  fi
+  if [ -n "$why" ]; then
     holder=$(owner)
     now=$(date +%s)
     case "$now" in ''|*[!0-9]*) now=0 ;; esac
     if [ "$(hold_identity)" = "$identity" ] && [ "$(path_age "$now" "$LOCK")" -ge "$STALE" ]; then
-      echo "breaking an abandoned hold (owner $holder, ${age}s old, holder process gone)" >&2
+      echo "breaking an abandoned hold (owner $holder, ${age}s old, $why)" >&2
       rm -rf "$LOCK"
       broke=0
     else
