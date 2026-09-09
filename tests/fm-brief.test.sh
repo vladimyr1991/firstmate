@@ -1210,6 +1210,17 @@ test_gate_queue_contract_reaches_ship_and_scout() {
       "$id ($kind): the end-of-wait rule lost its unconditional framing"
     assert_grep "Whenever a wait of yours ends, for any reason at all" "$brief" \
       "$id ($kind): the end-of-wait rule narrowed to enumerated endings"
+
+    # The scout's rule 2 keeps a CLOSED list of what may be written outside the
+    # worktree, and the queue hold is written outside it. Missing from that list,
+    # the same brief that mandates the queue also hands a worker a literal reason
+    # to skip it - the first-inconvenient-case failure these reasons exist to stop.
+    if [ "$kind" = scout ]; then
+      assert_grep "the only things you may write outside it are the report, the status file below, and the test-gate queue hold" "$brief" \
+        "$id ($kind): scout rule 2 excludes the queue hold the same brief mandates"
+      assert_grep "this rule is never a reason to skip the queue" "$brief" \
+        "$id ($kind): scout rule 2 lost the reason it does not excuse skipping the queue"
+    fi
   done
   pass "fm-brief.sh: ship and scout briefs carry the self-service test-gate queue contract"
 }

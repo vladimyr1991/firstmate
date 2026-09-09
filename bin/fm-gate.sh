@@ -4,10 +4,27 @@
 # One machine sustains one full gate run; two at once starve each other for
 # memory, and on 2026-09-08 such a pair cost an hour when the system killed one
 # of them halfway through its browser half.
-# The hold therefore lives OUTSIDE any home, at /tmp/fm-gate-lock, so a firstmate
+# The hold therefore lives OUTSIDE any home, in this user's own state root at
+# ${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/fm-gate-lock, so a firstmate
 # home and every secondmate home on the same machine contend for one single hold;
 # a per-home hold only ever serialized a home against itself while the hazard it
-# guards is per-machine. The RESOURCE probe that backs issuance deliberately
+# guards is per-machine. That root is equally machine-wide across homes - it
+# names one directory per user, not one per home - while a fixed name in a
+# world-writable directory is a wedge nothing can clear: anything foreign
+# pre-created there makes every worker on the machine refuse without ever running
+# a gate, indefinitely, until a human removes it. fm-procevent-lib.sh already
+# keeps its machine-wide claim root there for the same reason.
+# CORRECTNESS does not depend on FM_HOME. The hold path, the recorded holder
+# identity and the recorded owner worktree are all resolved without it: the owner
+# worktree comes from this home's metadata when it is there and otherwise from
+# the acquiring process's own working directory, which is the task worktree by
+# construction of the mandated one-liner. This matters because a crewmate pane
+# inherits no FM_HOME at all, so anything that needed one would be blank in
+# exactly the panes this contract is written for. When neither source yields a
+# path the hold records `(unknown)` rather than an empty value, and the argv
+# check-work signal below is then simply unavailable for that hold: its liveness
+# rests on the recorded holder process alone. The RESOURCE probe that backs
+# issuance is the one thing FM_HOME still selects, and it deliberately
 # stays HOME-SCOPED - it scans this home's state/*.meta and nothing else - because
 # the hold is what serializes the fleet across homes, and that probe only has to
 # catch a run that went around the hold inside this home; there is no machine-wide
@@ -74,7 +91,16 @@
 #       going as an orphan re-parented to init, and breaking that hold puts a
 #       second full run on the machine - the same hazard from the other side.
 #       Asked only about one hold's recorded worktree, it cannot deadlock waiters
-#       the way a fleet-wide "is anybody busy" question once did.
+#       the way a fleet-wide "is anybody busy" question once did. It is NOT a
+#       guarantee and it is blind in exactly the shapes listed above: an orphan
+#       whose argv carries no worktree path - `make test`, a system
+#       `pytest tests/`, a bare `bash tests/foo.test.sh` - is invisible to it, so
+#       such a hold falls back to the ordinary age rule and is broken at the
+#       stale age. That is the behaviour that predates this signal rather than a
+#       regression, and the ceiling bounds it either way. Widening the probe past
+#       the hold's own recorded worktree is deliberately not the answer: a
+#       machine-wide "is any check work running anywhere" question lets unrelated
+#       work in an unrelated checkout hold this whole fleet shut.
 #   A hold written by an older copy of this script records no process; the probe
 #   alone then answers, exactly as it used to.
 #   FM_GATE_MAX_HOLD_SECONDS (default 7200) is the absolute ceiling: past it the
@@ -92,8 +118,12 @@
 #   Only ONE contender breaks at a time, behind <hold>.breaking, and the break is
 #   a COMPARE AND SWAP: the hold's identity is captured before the liveness
 #   decision and re-verified immediately before the removal, still inside the
-#   mutex. Without that, a holder releasing during the decision and a new
-#   contender acquiring meant the breaker deleted a hold milliseconds old and took
+#   mutex, against the SAME age threshold that justified the break rather than
+#   against the stale age unconditionally - re-checking the stale age silently
+#   disabled the ceiling whenever it was configured below it, and printed a
+#   changed-hold refusal that named the wrong reason. Without the swap itself, a
+#   holder releasing during the decision and a new contender acquiring meant the
+#   breaker deleted a hold milliseconds old and took
 #   the queue - two full runs, with the first holder's own release then refused
 #   because the hold recorded the second, and the queue reading free while its run
 #   continued. The mutex alone is necessary and not sufficient.
@@ -101,24 +131,30 @@
 #   hold that is a symlink, is not a directory, or is not owned by this uid is
 #   refused outright: it is never broken, never removed, and never followed.
 # Environment: FM_GATE_LOCK_DIR overrides the machine-wide hold path (default
-#   /tmp/fm-gate-lock); FM_HOME selects the home whose state/ the home-scoped
-#   issuance probe scans; FM_STATE_OVERRIDE overrides that state directory;
+#   ${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/fm-gate-lock); FM_HOME
+#   selects the home whose state/ the home-scoped issuance probe scans and
+#   nothing else; FM_STATE_OVERRIDE overrides that state directory;
 #   FM_GATE_STALE_SECONDS sets the abandoned-hold age; FM_GATE_MAX_HOLD_SECONDS
 #   sets the absolute ceiling; FM_GATE_POLL_SECONDS (default 30) sets the --wait
-#   poll. A non-numeric age or ceiling falls back to its default rather than
-#   silently disabling the rule it governs.
+#   poll. A non-numeric age or ceiling, and a non-numeric or zero poll, falls
+#   back to its default rather than silently disabling the rule it governs: a
+#   poll of zero, or one that every `sleep` refuses, turns --wait into a hot spin
+#   that re-runs the whole probe as fast as the machine allows, on the worker
+#   whose entire turn is blocked inside that one command.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-LOCK="${FM_GATE_LOCK_DIR:-/tmp/fm-gate-lock}"
+LOCK="${FM_GATE_LOCK_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/fm-gate-lock}"
 STALE="${FM_GATE_STALE_SECONDS:-1500}"
 case "$STALE" in ''|*[!0-9]*) STALE=1500 ;; esac
 MAX_HOLD="${FM_GATE_MAX_HOLD_SECONDS:-7200}"
 case "$MAX_HOLD" in ''|*[!0-9]*) MAX_HOLD=7200 ;; esac
 POLL="${FM_GATE_POLL_SECONDS:-30}"
+# Zero is rejected as well as non-numeric: `sleep 0` succeeds and spins.
+case "$POLL" in ''|*[!0-9]*|0) POLL=30 ;; esac
 BREAK_MUTEX="$LOCK.breaking"
 # Deliberately NOT $STALE: a marker held for the length of one decision must not
 # be aged out on the hold's 25-minute clock, and a suite that drives
@@ -147,6 +183,11 @@ owner() { cat "$LOCK/owner" 2>/dev/null; }
 # The holder's worktree as recorded in the hold itself, so the staleness proof
 # works across homes. See the header.
 owner_worktree() { cat "$LOCK/owner_worktree" 2>/dev/null; }
+
+# What a hold records when neither this home's metadata nor the acquiring
+# process's directory named a worktree. Never blank: an empty recorded worktree
+# read as "no worktree to ask about" and as "ask about everything" at once.
+WORKTREE_UNKNOWN='(unknown)'
 
 owner_pid() { cat "$LOCK/owner_pid" 2>/dev/null; }
 owner_pid_start() { cat "$LOCK/owner_pid_start" 2>/dev/null; }
@@ -212,6 +253,7 @@ worktree_of() {
 check_work_live() {
   local wt=$1 pid cmd
   [ -n "$wt" ] || return 1
+  [ "$wt" = "$WORKTREE_UNKNOWN" ] && return 1
   pgrep -f "$wt" 2>/dev/null | while read -r pid; do
     cmd=$(ps -p "$pid" -o command= 2>/dev/null)
     [ -n "$cmd" ] || continue
@@ -271,9 +313,10 @@ path_age() {
 # Break the hold if it is provably abandoned. Only one contender decides at a
 # time, behind $BREAK_MUTEX, and the decision is a compare-and-swap: the hold's
 # identity is captured before the liveness check and re-verified immediately
-# before the removal. See the header for both failures this closes.
+# before the removal, against the same threshold that justified the break. See
+# the header for the failures this closes.
 break_if_abandoned() {
-  local now age holder identity why broke=1
+  local now age holder identity why threshold broke=1
   [ -d "$LOCK" ] || return 1
   hold_is_foreign && return 1
   now=$(date +%s)
@@ -302,21 +345,27 @@ break_if_abandoned() {
   age=$(path_age "$now" "$LOCK")
   identity=$(hold_identity)
   why=
+  threshold=
   if [ -d "$LOCK" ] && ! hold_is_foreign; then
     if [ "$age" -ge "$MAX_HOLD" ]; then
       why="past the ${MAX_HOLD}s ceiling, broken however alive it looks"
+      threshold=$MAX_HOLD
     elif [ "$age" -ge "$STALE" ] && ! owner_running; then
       why="holder process gone and no check work in its worktree"
+      threshold=$STALE
     fi
   fi
   if [ -n "$why" ]; then
     holder=$(owner)
     now=$(date +%s)
     case "$now" in ''|*[!0-9]*) now=0 ;; esac
-    if [ "$(hold_identity)" = "$identity" ] && [ "$(path_age "$now" "$LOCK")" -ge "$STALE" ]; then
-      echo "breaking an abandoned hold (owner $holder, ${age}s old, $why)" >&2
+    # Age first, identity last, and the message after the removal: everything
+    # between the final identity read and the `rm -rf` is a window in which the
+    # judged holder can release and a fresh contender can take the path.
+    if [ "$(path_age "$now" "$LOCK")" -ge "$threshold" ] && [ "$(hold_identity)" = "$identity" ]; then
       rm -rf "$LOCK"
       broke=0
+      echo "breaking an abandoned hold (owner $holder, ${age}s old, $why)" >&2
     else
       echo "not breaking: the hold changed while it was being judged" >&2
     fi
@@ -334,6 +383,12 @@ case "${1:-}" in
     [ -z "$WAIT" ] || [ "$WAIT" = "--wait" ] || { echo "error: unknown argument: $WAIT" >&2; exit 2; }
     mkdir -p "$STATE" 2>/dev/null || true
     mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
+    # Resolved once, before any hold exists: a crewmate pane carries no FM_HOME,
+    # so the metadata lookup finds nothing there and the worker's own directory
+    # is the task worktree by construction of the mandated one-liner.
+    OWNER_WT=$(worktree_of "$ID")
+    [ -n "$OWNER_WT" ] || OWNER_WT=$(pwd -P 2>/dev/null)
+    [ -n "$OWNER_WT" ] || OWNER_WT="$WORKTREE_UNKNOWN"
     OWNER_READS=0
     while :; do
       # Waiting cannot help a hold this user may not touch, so --wait refuses too.
@@ -346,7 +401,7 @@ case "${1:-}" in
         # ps apiece, and a concurrent reader inside that window used to be told
         # "held by:" with no holder named.
         printf '%s\n' "$ID" > "$LOCK/owner"
-        printf '%s\n' "$(worktree_of "$ID")" > "$LOCK/owner_worktree"
+        printf '%s\n' "$OWNER_WT" > "$LOCK/owner_worktree"
         printf '%s\n' "$PPID" > "$LOCK/owner_pid"
         printf '%s\n' "$(process_start "$PPID")" > "$LOCK/owner_pid_start"
         printf '%s.%s.%s\n' "$$" "$(date +%s)" "${RANDOM:-0}" > "$LOCK/token"

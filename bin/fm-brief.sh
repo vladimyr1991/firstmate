@@ -510,7 +510,7 @@ $GATE_SECTION
 
 # Rules
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+2. Stay inside this worktree; the only things you may write outside it are the report, the status file below, and the test-gate queue hold that `bin/fm-gate.sh` creates and removes for you when you take and release the queue above - that hold is prescribed by this brief, so this rule is never a reason to skip the queue.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`

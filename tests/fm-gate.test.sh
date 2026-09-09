@@ -571,6 +571,42 @@ test_an_orphaned_runner_keeps_the_holders_hold() {
   pass "fm-gate.sh: an orphaned runner keeps its holder's hold"
 }
 
+# A crewmate pane inherits no FM_HOME, so the gate resolves some other home's
+# state/ and finds no meta for the task holding the queue. Recording an EMPTY
+# owner worktree there silently disabled the orphan signal for exactly the
+# workers this contract is written for; the acquiring process's own directory is
+# the task worktree by construction of the mandated one-liner, and it needs no
+# environment at all.
+test_a_hold_taken_without_its_home_records_the_working_directory() {
+  local empty_home wt recorded out rc
+  empty_home=$(new_home no-meta-home)
+  GATE_LOCK=$(new_lock no-meta-home)
+  wt="$TMP_ROOT/no-meta-wt"
+  mkdir -p "$wt"
+  wt=$(cd "$wt" && pwd -P)
+
+  # The home knows nothing about task-a. The wrapper takes the hold from inside
+  # the worktree and exits, exactly as a killed one-liner leaves it.
+  ( cd "$wt" && FM_HOME="$empty_home" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+      "$GATE" acquire task-a >/dev/null 2>&1 ) \
+    || fail "acquire must succeed in a home that has no meta for the task"
+  recorded=$(cat "$GATE_LOCK/owner_worktree" 2>/dev/null)
+  [ -n "$recorded" ] || fail "a hold must never record an empty owner worktree"
+  [ "$recorded" = "$wt" ] \
+    || fail "the hold must record the acquiring worker's own worktree, got '$recorded'"
+
+  # The recorded value is load-bearing, not decoration: an orphaned runner in
+  # that worktree keeps the hold, which a blank worktree could never do.
+  start_fixture_process "$wt/pytest-suite" >/dev/null
+  age_path "$GATE_LOCK" 3600
+  out=$(FM_HOME="$empty_home" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_STALE_SECONDS=0 \
+    "$GATE" acquire task-b 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "the orphan signal must still work for a hold taken without its home"
+  assert_contains "$out" "QUEUE NOT YOURS - held by: task-a" \
+    "the hold recorded without a home must still be defended by its worktree"
+  pass "fm-gate.sh: a hold taken without its home records the acquiring worktree"
+}
+
 # The mirror image, and the direction with no recovery: $PPID can name something
 # long-lived (a harness reusing one shell across tool calls), and a machine-wide
 # hold that can never be broken wedges every home with no escape but a manual
@@ -601,6 +637,33 @@ test_a_hold_past_the_ceiling_is_broken_however_alive() {
     "a ceiling break must name the owner it displaced"
   assert_contains "$(cat "$err")" "ceiling" "a ceiling break must say the ceiling is why"
   pass "fm-gate.sh: a hold past the ceiling is broken however alive its holder looks"
+}
+
+# The ceiling must fire on the threshold that justified the break. Re-checking
+# the STALE age inside the compare-and-swap silently disabled the ceiling
+# whenever an operator capped holds BELOW the stale age - the one case the
+# pre-filter exists for - and refused with a changed-hold message naming a reason
+# that was not what happened.
+test_a_ceiling_below_the_stale_age_still_breaks_the_hold() {
+  local state wt out err rc
+  state=$(new_state sub-stale-ceiling)
+  GATE_LOCK=$(new_lock sub-stale-ceiling)
+  wt="$TMP_ROOT/sub-stale-ceiling-wt"
+  register_task "$state" task-a "$wt"
+  start_holder_wrapper state "$state" task-a "$wt" >/dev/null
+
+  # Well under the 25-minute rule, and well over a ceiling capped beneath it.
+  age_path "$GATE_LOCK" 900
+  err="$TMP_ROOT/sub-stale-ceiling.err"
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    FM_GATE_STALE_SECONDS=1500 FM_GATE_MAX_HOLD_SECONDS=600 \
+    "$GATE" acquire task-b 2>"$err"); rc=$?
+  expect_code 0 "$rc" "a ceiling set below the stale age must still break the hold"
+  assert_contains "$out" "queue held by you: task-b" "the sub-stale ceiling break must hand the queue over"
+  assert_contains "$(cat "$err")" "ceiling" "the break must name the ceiling as its reason"
+  assert_not_contains "$(cat "$err")" "not breaking" \
+    "a ceiling break must not refuse with a changed-hold reason that did not happen"
+  pass "fm-gate.sh: a ceiling below the stale age still breaks the hold"
 }
 
 # The break marker is a second fixed name in the same shared directory as the
@@ -741,6 +804,51 @@ test_a_dev_server_does_not_block_issuance() {
   pass "fm-gate.sh: a dev server does not block issuance"
 }
 
+# The wait must stay a wait. A poll of zero, or one no `sleep` accepts, turns
+# `acquire --wait` into an unbounded hot spin that re-runs the whole probe as
+# fast as the machine allows - on the worker whose entire turn is blocked inside
+# that one command. The stale age and the ceiling already fall back to their
+# defaults on an unusable value; the poll must too.
+test_an_unusable_poll_does_not_spin() {
+  local state wt fakebin real_date counter waiter iters poll
+  state=$(new_state poll-guard)
+  GATE_LOCK=$(new_lock poll-guard)
+  wt="$TMP_ROOT/poll-guard-wt"
+  register_task "$state" task-a "$wt"
+  register_task "$state" task-b "$TMP_ROOT/poll-guard-wt-b"
+  real_date=$(command -v date) || fail "date must be resolvable for the poll counter"
+  fakebin="$TMP_ROOT/poll-guard-bin"
+  counter="$TMP_ROOT/poll-guard.count"
+  mkdir -p "$fakebin"
+  # Each iteration of the wait loop reads the clock exactly once, so counting
+  # clock reads counts iterations without reaching into the implementation.
+  cat > "$fakebin/date" <<EOF
+#!/bin/sh
+echo tick >> "$counter"
+exec "$real_date" "\$@"
+EOF
+  chmod +x "$fakebin/date"
+
+  for poll in not-a-number 0; do
+    gate "$state" acquire task-a >/dev/null 2>&1 || fail "the holder must take the queue"
+    : > "$counter"
+    PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+      FM_GATE_POLL_SECONDS="$poll" "$GATE" acquire task-b --wait >/dev/null 2>&1 &
+    waiter=$!
+    FIXTURE_PIDS+=("$waiter")
+    sleep 3
+    kill "$waiter" 2>/dev/null
+    wait "$waiter" 2>/dev/null
+    iters=$(wc -l < "$counter" | tr -d " ")
+    # One iteration and then a real 30s sleep is the whole point; a spin runs the
+    # loop as many times as three seconds of forking allows.
+    [ "$iters" -le 3 ] \
+      || fail "a poll of '$poll' spun the wait: $iters loop iterations in 3s"
+    gate "$state" release task-a >/dev/null 2>&1
+  done
+  pass "fm-gate.sh: an unusable poll falls back to the default instead of spinning"
+}
+
 # A fixed name in a shared directory can be pre-created by someone else. Such a
 # hold is refused outright and never removed - least of all followed through a
 # symlink into a directory this fleet does not own.
@@ -800,14 +908,17 @@ test_release_is_owner_only
 test_abandoned_hold_is_broken_but_a_live_run_is_not
 test_a_live_run_in_another_home_keeps_its_hold
 test_a_holder_whose_runner_is_invisible_to_argv_keeps_its_hold
+test_a_hold_taken_without_its_home_records_the_working_directory
 test_a_hold_taken_during_the_decision_is_not_broken
 test_an_orphaned_runner_keeps_the_holders_hold
 test_a_hold_past_the_ceiling_is_broken_however_alive
+test_a_ceiling_below_the_stale_age_still_breaks_the_hold
 test_a_foreign_break_marker_is_refused_visibly
 test_an_active_break_marker_survives_a_low_stale_age
 test_a_live_run_outside_the_hold_refuses_a_free_queue
 test_waiting_workers_do_not_block_each_other
 test_a_waiting_worker_holding_the_gate_command_does_not_block_issuance
 test_a_dev_server_does_not_block_issuance
+test_an_unusable_poll_does_not_spin
 test_a_foreign_hold_is_refused_and_never_removed
 test_secondmate_homes_are_not_counted_as_runs
