@@ -72,6 +72,9 @@ State the trigger as a condition ("load before X", "load on Y wake"), never as a
 
 Rewriting a skill's prose is a behavior change, so verify it as one rather than by reading the diff.
 `bin/fm-skill-compact-check.sh` refuses a rewrite that silently drops a pointer or a never/always/must/refuse/stop statement, and a materially smaller skill must also carry a scenario fixture in `tests/skill-scenarios/`, answered blind on a different vendor from the one that wrote the rewrite.
+The printed `pointers=` / `boundaries=` counts describe the baseline's counted set, not the working tree, and they are not printed at all for an unchanged file.
+Do not cite `bin/fm-skill-compact-check.sh` as coverage of a specific file, or as the reason to add no other check, while those counts are zero.
+When the file has not changed yet and the counts are therefore not printed, the probe is to delete one line the change claims the guard protects, re-run, and restore; exit 0 on that probe is the same fact as zeros.
 A green set of `fm-skill-compact-check`, trigger, audience, lint, and changed-suite results proves only that no pointer or boundary statement vanished, never that the rewrite still means what it says - commit `aa6b1c0` carried an inverted step heading and a duplicate board read through all five of those green checks, and review caught both before the merge, so they are browsable in PR #50's commit list rather than in the tree that PR landed on `main` as commit `d47706e`.
 Collapsing a rule stated three times into a rule stated once is an ordinary consolidation; genuinely retiring a stated safety boundary exits 3 and goes to the captain for merge regardless of diff size.
 [`docs/verification/skill-compaction.md`](../../../docs/verification/skill-compaction.md) owns the procedure and the active evidence.
