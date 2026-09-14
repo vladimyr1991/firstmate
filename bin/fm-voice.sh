@@ -6,7 +6,8 @@
 # This script is the single owner of every policy decision in the feature -
 # the config keys, the focus rule, the silence gates, the hallucination list,
 # the state cues, and the exit codes - so the ordinary shell test suite covers
-# them with fake whisper-cli/herdr/afplay/pbcopy binaries
+# them with fake whisper-cli/herdr/afplay binaries plus a fake pbcopy that
+# only exists to prove the clipboard is never written
 # (tests/fm-voice.test.sh). The compiled daemon (bin/fm-voice-hotkey.swift) only
 # observes the chord and records audio while it is held; it knows nothing about
 # Herdr and hands every recording to `fm-voice.sh submit`.
@@ -49,17 +50,16 @@
 #                  exit 2 invalid config or not ready, 3 microphone denied,
 #                  4 hot key registration failed, 5 already running
 #   stop           SIGTERM the recorded daemon; exit 1 when none runs
-#   submit [--recording-dir <dir>] <wav>
-#                  gate, transcribe, deliver; prints exactly one line
+#   submit <wav>   gate, transcribe, deliver; prints exactly one line
 #                  (typed into ... | nothing heard | refused: ... | failed: ...
 #                  | busy: ...); exit 0 typed, 3 refused, 4 nothing heard,
 #                  5 failed (including an invalid config/voice, re-read on
 #                  every submit), 9 another submit holds the lock.
-#                  --recording-dir names the directory the CALLER created for
-#                  this recording; submit removes exactly that directory on
-#                  every exit path, and only when it is the WAV's own parent
-#                  directory. Without the option submit deletes no recording,
-#                  whatever the path looks like.
+#                  submit NEVER deletes the WAV or its directory: every path
+#                  it receives came from outside, so it has no way to know
+#                  who made it, and the daemon that created a recording is
+#                  the one that removes it. A submit option that named a
+#                  directory to delete used to exist and is refused now.
 #   cue <state>    play the afplay cue for a state (used by the daemon)
 #
 # Silence protection is DOUBLE and both halves are mandatory: whisper invents
@@ -76,14 +76,18 @@
 # blocked (an approval or question dialog) and unknown are refused, because
 # typing into a dialog can answer it. The only delivery command ever used is
 # `herdr pane send-text` - never `herdr agent prompt`, `herdr pane run`, or
-# `send-keys enter`. A refusal copies the transcript to the clipboard (pbcopy)
-# and types nowhere; another pane is never picked.
+# `send-keys enter`. A refusal types nowhere and never picks another pane; it
+# prints the transcript in its own output line, which the daemon shows in its
+# pane, so the operator can copy it deliberately. The clipboard is never
+# touched: overwriting it would destroy what the operator copied and publish
+# dictated speech to every process on the machine.
 #
 # Audio at rest: the daemon records into a fresh 0700 directory
-# $TMPDIR/fm-voice.XXXXXX and hands it to submit as --recording-dir; submit
-# deletes that directory on every exit path (EXIT/INT/TERM/HUP trap), the
-# daemon removes it again once submit exits, and start sweeps any leftover
-# fm-voice.* directory.
+# $TMPDIR/fm-voice.XXXXXX, hands only the WAV path to submit, and removes the
+# directory itself once submit exits, on abort, and on shutdown; start sweeps
+# any leftover fm-voice.* directory. Deletion belongs to the creator alone,
+# by provenance rather than by path shape: submit deletes no recording, so
+# no argument to it can ever aim a deletion at a directory it did not make.
 # No audio is ever written under data/, state/, projects/, or the repository,
 # and no audio path is printed.
 #
@@ -631,18 +635,15 @@ cmd_stop() {
 
 # --- submit -------------------------------------------------------------------
 
-SUBMIT_OWNED_DIR=
 SUBMIT_WORK=
 SUBMIT_CHILD=
 SUBMIT_LOCKED=0
 
-# Runs on every exit path, including SIGTERM/SIGINT/SIGHUP: the caller-owned
-# recording directory (set only when --recording-dir resolves to the WAV's own
-# parent), the private work directory, and the lock all go, and a
-# still-running whisper-cli child is killed first.
+# Runs on every exit path, including SIGTERM/SIGINT/SIGHUP: the private work
+# directory submit made itself and the lock go, and a still-running
+# whisper-cli child is killed first. The recording is not touched here.
 submit_cleanup() {
   [ -n "$SUBMIT_CHILD" ] && kill "$SUBMIT_CHILD" 2>/dev/null
-  [ -n "$SUBMIT_OWNED_DIR" ] && rm -rf -- "$SUBMIT_OWNED_DIR"
   [ -n "$SUBMIT_WORK" ] && rm -rf -- "$SUBMIT_WORK"
   [ "$SUBMIT_LOCKED" -eq 1 ] && rm -rf -- "$LOCK_DIR"
   return 0
@@ -691,20 +692,12 @@ PY
 }
 
 cmd_submit() {
-  local wav recording_dir='' wav_dir owned_dir
+  local wav
   local err probe dur dbfs below raw rc verdict text short panes focused_json
   local count pane_id agent status title
   require_enabled
   while [ $# -gt 0 ]; do
     case "$1" in
-      --recording-dir)
-        if [ $# -lt 2 ] || [ -z "$2" ]; then
-          echo "failed: --recording-dir needs a directory"
-          exit 5
-        fi
-        recording_dir=$2
-        shift 2
-        ;;
       --) shift; break ;;
       -*) echo "failed: unknown submit option $1"; exit 5 ;;
       *) break ;;
@@ -716,13 +709,6 @@ cmd_submit() {
     exit 5
   fi
   load_config
-  if [ -n "$recording_dir" ]; then
-    wav_dir=$(cd "$(dirname "$wav")" 2>/dev/null && pwd -P)
-    owned_dir=$(cd "$recording_dir" 2>/dev/null && pwd -P)
-    if [ -n "$wav_dir" ] && [ "$wav_dir" = "$owned_dir" ]; then
-      SUBMIT_OWNED_DIR=$owned_dir
-    fi
-  fi
   trap submit_cleanup EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT
@@ -809,24 +795,10 @@ cmd_submit() {
       ;;
   esac
 
-  if ! command -v jq >/dev/null 2>&1; then
-    printf '%s' "$text" | pbcopy 2>/dev/null || true
-    play_cue failed
-    echo "failed: jq not found; text is on the clipboard"
-    exit 5
-  fi
-  if ! panes=$(herdr pane list 2>/dev/null); then
-    printf '%s' "$text" | pbcopy 2>/dev/null || true
-    play_cue failed
-    echo "failed: herdr not running; text is on the clipboard"
-    exit 5
-  fi
-  if ! focused_json=$(printf '%s' "$panes" | jq -c '[.result.panes[]? | select(.focused == true)]' 2>/dev/null); then
-    printf '%s' "$text" | pbcopy 2>/dev/null || true
-    play_cue failed
-    echo "failed: herdr pane list returned unreadable JSON; text is on the clipboard"
-    exit 5
-  fi
+  command -v jq >/dev/null 2>&1 || undelivered "jq not found" "$text"
+  panes=$(herdr pane list 2>/dev/null) || undelivered "herdr not running" "$text"
+  focused_json=$(printf '%s' "$panes" | jq -c '[.result.panes[]? | select(.focused == true)]' 2>/dev/null) \
+    || undelivered "herdr pane list returned unreadable JSON" "$text"
   count=$(printf '%s' "$focused_json" | jq 'length')
   if [ "$count" != 1 ]; then
     refuse "no single focused pane" "$text"
@@ -851,12 +823,20 @@ cmd_submit() {
   exit 0
 }
 
+# Both exits below hold a transcript that was not typed. It goes into the
+# output line and nowhere else: never onto the clipboard, which would destroy
+# whatever the operator had copied and expose dictated speech to every process.
 refuse() {  # <reason> <text>
-  printf '%s' "$2" | pbcopy 2>/dev/null || true
   play_cue refused
   notify "Refused" "$1"
-  echo "refused: $1; text is on the clipboard"
+  echo "refused: $1; not typed, transcript: $2"
   exit 3
+}
+
+undelivered() {  # <reason> <text>
+  play_cue failed
+  echo "failed: $1; not typed, transcript: $2"
+  exit 5
 }
 
 cmd_cue() {

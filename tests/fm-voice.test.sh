@@ -3,7 +3,8 @@
 # voice input for Herdr agent panes, and bootstrap's config/voice gating.
 #
 # Everything is hermetic: whisper-cli, herdr, afplay, pbcopy, swiftc, and curl
-# are fakebin stubs that log their calls, test WAVs are generated with python3's
+# are fakebin stubs that log their calls (pbcopy exists only so a clipboard
+# write would show up in a log), test WAVs are generated with python3's
 # wave module, and every home lives under the test tmproot. The real microphone,
 # hot key, and permission dialog cannot be exercised here; the specification's
 # manual verifications MV-1..MV-6 own those.
@@ -13,6 +14,10 @@
 #     and writes nothing for voice (firstmate is a shared template).
 #   - NEVER ENTER: delivery is exactly one `herdr pane send-text`; no
 #     `agent prompt`, `pane run`, or `send-keys` ever appears in the herdr log.
+#   - NEVER DELETE, NEVER PBCOPY: submit deletes no recording, however it is
+#     invoked, and never writes the clipboard; the daemon that made a recording
+#     directory is its only deleter, and start sweeps only the daemon's own
+#     fm-voice.* namespace under TMPDIR.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -119,25 +124,31 @@ panes_json() {  # <pane_id> <agent or ""> <status> [title]
 }
 
 # run_submit <home> <fakebin> <wav> [env...]: runs submit the way the daemon
-# does, with --recording-dir naming the WAV's directory and logs wired up;
-# prints stdout, exit code in RC. RECORDING_DIR overrides the directory passed
-# (set it to "" to run without --recording-dir, as a hand invocation would).
+# does, with only the WAV path and the logs wired up; prints stdout, exit code
+# in RC. SUBMIT_ARGS prepends extra submit arguments before the WAV.
 run_submit() {
-  local home=$1 fakebin=$2 wav=$3 rdir
+  local home=$1 fakebin=$2 wav=$3
   shift 3
-  rdir=${RECORDING_DIR-$(dirname "$wav")}
   : > "$home/herdr.log"; : > "$home/whisper.log"; : > "$home/afplay.log"; : > "$home/pbcopy.log"
-  if [ -n "$rdir" ]; then
-    set -- "$@" "$VOICE" submit --recording-dir "$rdir" "$wav"
-  else
-    set -- "$@" "$VOICE" submit "$wav"
-  fi
+  # shellcheck disable=SC2086
+  set -- "$@" "$VOICE" submit ${SUBMIT_ARGS-} "$wav"
   OUT=$(env PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" TMPDIR="$home/tmp" \
     FAKE_HERDR_LOG="$home/herdr.log" FAKE_WHISPER_LOG="$home/whisper.log" \
     FAKE_AFPLAY_LOG="$home/afplay.log" FAKE_PBCOPY_LOG="$home/pbcopy.log" \
     "$@" 2>"$home/stderr")
   RC=$?
+}
+
+# assert_kept <wav> <label>: the recording and its directory are still there
+# after a submit, whatever the outcome - submit never deletes what it was handed.
+assert_kept() {
+  assert_present "$1" "$2: the recording is left for the daemon that made it"
+}
+
+# assert_clipboard_untouched <home> <label>: the fake pbcopy was never invoked.
+assert_clipboard_untouched() {
+  [ ! -s "$1/pbcopy.log" ] || fail "$2: pbcopy must never be called, clipboard got: $(cat "$1/pbcopy.log")"
 }
 
 # afplay runs in the background; give its log a moment before asserting on it.
@@ -269,10 +280,10 @@ test_happy_path_types_without_enter() {
   assert_no_grep "agent prompt" "$home/herdr.log" "AC-6: never agent prompt"
   assert_no_grep "pane run" "$home/herdr.log" "AC-6: never pane run"
   assert_no_grep "send-keys" "$home/herdr.log" "AC-6: never send-keys"
-  assert_absent "$dir" "AC-6: recording directory deleted"
+  assert_kept "$wav" "AC-6"
   wait_afplay "$home"
   assert_grep "Glass.aiff" "$home/afplay.log" "AC-6: Glass cue"
-  [ ! -s "$home/pbcopy.log" ] || fail "AC-6: pbcopy must not be called on success"
+  assert_clipboard_untouched "$home" "AC-6"
   assert_grep "-l ru" "$home/whisper.log" "AC-6: default language ru"
   pass "AC-6: happy path types the transcript with send-text only, no Enter"
 }
@@ -288,10 +299,10 @@ test_refusals() {
   run_submit "$home" "$fakebin" "$wav" \
     FAKE_PANES="$(panes_json wA7:p3 '' unknown)" FAKE_WHISPER_OUT=$'Почини тест\nи запусти линтер\n'
   expect_code 3 "$RC" "AC-7: non-agent pane"
-  [ "$OUT" = "refused: focused pane wA7:p3 is not an agent pane; text is on the clipboard" ] || fail "AC-7: stdout, got: $OUT"
+  [ "$OUT" = "refused: focused pane wA7:p3 is not an agent pane; not typed, transcript: Почини тест и запусти линтер" ] || fail "AC-7: stdout, got: $OUT"
   assert_no_grep "send-text" "$home/herdr.log" "AC-7: nothing typed"
-  [ "$(cat "$home/pbcopy.log")" = "Почини тест и запусти линтер" ] || fail "AC-7: clipboard got: $(cat "$home/pbcopy.log")"
-  assert_absent "$dir" "AC-7: recording directory deleted"
+  assert_clipboard_untouched "$home" "AC-7"
+  assert_kept "$wav" "AC-7"
   wait_afplay "$home"
   assert_grep "Basso.aiff" "$home/afplay.log" "AC-7: Basso cue"
 
@@ -305,25 +316,38 @@ test_refusals() {
       unknown) assert_contains "$OUT" "agent state unknown" "AC-8: unknown wording" ;;
     esac
     assert_no_grep "send-text" "$home/herdr.log" "AC-8: nothing typed for $st"
-    assert_absent "$dir" "AC-8: directory deleted for $st"
+    assert_contains "$OUT" "; not typed, transcript: Привет" "AC-8: transcript shown for $st"
+    assert_clipboard_untouched "$home" "AC-8 $st"
+    assert_kept "$wav" "AC-8 $st"
   done
 
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES='{"result":{"panes":[{"pane_id":"w1:p1","focused":false,"agent":"claude","agent_status":"idle"}]}}' FAKE_WHISPER_OUT="Привет"
   expect_code 3 "$RC" "AC-9: no focused pane"
-  [ "$OUT" = "refused: no single focused pane; text is on the clipboard" ] || fail "AC-9: stdout, got: $OUT"
+  [ "$OUT" = "refused: no single focused pane; not typed, transcript: Привет" ] || fail "AC-9: stdout, got: $OUT"
   assert_no_grep "send-text" "$home/herdr.log" "AC-9: nothing typed"
+  assert_clipboard_untouched "$home" "AC-9"
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES='{"result":{"panes":[{"pane_id":"w1:p1","focused":true,"agent":"claude","agent_status":"idle"},{"pane_id":"w1:p2","focused":true,"agent":"claude","agent_status":"idle"}]}}' FAKE_WHISPER_OUT="Привет"
   expect_code 3 "$RC" "AC-9: two focused panes"
-  [ "$OUT" = "refused: no single focused pane; text is on the clipboard" ] || fail "AC-9: two-pane stdout, got: $OUT"
+  [ "$OUT" = "refused: no single focused pane; not typed, transcript: Привет" ] || fail "AC-9: two-pane stdout, got: $OUT"
   assert_no_grep "send-text" "$home/herdr.log" "AC-9: nothing typed with two panes"
 
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude working)" FAKE_WHISPER_OUT="Привет" FAKE_SEND_RC=1
   expect_code 3 "$RC" "send-text failure is a refusal"
-  assert_contains "$OUT" "refused: send-text to wA2:p2 failed; text is on the clipboard" "send-text failure wording"
-  pass "AC-7/AC-8/AC-9: non-agent, blocked, unknown, and unfocused panes are refused with the text on the clipboard"
+  [ "$OUT" = "refused: send-text to wA2:p2 failed; not typed, transcript: Привет" ] || fail "send-text failure wording, got: $OUT"
+  assert_clipboard_untouched "$home" "send-text failure"
+
+  # Dictated text can be a password or token; a refusal shows it only on the
+  # daemon pane line and never hands it to pbcopy, so what the operator copied
+  # before is still on the clipboard.
+  dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude blocked)" FAKE_WHISPER_OUT="секретный токен"
+  expect_code 3 "$RC" "refusal with a secret in the transcript"
+  assert_clipboard_untouched "$home" "secret transcript"
+  assert_contains "$OUT" "секретный токен" "the transcript is shown in the daemon pane line instead"
+  pass "AC-7/AC-8/AC-9: non-agent, blocked, unknown, and unfocused panes are refused with the transcript on the output line and the clipboard untouched"
 }
 
 # --- AC-10: silence gate runs before whisper -------------------------------------
@@ -337,7 +361,7 @@ test_silence_gate() {
   expect_code 4 "$RC" "AC-10: short recording"
   [ "$OUT" = "nothing heard" ] || fail "AC-10: stdout, got: $OUT"
   [ ! -s "$home/whisper.log" ] || fail "AC-10: whisper must not run on a 0.3 s recording"
-  assert_absent "$dir" "AC-10: directory deleted"
+  assert_kept "$wav" "AC-10 short"
 
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 0
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Продолжение следует..."
@@ -345,7 +369,7 @@ test_silence_gate() {
   [ "$OUT" = "nothing heard" ] || fail "AC-10: silence stdout, got: $OUT"
   [ ! -s "$home/whisper.log" ] || fail "AC-10: whisper must not run on digital silence"
   assert_no_grep "send-text" "$home/herdr.log" "AC-10: nothing typed"
-  assert_absent "$dir" "AC-10: silence directory deleted"
+  assert_kept "$wav" "AC-10 silence"
 
   # A quiet-but-audible recording just above the threshold does reach whisper.
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 400
@@ -361,63 +385,70 @@ test_silence_gate() {
   [ "$OUT" = "failed: invalid min_dbfs: -45dB (expected an integer -90..0)" ] || fail "invalid min_dbfs stdout, got: $OUT"
   [ ! -s "$home/whisper.log" ] || fail "whisper must not run when min_dbfs is invalid"
   assert_no_grep "send-text" "$home/herdr.log" "invalid min_dbfs: nothing typed"
-  assert_absent "$dir" "invalid min_dbfs: directory deleted"
+  assert_kept "$wav" "invalid min_dbfs"
   assert_absent "$home/state/voice.submit.lock" "invalid min_dbfs: lock released"
   wait_afplay "$home"
   assert_grep "Sosumi.aiff" "$home/afplay.log" "invalid min_dbfs: Sosumi cue"
   pass "AC-10: recordings shorter than 0.5 s or below min_dbfs never reach whisper, and a bad threshold fails closed"
 }
 
-# --- recording ownership: only the directory named by --recording-dir is deleted -
+# --- recording ownership: submit deletes nothing, however it is pointed ----------
+#
+# The security finding of 2026-09-14: three editions in a row let submit delete
+# a directory it did not create, each by a better path check than the last.
+# The fix is subtraction, not a fourth check: submit has no deletion at all,
+# and the daemon that made a recording directory is its only deleter.
 
 test_recording_dir_ownership() {
-  local home fakebin hand own other wav
+  local home fakebin hand own wav
   home=$(make_home ownership "")
   fakebin=$(make_fakes "$home")
   mkdir -p "$home/tmp"
 
-  # A hand invocation without --recording-dir never deletes anything, even
-  # when the WAV sits in a directory that looks like a daemon recording.
+  # Reverse test from the finding: a directory the daemon did NOT create, holding
+  # a WAV, named through the old --recording-dir option. Before the fix this
+  # deleted the directory wholesale. It must be in place afterwards, untouched,
+  # and the option itself is refused rather than silently ignored.
   hand="$home/tmp/fm-voice.hand"; mkdir -p "$hand"
   wav="$hand/take1.wav"; make_wav "$wav" 2 20000; : > "$hand/take2.wav"
-  RECORDING_DIR="" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  SUBMIT_ARGS="--recording-dir $hand" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
+  expect_code 5 "$RC" "--recording-dir is refused"
+  [ "$OUT" = "failed: unknown submit option --recording-dir" ] || fail "--recording-dir stdout, got: $OUT"
+  [ ! -s "$home/whisper.log" ] || fail "--recording-dir: whisper must not run on a refused option"
+  assert_no_grep "send-text" "$home/herdr.log" "--recording-dir: nothing typed"
+  assert_present "$hand" "--recording-dir: the named directory is in place"
+  assert_present "$wav" "--recording-dir: its WAV is in place"
+  assert_present "$hand/take2.wav" "--recording-dir: its sibling file is in place"
+
+  # The same directory as an ordinary submit target, through every outcome:
+  # typed, refused, failed. Nothing is deleted on any of them.
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
   expect_code 0 "$RC" "hand submit typed"
   assert_grep "pane send-text wA2:p2 Привет" "$home/herdr.log" "hand submit still types"
   assert_present "$wav" "hand submit keeps the WAV after typing"
   assert_present "$hand/take2.wav" "hand submit keeps sibling files after typing"
-  RECORDING_DIR="" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude blocked)" FAKE_WHISPER_OUT="Привет"
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude blocked)" FAKE_WHISPER_OUT="Привет"
   expect_code 3 "$RC" "hand submit refused"
   assert_present "$wav" "hand submit keeps the WAV after a refusal"
   assert_present "$hand" "hand submit keeps the directory after a refusal"
-  RECORDING_DIR="" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_RC=1
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_RC=1
   expect_code 5 "$RC" "hand submit failed"
   assert_present "$wav" "hand submit keeps the WAV after a failure"
 
-  # With --recording-dir exactly that directory goes and nothing beside it.
+  # A daemon-shaped directory (fresh mktemp fm-voice.XXXXXX under TMPDIR, one
+  # rec.wav inside, exactly what the daemon hands over) is kept by submit too:
+  # the shape of the path grants no deletion right, only provenance does, and
+  # submit has none.
   own=$(rec_dir "$home"); wav="$own/rec.wav"; make_wav "$wav" 2 20000
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
-  expect_code 0 "$RC" "owned submit typed"
-  assert_absent "$own" "owned recording directory deleted"
+  expect_code 0 "$RC" "daemon-shaped submit typed"
+  assert_present "$own" "daemon-shaped directory is kept by submit"
+  assert_present "$wav" "daemon-shaped WAV is kept by submit"
   assert_present "$hand" "the neighbouring directory is untouched"
-  assert_present "$hand/take1.wav" "the neighbouring WAV is untouched"
 
-  # A --recording-dir that is not the WAV's parent owns nothing: neither side is deleted.
-  own=$(rec_dir "$home"); wav="$own/rec.wav"; make_wav "$wav" 2 20000
-  other=$(rec_dir "$home"); : > "$other/keep.wav"
-  RECORDING_DIR="$other" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
-  expect_code 0 "$RC" "mismatched submit typed"
-  assert_present "$wav" "mismatched --recording-dir keeps the WAV"
-  assert_present "$other/keep.wav" "mismatched --recording-dir keeps the named directory"
-  RECORDING_DIR="$home/tmp/never-made" run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
-  expect_code 0 "$RC" "nonexistent --recording-dir typed"
-  assert_present "$wav" "nonexistent --recording-dir keeps the WAV"
-
-  run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
-  assert_absent "$own" "the same WAV is deleted once its directory is named"
-  assert_present "$hand" "the hand directory survives every submit"
-  assert_present "$other/keep.wav" "the mismatched directory survives every submit"
-  [ "$(find "$home/tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 2 ] || fail "only those two directories remain under TMPDIR: $(find "$home/tmp" -mindepth 1 -maxdepth 1)"
-  pass "submit deletes exactly the --recording-dir it was handed, and nothing without it"
+  # Only submit's own scratch (fm-voice-submit.*) ever comes and goes.
+  [ "$(find "$home/tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 2 ] || fail "exactly the two recording directories remain under TMPDIR: $(find "$home/tmp" -mindepth 1 -maxdepth 1)"
+  pass "submit deletes nothing it was handed, and --recording-dir no longer exists to aim it"
 }
 
 # --- AC-11 / AC-12: hallucination list, whole-text only --------------------------
@@ -432,7 +463,7 @@ test_hallucinations() {
     expect_code 4 "$RC" "AC-11: '$phrase'"
     [ "$OUT" = "nothing heard" ] || fail "AC-11: stdout for '$phrase', got: $OUT"
     assert_no_grep "send-text" "$home/herdr.log" "AC-11: nothing typed for '$phrase'"
-    assert_absent "$dir" "AC-11: directory deleted for '$phrase'"
+    assert_kept "$wav" "AC-11 '$phrase'"
   done
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" \
@@ -453,18 +484,29 @@ test_failures() {
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_RC=1
   expect_code 5 "$RC" "AC-13: whisper failure"
   [ "$OUT" = "failed: whisper-cli exited 1" ] || fail "AC-13: stdout, got: $OUT"
-  assert_absent "$dir" "AC-13: directory deleted"
+  assert_kept "$wav" "AC-13"
   wait_afplay "$home"
   assert_grep "Sosumi.aiff" "$home/afplay.log" "AC-13: Sosumi cue"
-  [ ! -s "$home/pbcopy.log" ] || fail "AC-13: pbcopy must not be called without a transcript"
+  assert_clipboard_untouched "$home" "AC-13"
 
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
   run_submit "$home" "$fakebin" "$wav" FAKE_HERDR_LIST_RC=1 FAKE_WHISPER_OUT="Почини тест"
   expect_code 5 "$RC" "AC-14: herdr unreachable"
-  case "$OUT" in "failed: herdr"*) ;; *) fail "AC-14: stdout must begin 'failed: herdr', got: $OUT" ;; esac
-  [ "$(cat "$home/pbcopy.log")" = "Почини тест" ] || fail "AC-14: transcript on the clipboard"
-  assert_absent "$dir" "AC-14: directory deleted"
+  [ "$OUT" = "failed: herdr not running; not typed, transcript: Почини тест" ] || fail "AC-14: stdout, got: $OUT"
+  assert_clipboard_untouched "$home" "AC-14"
+  assert_kept "$wav" "AC-14"
   assert_no_grep "send-text" "$home/herdr.log" "AC-14: nothing typed"
+
+  # The third undelivered branch: herdr answers but with JSON jq cannot read.
+  # Same line shape, same rules - transcript on the line, clipboard untouched,
+  # recording left alone.
+  dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES='{not json at all' FAKE_WHISPER_OUT="Почини тест"
+  expect_code 5 "$RC" "unreadable pane JSON"
+  [ "$OUT" = "failed: herdr pane list returned unreadable JSON; not typed, transcript: Почини тест" ] || fail "unreadable pane JSON stdout, got: $OUT"
+  assert_clipboard_untouched "$home" "unreadable pane JSON"
+  assert_kept "$wav" "unreadable pane JSON"
+  assert_no_grep "send-text" "$home/herdr.log" "unreadable pane JSON: nothing typed"
 
   dir=$(rec_dir "$home")
   run_submit "$home" "$fakebin" "$dir/rec.wav"
@@ -480,9 +522,9 @@ test_failures() {
   expect_code 5 "$RC" "unusable TMPDIR"
   [ "$OUT" = "failed: cannot create a scratch directory under TMPDIR" ] || fail "unusable TMPDIR stdout, got: $OUT"
   [ ! -s "$home/whisper.log" ] || fail "whisper must not run without a scratch directory"
-  assert_absent "$dir" "unusable TMPDIR: recording directory deleted"
+  assert_kept "$wav" "unusable TMPDIR"
   assert_absent "$home/state/voice.submit.lock" "unusable TMPDIR: lock released"
-  pass "AC-13/AC-14: whisper and herdr failures report, clean up, and keep the transcript when there is one"
+  pass "AC-13/AC-14: whisper and herdr failures report, release the lock, and show the transcript when there is one"
 }
 
 # --- AC-15: deletion survives a signal -----------------------------------------
@@ -498,19 +540,19 @@ test_signal_cleanup() {
     FAKE_HERDR_LOG="$home/herdr.log" FAKE_WHISPER_LOG="$home/whisper.log" \
     FAKE_AFPLAY_LOG="$home/afplay.log" FAKE_PBCOPY_LOG="$home/pbcopy.log" \
     FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_SLEEP=5 FAKE_WHISPER_OUT="Привет" \
-    "$VOICE" submit --recording-dir "$dir" "$wav" >/dev/null 2>&1 &
+    "$VOICE" submit "$wav" >/dev/null 2>&1 &
   pid=$!
   sleep 1
   kill -TERM "$pid" 2>/dev/null
   i=0
-  while { [ -d "$dir" ] || [ -d "$home/state/voice.submit.lock" ]; } && [ "$i" -lt 20 ]; do
+  while { [ -d "$home/state/voice.submit.lock" ] || ls -d "$home/tmp"/fm-voice-submit.* >/dev/null 2>&1; } && [ "$i" -lt 20 ]; do
     sleep 0.1; i=$((i + 1))
   done
   wait "$pid" 2>/dev/null
-  assert_absent "$dir" "AC-15: recording directory gone within 2 s of SIGTERM"
   assert_absent "$home/state/voice.submit.lock" "AC-15: lock directory gone within 2 s of SIGTERM"
-  [ -z "$(ls "$home/tmp" 2>/dev/null)" ] || fail "AC-15: no scratch left under TMPDIR: $(ls "$home/tmp")"
-  pass "AC-15: SIGTERM mid-transcription still deletes the recording and the lock"
+  [ "$(ls "$home/tmp" 2>/dev/null)" = "$(basename "$dir")" ] || fail "AC-15: only the recording remains under TMPDIR, no scratch: $(ls "$home/tmp")"
+  assert_present "$wav" "AC-15: the recording is left for the daemon that made it"
+  pass "AC-15: SIGTERM mid-transcription still releases the lock and the scratch, and leaves the recording alone"
 }
 
 # --- AC-16: concurrent submit refused -----------------------------------------
@@ -526,12 +568,12 @@ test_concurrent_submit() {
   run_submit "$home" "$fakebin" "$wav" FAKE_PANES="$(panes_json wA2:p2 claude idle)" FAKE_WHISPER_OUT="Привет"
   expect_code 9 "$RC" "AC-16: second submit"
   [ "$OUT" = "busy: another transcription is running" ] || fail "AC-16: stdout, got: $OUT"
-  assert_absent "$dir" "AC-16: its own recording directory deleted"
+  assert_kept "$wav" "AC-16"
   assert_present "$home/state/voice.submit.lock" "AC-16: the other submit's lock is left alone"
   [ "$(cat "$home/state/voice.submit.lock/pid")" = "$holder" ] || fail "AC-16: the live holder's pid is kept"
   [ ! -s "$home/whisper.log" ] || fail "AC-16: whisper must not run"
   kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
-  pass "AC-16: a concurrent submit is refused and cleans up only its own recording"
+  pass "AC-16: a concurrent submit is refused and touches neither the lock nor the recording"
 }
 
 # --- stale lock: a holder that died without its trap never wedges submit ------
@@ -549,7 +591,7 @@ test_stale_lock_reclaimed() {
   case "$OUT" in "typed into claude "*"(wA2:p2): Привет") ;; *) fail "stale lock: stdout, got: $OUT" ;; esac
   assert_grep "pane send-text wA2:p2 Привет" "$home/herdr.log" "stale lock: transcript typed"
   assert_absent "$home/state/voice.submit.lock" "stale lock: released after the submit"
-  assert_absent "$dir" "stale lock: recording directory deleted"
+  assert_kept "$wav" "stale lock"
 
   mkdir -p "$home/state/voice.submit.lock"
   dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
@@ -676,15 +718,23 @@ test_start_hands_off_to_daemon() {
 echo "daemon args: $*"
 SH
   chmod +x "$bin"
+  # The leftover sweep is the recovery-path deleter for the daemon's own
+  # namespace: a stale fm-voice.* directory goes, anything else under TMPDIR stays.
+  mkdir -p "$home/tmp/fm-voice.stale" "$home/tmp/fm-voice-submit.stale" "$home/tmp/memos"
+  : > "$home/tmp/fm-voice.stale/rec.wav"; : > "$home/tmp/memos/keep.wav"; : > "$home/tmp/fm-voice.txt"
   out=$(PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" TMPDIR="$home/tmp" \
     FM_VOICE_OS_OVERRIDE=Darwin XDG_CACHE_HOME="$home/cache" FM_VOICE_NO_WARMUP=1 \
     FM_VOICE_SOURCE_HASH_OVERRIDE=fakehash0001 "$VOICE" start); rc=$?
   expect_code 0 "$rc" "start execs the daemon"
+  assert_absent "$home/tmp/fm-voice.stale" "start sweeps a leftover daemon recording directory"
+  assert_absent "$home/tmp/fm-voice-submit.stale" "start sweeps a leftover submit scratch directory"
+  assert_present "$home/tmp/memos/keep.wav" "start leaves a directory outside its namespace alone"
+  assert_present "$home/tmp/fm-voice.txt" "start sweeps directories only, never a file"
   assert_contains "$out" "daemon args: --hotkey cmd+shift+v --max-seconds 30 --submit $VOICE --sounds off --tmpdir $home/tmp" \
     "start passes the resolved config to the daemon"
   assert_present "$home/state/voice.pid" "start records the daemon pid"
-  pass "start: a built daemon receives the validated config and the submit path"
+  pass "start: a built daemon receives the validated config and the submit path, after sweeping only fm-voice.* leftovers"
 }
 
 # --- cue subcommand: the daemon's only route to a sound ---------------------------
