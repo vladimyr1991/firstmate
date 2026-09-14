@@ -371,9 +371,8 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
-  # A metadata write interrupted between opening the temporary record and
-  # publishing it (a failed echo inside the block exits here under set -e)
-  # must not leave that partial file behind.
+  # A metadata write interrupted by a signal between opening the temporary
+  # record and publishing it must not leave that partial file behind.
   [ -z "${META_TMP:-}" ] || rm -f -- "$META_TMP"
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
@@ -1730,24 +1729,29 @@ META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 # The task record is the ONLY thing that makes this task visible to supervision,
 # capacity accounting, idle detection, and teardown, so it is published before
-# the launch command is sent and the launch is skipped when it cannot be. Write
-# it to a temporary sibling and rename it into place, then check every step
-# explicitly: under bash 3.2 (stock macOS /bin/bash) a failed redirection of a
-# compound command is NOT a `set -e` error, so a bare `{ ... } > file` used to
-# carry straight on to `spawned <id>` with exit 0 and leave a live agent no
-# record knew about. The temporary sibling also means a write that dies halfway
-# (disk full) never leaves a partial record behind as if it were a task.
-META_TMP="$STATE/$ID.meta.tmp.$$"
+# the launch command is sent and the launch is skipped when it cannot be. The
+# record is rendered into a variable first and then written to a temporary
+# sibling by ONE simple command whose status is checked, then renamed into
+# place with the rename checked too: under bash 3.2 (stock macOS /bin/bash) a
+# failed redirection of a compound command is NOT a `set -e` error, so a bare
+# `{ ... } > file` used to carry straight on to `spawned <id>` with exit 0 and
+# leave a live agent no record knew about, and a `{ ... } > file || ...` group
+# would report only its last command's status, hiding a write that failed
+# after the open (disk full). The temporary sibling means a failed write never
+# leaves a partial record behind as if it were a task. The name carries no pid
+# because the per-task spawn lock already excludes a concurrent spawn of the
+# same id, and a fixed name is what lets a test drive the write guard.
+META_TMP="$STATE/$ID.meta.tmp"
 spawn_meta_fail() {  # <what failed> <why>
-  rm -f -- "$META_TMP"
+  [ ! -f "$META_TMP" ] || rm -f -- "$META_TMP"
   META_TMP=
-  echo "error: cannot $1 task metadata $STATE/$ID.meta: $2; agent not launched; inspect window $T" >&2
+  echo "error: cannot $1 task metadata $STATE/$ID.meta: $2; agent not launched" >&2
   exit 1
 }
 if [ -d "$STATE/$ID.meta" ]; then
   spawn_meta_fail publish "Is a directory"
 fi
-{
+spawn_meta_render() {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
@@ -1791,7 +1795,9 @@ fi
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-} > "$META_TMP" || spawn_meta_fail write "write failed"
+}
+META_BODY=$(spawn_meta_render)
+printf '%s\n' "$META_BODY" > "$META_TMP" || spawn_meta_fail write "write failed"
 mv -f -- "$META_TMP" "$STATE/$ID.meta" || spawn_meta_fail publish "rename failed"
 META_TMP=
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regression test for fm-spawn.sh's task-metadata publication (bin/fm-spawn.sh,
-# the `{ ... } > "$STATE/$ID.meta"` block written just before the launch command
-# is sent to the pane).
+# the record written to state/<id>.meta.tmp and renamed into place just before
+# the launch command is sent to the pane).
 #
 # A spawn that cannot record state/<id>.meta must not report success and must
 # not launch an agent: a task with a live agent and no record is invisible to
@@ -147,7 +147,39 @@ test_metadata_write_success_publishes_record() {
   done
 }
 
+# A directory squatting on the temporary sibling state/<id>.meta.tmp, with the
+# final record path free, gets past the up-front directory refusal and makes
+# the write itself fail with the OS's own "Is a directory": this is the case
+# that exercises the write guard rather than the pre-check. The squatting
+# directory is the test's own fixture, so it is the one thing allowed to
+# remain in state/ afterwards.
+test_metadata_temporary_write_failure_is_not_success() {
+  local interp rec id out status n=0
+  for interp in $(list_interpreters); do
+    n=$((n + 1))
+    id="metatmp-z$n"
+    rec=$(make_meta_case "metatmp-$n" "$id")
+    read_meta_record "$rec"
+    mkdir -p "$HOME_DIR/state/$id.meta.tmp"
+
+    out=$(run_meta_spawn "$interp" "$id")
+    status=$?
+    [ "$status" -ne 0 ] || fail "[$interp] spawn reported success (exit 0) although the temporary metadata could not be written"$'\n'"--- output ---"$'\n'"$out"
+    assert_not_contains "$out" "spawned $id" "[$interp] spawn printed the success line although the temporary metadata could not be written"
+    assert_contains "$out" "metadata" "[$interp] spawn did not name the metadata write as the failure"
+    assert_contains "$out" "Is a directory" "[$interp] spawn did not report the OS reason the temporary metadata write failed"
+    [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "[$interp] a metadata record was published despite the failed write"
+    [ -d "$HOME_DIR/state/$id.meta.tmp" ] || fail "[$interp] the squatting directory at the temporary path was removed"
+    [ -z "$(find "$HOME_DIR/state" -name "$id.meta.*" ! -path "$HOME_DIR/state/$id.meta.tmp" -print 2>/dev/null)" ] \
+      || fail "[$interp] temporary metadata was left behind: $(find "$HOME_DIR/state" -name "$id.meta.*" ! -path "$HOME_DIR/state/$id.meta.tmp")"
+    assert_no_grep "brief.md" "$CASE_DIR/tmux.log" "[$interp] the launch command was sent to the pane although no metadata was recorded"
+    pass "[$interp] temporary metadata write failure exits non-zero, publishes nothing, and launches no agent"
+  done
+  [ "$n" -ge 1 ] || fail "no bash interpreter found to drive the spawn"
+}
+
 test_metadata_write_failure_is_not_success
+test_metadata_temporary_write_failure_is_not_success
 test_metadata_write_success_publishes_record
 
 echo "# all fm-spawn-meta-write tests passed"
