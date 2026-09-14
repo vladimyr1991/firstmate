@@ -371,6 +371,10 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
+  # A metadata write interrupted between opening the temporary record and
+  # publishing it (a failed echo inside the block exits here under set -e)
+  # must not leave that partial file behind.
+  [ -z "${META_TMP:-}" ] || rm -f -- "$META_TMP"
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
@@ -1724,6 +1728,25 @@ fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
+# The task record is the ONLY thing that makes this task visible to supervision,
+# capacity accounting, idle detection, and teardown, so it is published before
+# the launch command is sent and the launch is skipped when it cannot be. Write
+# it to a temporary sibling and rename it into place, then check every step
+# explicitly: under bash 3.2 (stock macOS /bin/bash) a failed redirection of a
+# compound command is NOT a `set -e` error, so a bare `{ ... } > file` used to
+# carry straight on to `spawned <id>` with exit 0 and leave a live agent no
+# record knew about. The temporary sibling also means a write that dies halfway
+# (disk full) never leaves a partial record behind as if it were a task.
+META_TMP="$STATE/$ID.meta.tmp.$$"
+spawn_meta_fail() {  # <what failed> <why>
+  rm -f -- "$META_TMP"
+  META_TMP=
+  echo "error: cannot $1 task metadata $STATE/$ID.meta: $2; agent not launched; inspect window $T" >&2
+  exit 1
+}
+if [ -d "$STATE/$ID.meta" ]; then
+  spawn_meta_fail publish "Is a directory"
+fi
 {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
@@ -1768,7 +1791,9 @@ META_WINDOW=$T
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-} > "$STATE/$ID.meta"
+} > "$META_TMP" || spawn_meta_fail write "write failed"
+mv -f -- "$META_TMP" "$STATE/$ID.meta" || spawn_meta_fail publish "rename failed"
+META_TMP=
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
