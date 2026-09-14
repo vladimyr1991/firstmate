@@ -38,8 +38,8 @@ A bare modifier, or the Fn/Globe key, would need Input Monitoring and is refused
 
 ## When nothing is typed
 
-- The focused pane is not an agent pane, the agent is waiting on an approval or question dialog, its state is unknown, or no single pane is focused: the daemon pane says why, the transcript is copied to the clipboard, and nothing is typed anywhere.
-  Another pane is never picked for you.
+- The focused pane is not an agent pane, the agent is waiting on an approval or question dialog, its state is unknown, or no single pane is focused: the daemon pane says why and prints the transcript on the same line, and nothing is typed anywhere.
+  Another pane is never picked for you, and the clipboard is never touched, so whatever you had copied is still there.
 - Silence, a press shorter than half a second, or a recording below the level threshold: `nothing heard`, and whisper does not run.
   Whisper invents text on silence, so a level gate runs before it and a short list of its known silence phrases is checked after it.
   That list is compared only against the whole transcript; it never removes a phrase from something you actually said.
@@ -48,11 +48,14 @@ A bare modifier, or the Fn/Globe key, would need Input Monitoring and is refused
 
 ## Privacy
 
-- Audio is written only under your per-user temporary directory, in a fresh directory readable by you alone, and deleted as soon as the transcription finishes, on every path including a killed transcription; the daemon also removes any leftover on start and exit.
+- Audio is written only under your per-user temporary directory, in a fresh directory readable by you alone, and the daemon that made that directory deletes it as soon as the transcription finishes, whatever the outcome, and removes any leftover on start and exit.
+  The transcription step never deletes anything it was handed, so no path given to it can point a deletion at a directory of yours.
+  A daemon killed outright in the middle of a transcription leaves that one recording in place until the next start sweeps it.
   Nothing is ever written under `data/`, `state/`, `projects/`, or the repository, and no audio path is printed.
 - Transcription runs locally; the model has no network access.
   The only network use is the one-time model download.
-- A refused delivery leaves the transcript on the clipboard until you copy something else.
+- A refused delivery shows the transcript only in the daemon pane, where you can select and copy it yourself.
+  It is never placed on the clipboard, because the clipboard is readable by every process and, with Universal Clipboard on, by your other devices, and dictated text can contain a password or token.
 - `config/voice` is per machine and is not inherited by second mates; a second mate never runs the daemon.
 
 ## Turning it off
