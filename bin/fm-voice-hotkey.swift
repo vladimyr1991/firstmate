@@ -274,7 +274,8 @@ final class Recorder {
     }
 
     // SIGTERM the in-flight submit so nothing is typed after a stop, and give its
-    // EXIT trap a bounded moment to release the lock and delete its directories.
+    // EXIT trap a bounded moment to release the lock and delete its own scratch
+    // directory; the recording directory is removed by this daemon, not by submit.
     func cancelSubmit(timeout: TimeInterval) {
         guard let p = submit, p.isRunning else { return }
         p.terminate()

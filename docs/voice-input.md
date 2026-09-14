@@ -1,7 +1,7 @@
 # Voice input for Herdr agent panes
 
 Hold one key chord, speak, release: a local whisper.cpp transcription is typed into the composer of the focused Herdr agent pane, and you press Enter.
-Nothing is recorded while the chord is not held, no audio leaves the machine, and no audio file outlives its transcription.
+Nothing is recorded while the chord is not held, no audio leaves the machine, and the daemon deletes each recording it made once the transcription finishes; the Privacy section states the one exception.
 The feature is off until you create `config/voice`; a home without that file behaves exactly as before, and nothing is installed, downloaded, or started on its behalf.
 `bin/fm-voice.sh --help` is the single owner of the configuration keys, subcommands, exit codes, and the exact safety mechanics; this guide covers what you see and decide as the operator.
 [configuration.md](configuration.md) "Voice input (config/voice)" owns where the feature sits among the home's other opt-in files and what session start reports while it is enabled.

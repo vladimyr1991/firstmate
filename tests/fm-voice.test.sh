@@ -497,6 +497,17 @@ test_failures() {
   assert_kept "$wav" "AC-14"
   assert_no_grep "send-text" "$home/herdr.log" "AC-14: nothing typed"
 
+  # The third undelivered branch: herdr answers but with JSON jq cannot read.
+  # Same line shape, same rules - transcript on the line, clipboard untouched,
+  # recording left alone.
+  dir=$(rec_dir "$home"); wav="$dir/rec.wav"; make_wav "$wav" 2 20000
+  run_submit "$home" "$fakebin" "$wav" FAKE_PANES='{not json at all' FAKE_WHISPER_OUT="Почини тест"
+  expect_code 5 "$RC" "unreadable pane JSON"
+  [ "$OUT" = "failed: herdr pane list returned unreadable JSON; not typed, transcript: Почини тест" ] || fail "unreadable pane JSON stdout, got: $OUT"
+  assert_clipboard_untouched "$home" "unreadable pane JSON"
+  assert_kept "$wav" "unreadable pane JSON"
+  assert_no_grep "send-text" "$home/herdr.log" "unreadable pane JSON: nothing typed"
+
   dir=$(rec_dir "$home")
   run_submit "$home" "$fakebin" "$dir/rec.wav"
   expect_code 5 "$RC" "missing recording"
