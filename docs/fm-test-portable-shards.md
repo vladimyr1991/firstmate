@@ -112,3 +112,4 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Herdr | 40 | The real-Herdr lane keeps its dedicated timeout. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
+They are the job-level layer only: `bin/fm-test-run.sh --help` owns the runner's own per-script `--suite-timeout`, whose default sits above every job timeout here, so in CI the job timeout is the tripwire that fires first.
