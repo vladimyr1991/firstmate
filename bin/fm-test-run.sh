@@ -1504,10 +1504,13 @@ FAMILIES_TSV="$RUN_TMP/families.tsv"
 # Every live suite process group records its id in $RUN_TMP/pgid.<tag> for as
 # long as it runs, so an interrupted or killed runner still takes its suites
 # and their descendants down with it instead of leaving them to hold on to
-# whatever they inherited. Groups are addressed by the saved id only.
+# whatever they inherited. The --jobs worker subshells share this runner's
+# stdout and are signalled by their saved pids for the same reason: a runner
+# killed by pid alone must not leave a worker holding the run's output open
+# until the suite limit. Groups and workers are addressed by saved ids only.
 # shellcheck disable=SC2329 # Registered by the EXIT trap below.
 cleanup_run() {
-  local f pgid
+  local f pgid worker
   for f in "$RUN_TMP"/pgid.*; do
     [ -f "$f" ] || continue
     pgid=$(cat "$f" 2>/dev/null) || continue
@@ -1515,6 +1518,9 @@ cleanup_run() {
       ''|*[!0-9]*) continue ;;
     esac
     kill -TERM -- "-$pgid" 2>/dev/null || true
+  done
+  for worker in ${WORKER_PIDS[@]+"${WORKER_PIDS[@]}"}; do
+    kill -TERM "$worker" 2>/dev/null || true
   done
   rm -rf "$RUN_TMP"
 }
@@ -1609,11 +1615,13 @@ suite_group_kill() {
 # gives a background job its own group; the toggle is scoped to the launch),
 # reads stdin from /dev/null, and writes stdout+stderr only to <capture-file>.
 # With <stream>=1 new capture bytes are copied live to the runner's stdout.
-# The runner waits for the leader's exit record, never for descendants, and
-# never longer than SUITE_TIMEOUT seconds; on either exit path it kills the
-# whole group by its saved id. Results are returned in SUITE_RC (124 when
-# killed at the limit), SUITE_TIMED_OUT, and SUITE_STRAY (1 when processes
-# outlived the script and were killed).
+# The runner waits for the leader's exit record or for the leader itself to be
+# gone, never for descendants, and never longer than SUITE_TIMEOUT seconds; on
+# every exit path it kills the whole group by its saved id. A leader that died
+# without leaving an exit record (killed by an operator or the kernel) is
+# reported as exit=1. Results are returned in SUITE_RC (124 when killed at the
+# limit), SUITE_TIMED_OUT, and SUITE_STRAY (1 when processes outlived the
+# script and were killed).
 run_suite_bounded() {
   local script=$1 out=$2 tag=$3 stream=$4
   local pgid rcfile pgidfile started
@@ -1640,6 +1648,7 @@ run_suite_bounded() {
   while :; do
     [ "$stream" -eq 1 ] && stream_suite_output "$out"
     [ -f "$rcfile" ] && break
+    kill -0 "$pgid" 2>/dev/null || break
     if [ $((SECONDS - started)) -ge "$SUITE_TIMEOUT" ]; then
       SUITE_TIMED_OUT=1
       break

@@ -721,6 +721,23 @@ kill_saved_pid() {
   kill -KILL "$pid" 2>/dev/null || true
 }
 
+# Wait up to $2 tenths of a second for every named evidence file to be
+# non-empty; 0 when they all appeared.
+wait_evidence() {
+  local budget=$1 waited=0 f all
+  shift
+  while [ "$waited" -lt "$budget" ]; do
+    all=1
+    for f in "$@"; do
+      [ -s "$f" ] || { all=0; break; }
+    done
+    [ "$all" -eq 1 ] && return 0
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
 # The failure that cost the fleet four days: a suite backgrounds a long-lived
 # child that inherits the suite's stdout, then exits without killing it. A
 # runner that hands its own output pipe to the suite never sees end of stream
@@ -884,6 +901,129 @@ SH
   pass "--jobs workers kill a suite past FM_TEST_SUITE_TIMEOUT with its descendants and name it"
 }
 
+# The leader of a suite's group can die without an exit record: an operator
+# kills that pid to unstick a run, or the kernel does. The runner must notice
+# at once instead of polling until the limit, report the suite as exit=1 (not
+# 124, and with no timeout marker), still sweep what the leader left behind,
+# and continue. A 30 s limit turns a regression into a run that lasts the whole
+# limit and ends in exit=124, so the assertions below cannot pass by accident.
+test_dead_leader_is_reported_at_once_and_its_group_is_swept() {
+  local tmp fixture next out rc runner leader pid started elapsed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-leader.XXXXXX")
+  fixture="$tmp/leader.test.sh"
+  next="$tmp/next.test.sh"
+  out="$tmp/out"
+  cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+sleep 300 &
+printf '%s\n' "$!" >"$LEADER_EVIDENCE/grandchild-pid"
+# $PPID is the subshell the runner made the leader of this suite's group.
+printf '%s\n' "$PPID" >"$LEADER_EVIDENCE/leader-pid"
+sleep 300
+echo "ok - never reached"
+SH
+  cat >"$next" <<'SH'
+#!/usr/bin/env bash
+echo "ok - next suite ran"
+SH
+  chmod +x "$fixture" "$next"
+  LEADER_EVIDENCE="$tmp" "$RUNNER" --suite-timeout 30 "$fixture" "$next" >"$out" 2>"$tmp/err" &
+  runner=$!
+  printf '%s\n' "$runner" >"$tmp/runner-pid"
+  wait_evidence 100 "$tmp/leader-pid" "$tmp/grandchild-pid" \
+    || { kill_saved_pid "$tmp/runner-pid"; kill_saved_pid "$tmp/grandchild-pid"; cat "$tmp/err"; rm -rf "$tmp"; fail "leader fixture did not record its leader and grandchild pids"; }
+  leader=$(cat "$tmp/leader-pid")
+  pid=$(cat "$tmp/grandchild-pid")
+  started=$SECONDS
+  kill -TERM "$leader" 2>/dev/null \
+    || { kill_saved_pid "$tmp/runner-pid"; kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "could not signal the suite's group leader $leader"; }
+  set +e
+  wait "$runner"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+  [ "$elapsed" -lt 15 ] || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "runner waited ${elapsed}s on a suite whose leader was already dead"; }
+  [ "$rc" -ne 0 ] || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "a suite whose leader died must fail the run"; }
+  grep -Eq "^FM_TEST_END [^ ]+ $fixture exit=1 " "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out" "$tmp/err"; rm -rf "$tmp"; fail "a dead leader must map to exit=1: $(grep '^FM_TEST_END' "$out")"; }
+  ! grep -q '^FM_TEST_TIMEOUT ' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out"; rm -rf "$tmp"; fail "a dead leader must not be reported as a timeout"; }
+  grep -Eq "^FM_TEST_STRAY_PROCESSES [^ ]+ $fixture action=killed$" "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out"; rm -rf "$tmp"; fail "the sweep did not report what the dead leader left behind"; }
+  grep -Fxq 'ok - next suite ran' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out"; rm -rf "$tmp"; fail "run did not continue after the dead leader"; }
+  grep -q '^FM_TEST_SUMMARY total=2 failed=1 ' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "summary wrong after a dead leader: $(grep '^FM_TEST_SUMMARY ' "$out")"; }
+  wait_pid_gone "$pid" 30 \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "grandchild $pid survived the sweep after its leader died"; }
+  rm -rf "$tmp"
+  pass "a suite whose group leader dies is reported at once as exit=1, swept, and the run continues"
+}
+
+# A runner killed by its pid alone (a queue abort, not Ctrl-C) exits through
+# its EXIT trap while its --jobs workers keep running. Those workers share the
+# runner's stdout, so anything reading that stream (the queue's tee) would see
+# no end of stream until the suite limit unless the trap takes the workers
+# down by their saved pids. The 30 s limit and 10 s budget make a regression
+# fail here rather than pass slowly.
+test_interrupted_jobs_runner_releases_its_stdout_and_kills_its_suites() {
+  local tmp repo runner fake_bin a b consumer started elapsed pid_a pid_b
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-abort.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fake_bin="$tmp/fake-bin"
+  a=tests/fm-brief.test.sh
+  b=tests/fm-composer-lib.test.sh
+  mkdir -p "$repo/bin" "$repo/tests" "$fake_bin"
+  cp "$RUNNER" "$runner"
+  cat >"$fake_bin/stat" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
+  printf '700\n'
+  exit 0
+fi
+if [ "$1" = "-f" ] && [ "$2" = "%Lp" ]; then
+  printf '700\n'
+  exit 0
+fi
+exit 1
+SH
+  cat >"$repo/$a" <<'SH'
+#!/usr/bin/env bash
+sleep 300 &
+printf '%s\n' "$!" >"$ABORT_EVIDENCE/grandchild-pid-a"
+sleep 300
+SH
+  cat >"$repo/$b" <<'SH'
+#!/usr/bin/env bash
+sleep 300 &
+printf '%s\n' "$!" >"$ABORT_EVIDENCE/grandchild-pid-b"
+sleep 300
+SH
+  chmod +x "$runner" "$repo/$a" "$repo/$b" "$fake_bin/stat"
+  # The runner's stdout is a pipe read by a consumer, as under the queue; the
+  # runner records its own pid before exec so the test can kill it by that pid.
+  PATH="$fake_bin:$PATH" ABORT_EVIDENCE="$tmp" FM_TEST_SUITE_TIMEOUT=30 \
+    bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' bash "$tmp/runner-pid" \
+      "$runner" --jobs 2 "$a" "$b" 2>"$tmp/err" | cat >"$tmp/out" &
+  consumer=$!
+  wait_evidence 100 "$tmp/runner-pid" "$tmp/grandchild-pid-a" "$tmp/grandchild-pid-b" \
+    || { kill_saved_pid "$tmp/runner-pid"; kill_saved_pid "$tmp/grandchild-pid-a"; kill_saved_pid "$tmp/grandchild-pid-b"; cat "$tmp/err"; rm -rf "$tmp"; fail "jobs abort fixtures did not record their pids"; }
+  pid_a=$(cat "$tmp/grandchild-pid-a")
+  pid_b=$(cat "$tmp/grandchild-pid-b")
+  started=$SECONDS
+  kill -TERM "$(cat "$tmp/runner-pid")" 2>/dev/null \
+    || { kill_saved_pid "$tmp/grandchild-pid-a"; kill_saved_pid "$tmp/grandchild-pid-b"; rm -rf "$tmp"; fail "could not signal the runner by its saved pid"; }
+  wait_pid_gone "$consumer" 100 \
+    || { elapsed=$((SECONDS - started)); kill_saved_pid "$tmp/grandchild-pid-a"; kill_saved_pid "$tmp/grandchild-pid-b"; rm -rf "$tmp"; fail "the runner's stdout was still held open ${elapsed}s after the runner was killed"; }
+  wait_pid_gone "$pid_a" 30 \
+    || { kill_saved_pid "$tmp/grandchild-pid-a"; kill_saved_pid "$tmp/grandchild-pid-b"; rm -rf "$tmp"; fail "grandchild $pid_a survived the interrupted --jobs runner"; }
+  wait_pid_gone "$pid_b" 30 \
+    || { kill_saved_pid "$tmp/grandchild-pid-b"; rm -rf "$tmp"; fail "grandchild $pid_b survived the interrupted --jobs runner"; }
+  rm -rf "$tmp"
+  pass "a --jobs runner killed by pid releases its stdout at once and takes its suites down"
+}
+
 test_suite_timeout_validation() {
   local tmp rc v
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-timeout-arg.XXXXXX")
@@ -926,4 +1066,6 @@ test_aggregate_json
 test_orphaned_child_holding_stdout_cannot_wedge_the_run
 test_suite_timeout_kills_the_group_names_the_suite_and_continues
 test_jobs_worker_honours_suite_timeout
+test_dead_leader_is_reported_at_once_and_its_group_is_swept
+test_interrupted_jobs_runner_releases_its_stdout_and_kills_its_suites
 test_suite_timeout_validation
