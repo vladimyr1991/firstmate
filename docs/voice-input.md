@@ -75,7 +75,7 @@ The compiled daemon and the downloaded weights stay under `~/.cache/firstmate/vo
 
 - Hot-key delivery is verified on the operator's own machine, not by automated tests: run `start`, hold the chord for two seconds while another app is frontmost, and confirm the `recording` and `transcribing` lines appear.
   If they do not, the hold-to-talk design cannot work on that setup, and a Herdr key binding that toggles recording is the documented alternative.
-- `fn+v` is verified the same way, and the only Fn-plus-letter shortcut macOS ships on is Quick Note (`fn+q`), so nothing swallows `fn+v` before the daemon sees it.
+- `fn+v` is verified the same way; macOS ships several Fn-plus-letter shortcuts, listed for your machine under System Settings > Keyboard > Keyboard Shortcuts, and none of them uses `fn+v`, so nothing swallows the chord before the daemon sees it.
   The Globe/Fn key's own action, Emoji & Symbols, Dictation, or input-source switching under System Settings > Keyboard > "Press 🌐 key to", fires when Fn is pressed and released on its own; if it opens after a hold, set that action to Do Nothing.
   A keyboard that does not report a Globe/Fn key, as many non-Apple keyboards do not, cannot send an Fn chord at all; keep `ctrl+alt+space` there.
 - Secure Input (a password field in front) can keep the chord from being delivered.

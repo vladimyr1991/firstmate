@@ -291,6 +291,10 @@ final class Recorder {
     func press() {
         guard !held else { return }
         held = true
+        start()
+    }
+
+    func start() {
         if transcribing {
             say("busy: still transcribing")
             cue("busy")
@@ -389,14 +393,27 @@ var fnRequiredModifiers: CGEventFlags = []
 var fnVirtualKey: Int64 = -1
 let chordModifierMask: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
 
-// Press = key down with Fn held and exactly the chord's other modifiers; it and
-// its autorepeats are swallowed so the letter is never typed. Release = any key
-// up of the chord's key while the press is still held, whatever other modifiers
-// changed meanwhile, or Fn dropping via flagsChanged; a Carbon hot key likewise
-// releases when any part of its chord goes. The key up is swallowed only while
-// the press it ends is held or the exact chord is still down; after Fn went
-// first the key's later key up passes through as a harmless stray. Every other
-// event passes through untouched.
+// Press = key down with Fn held and exactly the chord's other modifiers. While
+// that press is held, every key down (autorepeat) and key up of the chord's key
+// is swallowed whatever the modifiers became meanwhile, so the letter is never
+// typed. Release = any key up of the chord's key while the press is held, or Fn
+// dropping via flagsChanged; a Carbon hot key likewise releases when any part
+// of its chord goes. After Fn went first the key's later key up passes through
+// as a harmless stray. Every other event passes through untouched.
+//
+// The callback only classifies the event and flips `held`: macOS holds the
+// session's keyboard stream while it runs, so the microphone and submit work
+// is handed to the main queue, whose FIFO order keeps press before release.
+func fnChordPressed() {
+    recorder.held = true
+    DispatchQueue.main.async { recorder.start() }
+}
+
+func fnChordReleased() {
+    recorder.held = false
+    DispatchQueue.main.async { recorder.finish(atCap: false) }
+}
+
 let fnChordCallback: CGEventTapCallBack = { _, type, event, _ in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         if let tap = inputTap { CGEvent.tapEnable(tap: tap, enable: true) }
@@ -404,7 +421,7 @@ let fnChordCallback: CGEventTapCallBack = { _, type, event, _ in
     }
     let flags = event.flags
     if type == .flagsChanged {
-        if recorder.held && !flags.contains(.maskSecondaryFn) { recorder.release() }
+        if recorder.held && !flags.contains(.maskSecondaryFn) { fnChordReleased() }
         return Unmanaged.passUnretained(event)
     }
     guard event.getIntegerValueField(.keyboardEventKeycode) == fnVirtualKey else {
@@ -413,11 +430,13 @@ let fnChordCallback: CGEventTapCallBack = { _, type, event, _ in
     let exactChord = flags.contains(.maskSecondaryFn)
         && flags.intersection(chordModifierMask) == fnRequiredModifiers
     switch type {
+    case .keyDown where recorder.held:
+        return nil
     case .keyDown where exactChord:
-        recorder.press()
+        fnChordPressed()
         return nil
     case .keyUp where recorder.held || exactChord:
-        recorder.release()
+        fnChordReleased()
         return nil
     default:
         return Unmanaged.passUnretained(event)
