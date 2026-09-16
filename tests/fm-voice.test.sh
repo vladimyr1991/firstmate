@@ -123,6 +123,21 @@ panes_json() {  # <pane_id> <agent or ""> <status> [title]
     "$1" "$agent_field" "$3" "${4:-Parlino webhook settings screen}"
 }
 
+# voice_env <home> <fakebin> [env...] <command...>: runs <command> under the
+# exact environment submit gets from the daemon - the fakes first on PATH, the
+# home's overrides, and every fake's log wired up. run_submit and the pbcopy
+# tripwire below share it so the wiring the tripwire proves is the wiring
+# every submit runs under.
+voice_env() {
+  local home=$1 fakebin=$2
+  shift 2
+  env PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" TMPDIR="$home/tmp" \
+    FAKE_HERDR_LOG="$home/herdr.log" FAKE_WHISPER_LOG="$home/whisper.log" \
+    FAKE_AFPLAY_LOG="$home/afplay.log" FAKE_PBCOPY_LOG="$home/pbcopy.log" \
+    "$@"
+}
+
 # run_submit <home> <fakebin> <wav> [env...]: runs submit the way the daemon
 # does, with only the WAV path and the logs wired up; prints stdout, exit code
 # in RC. SUBMIT_ARGS prepends extra submit arguments before the WAV.
@@ -132,11 +147,7 @@ run_submit() {
   : > "$home/herdr.log"; : > "$home/whisper.log"; : > "$home/afplay.log"; : > "$home/pbcopy.log"
   # shellcheck disable=SC2086
   set -- "$@" "$VOICE" submit ${SUBMIT_ARGS-} "$wav"
-  OUT=$(env PATH="$fakebin:$BASE_PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
-    FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" TMPDIR="$home/tmp" \
-    FAKE_HERDR_LOG="$home/herdr.log" FAKE_WHISPER_LOG="$home/whisper.log" \
-    FAKE_AFPLAY_LOG="$home/afplay.log" FAKE_PBCOPY_LOG="$home/pbcopy.log" \
-    "$@" 2>"$home/stderr")
+  OUT=$(voice_env "$home" "$fakebin" "$@" 2>"$home/stderr")
   RC=$?
 }
 
@@ -164,6 +175,29 @@ run_bootstrap() {  # <home> <fakebin> [env...]
     FM_CONFIG_OVERRIDE="$home/config" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_PROJECTS_OVERRIDE="$home/projects" \
     FM_BOOTSTRAP_DETECT_ONLY=1 bash "$BOOTSTRAP" 2>/dev/null
+}
+
+# --- tripwire: the fake pbcopy is proven to fire -------------------------------
+# Every assert_clipboard_untouched below passes on an EMPTY pbcopy log, so
+# together they prove nothing unless the fake is the pbcopy on submit's PATH
+# and its log is wired: a fake with no FAKE_PBCOPY_LOG exits 1 with an empty
+# log, and submit would call it as `pbcopy 2>/dev/null || true`. This is the
+# one positive call. The resolution check comes first so a broken fake can
+# never send the probe text to the real clipboard.
+
+test_pbcopy_tripwire_fires() {
+  local home fakebin resolved
+  home=$(make_home tripwire "")
+  fakebin=$(make_fakes "$home")
+  : > "$home/pbcopy.log"
+  resolved=$(voice_env "$home" "$fakebin" bash -c 'command -v pbcopy')
+  [ "$resolved" = "$fakebin/pbcopy" ] || fail "tripwire: pbcopy must resolve to the fake, got: $resolved"
+  voice_env "$home" "$fakebin" bash -c 'printf %s "tripwire text" | pbcopy 2>/dev/null || true'
+  [ "$(cat "$home/pbcopy.log")" = "tripwire text" ] \
+    || fail "tripwire: the fake pbcopy must log what it was fed, log: $(cat "$home/pbcopy.log")"
+  ( assert_clipboard_untouched "$home" tripwire ) 2>/dev/null \
+    && fail "tripwire: assert_clipboard_untouched must fail once the clipboard was written"
+  pass "tripwire: a clipboard write under submit's own environment reaches the fake's log and fails the untouched assertion"
 }
 
 # --- AC-1 / AC-2: inert without config -----------------------------------------
@@ -758,6 +792,7 @@ test_cue() {
   pass "cue: sound cues follow the sounds key"
 }
 
+test_pbcopy_tripwire_fires
 test_inert_without_config
 test_doctor_and_bootstrap_relay
 test_invalid_hotkey
