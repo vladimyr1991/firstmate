@@ -414,6 +414,71 @@ test_daemon_typechecks() {
   pass "bin/fm-voice-hotkey.swift typechecks with the local swiftc"
 }
 
+# The tap's classification, driven through --simulate-events with no tap, no
+# grant, and no microphone: the chord's key is owned from its swallowed press to
+# its own key up, so releasing Fn first leaks neither repeats nor the key up.
+test_fn_chord_key_owned_until_key_up() {
+  local bin out expected
+  if [ "$(uname -s)" != Darwin ] || ! command -v swiftc >/dev/null 2>&1; then
+    echo "skip: swiftc not available - fn chord classification left to CI"
+    return 0
+  fi
+  mkdir -p "$TMP_ROOT/sim"
+  bin="$TMP_ROOT/sim/fm-voice-hotkey"
+  if ! out=$(swiftc -Onone -o "$bin" "$ROOT/bin/fm-voice-hotkey.swift" 2>&1); then
+    fail "bin/fm-voice-hotkey.swift does not compile:"$'\n'"$out"
+  fi
+  out=$("$bin" --hotkey fn+v --simulate-events <<'EV'
+keyDown v
+keyUp v
+keyDown v fn,shift
+keyUp v fn,shift
+keyDown v fn
+keyDown v fn
+keyDown v fn
+flagsChanged -
+keyDown v
+keyDown v
+keyDown v
+keyUp v
+keyDown v
+keyUp v
+EV
+  ) || fail "--simulate-events exited $?:"$'\n'"$out"
+  expected='pass
+pass
+pass
+pass
+swallow press
+swallow
+swallow
+pass
+swallow
+swallow
+swallow
+swallow release
+pass
+pass'
+  [ "$out" = "$expected" ] || fail "fn+v classification differs from the owned-until-key-up property:"$'\n'"--- got ---"$'\n'"$out"$'\n'"--- expected ---"$'\n'"$expected"
+  out=$("$bin" --hotkey cmd+fn+v --simulate-events <<'EV'
+keyDown v fn
+keyDown v cmd,fn
+keyDown v cmd,fn
+flagsChanged - fn
+keyDown v fn
+keyUp v fn
+EV
+  ) || fail "--simulate-events (cmd+fn+v) exited $?:"$'\n'"$out"
+  expected='pass
+swallow press
+swallow
+pass
+swallow
+swallow release'
+  [ "$out" = "$expected" ] || fail "cmd+fn+v classification differs:"$'\n'"--- got ---"$'\n'"$out"$'\n'"--- expected ---"$'\n'"$expected"
+  pass "fn chord: the key is swallowed from its press to its own key up, and only the exact chord starts one"
+}
+
 # --- AC-6: happy path types without Enter --------------------------------------
 
 test_happy_path_types_without_enter() {
@@ -916,6 +981,7 @@ test_fn_chord_refused_until_granted
 test_fn_chord_starts_once_granted
 test_non_fn_chord_never_asks
 test_daemon_typechecks
+test_fn_chord_key_owned_until_key_up
 test_happy_path_types_without_enter
 test_refusals
 test_silence_gate

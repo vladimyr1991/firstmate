@@ -30,6 +30,7 @@ macOS gates that tap behind Input Monitoring, and swallowing a key behind Access
 Switch the app on in System Settings > Privacy & Security > Input Monitoring, or > Accessibility when that is the pane named, and run `start` again; a fresh machine may need one round for each.
 Neither `doctor` nor `status` asks for a grant: `doctor` names the missing one and its System Settings pane, while `status` only reports `not ready`.
 Nothing is recorded until the complete chord is held, and stopping the daemon removes the tap.
+An Fn chord ends when its letter comes up, not when Fn does: releasing Fn a moment before the letter neither types the letter nor cuts the recording short.
 
 ## Using it
 

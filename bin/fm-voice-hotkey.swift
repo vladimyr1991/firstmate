@@ -30,6 +30,13 @@
 //                                     reports missing (the system dialog adds the
 //                                     hosting app to that pane), then prints the
 //                                     --probe-fn-chord result afterwards
+//   fm-voice-hotkey --hotkey <fn chord> --simulate-events
+//                                     reads one synthetic keyboard event per stdin
+//                                     line, "<keyDown|keyUp|flagsChanged> <key|->
+//                                     [fn,shift,cmd,ctrl,alt]", and prints the tap's
+//                                     decision for each: pass | swallow [press|release].
+//                                     No tap, no grant, no microphone: it is the
+//                                     test seam for the chord classification.
 //
 // Exit codes: 0 on SIGTERM/SIGINT, 2 bad arguments, 3 a permission is denied
 // (microphone, or Input Monitoring/Accessibility for an fn chord), 4 hot key
@@ -117,6 +124,7 @@ func usage(_ message: String) -> Never {
     exit(2)
 }
 
+var simulateEvents = false
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
     let flag = args.removeFirst()
@@ -130,6 +138,8 @@ while !args.isEmpty {
     case "--request-fn-chord":
         print(requestFnChord())
         exit(0)
+    case "--simulate-events":
+        simulateEvents = true
     case "--hotkey", "--max-seconds", "--submit", "--sounds", "--tmpdir":
         guard !args.isEmpty else { usage("missing value for \(flag)") }
         let value = args.removeFirst()
@@ -146,7 +156,7 @@ while !args.isEmpty {
         usage("unknown argument \(flag)")
     }
 }
-guard !submitPath.isEmpty, FileManager.default.isExecutableFile(atPath: submitPath) else {
+guard simulateEvents || (!submitPath.isEmpty && FileManager.default.isExecutableFile(atPath: submitPath)) else {
     usage("--submit must name the executable fm-voice.sh")
 }
 
@@ -250,6 +260,81 @@ func parseHotkey(_ spec: String) -> Hotkey? {
 guard let hotkey = parseHotkey(hotkeySpec) else {
     usage("invalid hotkey: \(hotkeySpec)")
 }
+
+// MARK: - fn chord classification
+
+// The fn chord the tap matches, and whether its key is down since a press the
+// tap swallowed. Globals because a CGEventTapCallBack is a C function pointer
+// and cannot capture anything.
+var fnRequiredModifiers: CGEventFlags = []
+var fnVirtualKey: Int64 = -1
+var fnKeyDown = false
+let chordModifierMask: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
+
+enum FnChordEdge { case press, release, none }
+
+// One decision per keyboard event, shared by the real tap and --simulate-events.
+// Press = key down of the chord's key with Fn held and exactly the chord's other
+// modifiers. The key then counts as held until its own key up, whatever Fn or
+// the modifiers do meanwhile: every key down (autorepeat) and the key up of
+// that key are swallowed so the letter is never typed, and only that key up is
+// the release. Releasing Fn first changes nothing; the recording runs until the
+// letter comes up or the cap. Every other event passes through untouched.
+func classifyFnChordEvent(type: CGEventType, keycode: Int64, flags: CGEventFlags) -> (swallow: Bool, edge: FnChordEdge) {
+    guard type == .keyDown || type == .keyUp, keycode == fnVirtualKey else { return (false, .none) }
+    if fnKeyDown {
+        guard type == .keyUp else { return (true, .none) }
+        fnKeyDown = false
+        return (true, .release)
+    }
+    let exactChord = flags.contains(.maskSecondaryFn)
+        && flags.intersection(chordModifierMask) == fnRequiredModifiers
+    guard type == .keyDown, exactChord else { return (false, .none) }
+    fnKeyDown = true
+    return (true, .press)
+}
+
+func simulateFnChordEvents() -> Never {
+    guard case let .fn(requiredModifiers, virtualKey) = hotkey else {
+        usage("--simulate-events needs an fn chord, got \(hotkeySpec)")
+    }
+    fnRequiredModifiers = requiredModifiers
+    fnVirtualKey = Int64(virtualKey)
+    let types: [String: CGEventType] = ["keyDown": .keyDown, "keyUp": .keyUp, "flagsChanged": .flagsChanged]
+    let flagNames: [String: CGEventFlags] = [
+        "fn": .maskSecondaryFn, "shift": .maskShift, "cmd": .maskCommand,
+        "ctrl": .maskControl, "alt": .maskAlternate,
+    ]
+    while let line = readLine() {
+        let parts = line.split(separator: " ").map(String.init)
+        guard parts.count >= 2, parts.count <= 3, let type = types[parts[0]] else {
+            usage("bad event line: \(line)")
+        }
+        var keycode: Int64 = -1
+        if parts[1] != "-" {
+            guard let code = keyCode(for: parts[1]) else { usage("bad key in event line: \(line)") }
+            keycode = Int64(code)
+        }
+        var flags: CGEventFlags = []
+        if parts.count == 3 {
+            for name in parts[2].split(separator: ",") {
+                guard let flag = flagNames[String(name)] else { usage("bad flag in event line: \(line)") }
+                flags.insert(flag)
+            }
+        }
+        let decision = classifyFnChordEvent(type: type, keycode: keycode, flags: flags)
+        var out = decision.swallow ? "swallow" : "pass"
+        switch decision.edge {
+        case .press: out += " press"
+        case .release: out += " release"
+        case .none: break
+        }
+        print(out)
+    }
+    exit(0)
+}
+
+if simulateEvents { simulateFnChordEvents() }
 
 // MARK: - microphone permission (asked at start, never on the first press)
 
@@ -387,20 +472,6 @@ var hotKeyRef: EventHotKeyRef?
 var inputTap: CFMachPort?
 let hotKeyID = EventHotKeyID(signature: OSType(0x464D_5643), id: 1) // "FMVC"
 
-// The fn chord the tap matches. Globals because a CGEventTapCallBack is a C
-// function pointer and cannot capture anything.
-var fnRequiredModifiers: CGEventFlags = []
-var fnVirtualKey: Int64 = -1
-let chordModifierMask: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
-
-// Press = key down with Fn held and exactly the chord's other modifiers. While
-// that press is held, every key down (autorepeat) and key up of the chord's key
-// is swallowed whatever the modifiers became meanwhile, so the letter is never
-// typed. Release = any key up of the chord's key while the press is held, or Fn
-// dropping via flagsChanged; a Carbon hot key likewise releases when any part
-// of its chord goes. After Fn went first the key's later key up passes through
-// as a harmless stray. Every other event passes through untouched.
-//
 // The callback only classifies the event and flips `held`: macOS holds the
 // session's keyboard stream while it runs, so the microphone and submit work
 // is handed to the main queue, whose FIFO order keeps press before release.
@@ -419,28 +490,15 @@ let fnChordCallback: CGEventTapCallBack = { _, type, event, _ in
         if let tap = inputTap { CGEvent.tapEnable(tap: tap, enable: true) }
         return Unmanaged.passUnretained(event)
     }
-    let flags = event.flags
-    if type == .flagsChanged {
-        if recorder.held && !flags.contains(.maskSecondaryFn) { fnChordReleased() }
-        return Unmanaged.passUnretained(event)
+    let decision = classifyFnChordEvent(
+        type: type, keycode: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags
+    )
+    switch decision.edge {
+    case .press: fnChordPressed()
+    case .release: fnChordReleased()
+    case .none: break
     }
-    guard event.getIntegerValueField(.keyboardEventKeycode) == fnVirtualKey else {
-        return Unmanaged.passUnretained(event)
-    }
-    let exactChord = flags.contains(.maskSecondaryFn)
-        && flags.intersection(chordModifierMask) == fnRequiredModifiers
-    switch type {
-    case .keyDown where recorder.held:
-        return nil
-    case .keyDown where exactChord:
-        fnChordPressed()
-        return nil
-    case .keyUp where recorder.held || exactChord:
-        fnChordReleased()
-        return nil
-    default:
-        return Unmanaged.passUnretained(event)
-    }
+    return decision.swallow ? nil : Unmanaged.passUnretained(event)
 }
 
 switch hotkey {
