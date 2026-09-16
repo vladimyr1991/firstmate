@@ -349,7 +349,7 @@ test_fn_chord_refused_until_granted() {
   home=$(fn_home fn-unknown-access fn+v)
   out=$(FAKE_FN_ACCESS=garbage fn_run "$home" start); rc=$?
   expect_code 3 "$rc" "start: an unreadable probe result refuses"
-  assert_contains "$out" 'could not report whether the fn chord fn+v may observe the keyboard' "start explains an unreadable probe"
+  assert_contains "$out" "the daemon at $home/cache/firstmate/voice/fm-voice-hotkey-fakefn could not report whether the fn chord fn+v may observe the keyboard; remove exactly that file, then run bin/fm-voice.sh build and start again" "start names the cached daemon to remove on an unreadable probe"
   assert_not_contains "$out" 'daemon args:' "start never reaches the daemon on an unreadable probe"
   pass "fn chord: doctor and start refuse with the exact pane until the grant is on"
 }

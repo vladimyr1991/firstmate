@@ -390,10 +390,13 @@ var fnVirtualKey: Int64 = -1
 let chordModifierMask: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
 
 // Press = key down with Fn held and exactly the chord's other modifiers; it and
-// its autorepeats and its key up are swallowed so the letter is never typed.
-// Releasing Fn first ends the recording too, via flagsChanged; the key's own
-// later key up then carries no Fn flag and passes through as a harmless stray.
-// Every other event passes through untouched.
+// its autorepeats are swallowed so the letter is never typed. Release = any key
+// up of the chord's key while the press is still held, whatever other modifiers
+// changed meanwhile, or Fn dropping via flagsChanged; a Carbon hot key likewise
+// releases when any part of its chord goes. The key up is swallowed only while
+// the press it ends is held or the exact chord is still down; after Fn went
+// first the key's later key up passes through as a harmless stray. Every other
+// event passes through untouched.
 let fnChordCallback: CGEventTapCallBack = { _, type, event, _ in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         if let tap = inputTap { CGEvent.tapEnable(tap: tap, enable: true) }
@@ -404,16 +407,16 @@ let fnChordCallback: CGEventTapCallBack = { _, type, event, _ in
         if recorder.held && !flags.contains(.maskSecondaryFn) { recorder.release() }
         return Unmanaged.passUnretained(event)
     }
-    guard event.getIntegerValueField(.keyboardEventKeycode) == fnVirtualKey,
-          flags.contains(.maskSecondaryFn),
-          flags.intersection(chordModifierMask) == fnRequiredModifiers else {
+    guard event.getIntegerValueField(.keyboardEventKeycode) == fnVirtualKey else {
         return Unmanaged.passUnretained(event)
     }
+    let exactChord = flags.contains(.maskSecondaryFn)
+        && flags.intersection(chordModifierMask) == fnRequiredModifiers
     switch type {
-    case .keyDown:
+    case .keyDown where exactChord:
         recorder.press()
         return nil
-    case .keyUp:
+    case .keyUp where recorder.held || exactChord:
         recorder.release()
         return nil
     default:

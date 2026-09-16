@@ -29,9 +29,10 @@
 #                behind Input Monitoring and Accessibility for the terminal app
 #                hosting Herdr: start asks for the missing grant (the system
 #                dialog adds that app to the pane) and, while it is still not
-#                switched on, refuses with the pane's name; doctor and status
-#                report the same missing grant without asking. Nothing is
-#                observed while the daemon is not running.
+#                switched on, refuses with the pane's name; without asking,
+#                doctor names the missing grant and its pane while status only
+#                reports "not ready". Nothing is observed while the daemon is
+#                not running.
 #   model        whisper ggml weights path, default
 #                ${XDG_CACHE_HOME:-$HOME/.cache}/firstmate/voice/ggml-large-v3-turbo-q5_0.bin
 #   language     whisper language code or "auto", default ru
@@ -292,7 +293,7 @@ fn_chord_denial() {  # <missing>: the one-line refusal for a missing grant
     accessibility)
       echo "Accessibility is not granted to the terminal app hosting Herdr, and only Accessibility lets the fn chord $HOTKEY swallow its key instead of typing it; switch that app on in System Settings > Privacy & Security > Accessibility, then start again" ;;
     *)
-      echo "the daemon could not report whether the fn chord $HOTKEY may observe the keyboard (rebuild it with bin/fm-voice.sh build)" ;;
+      echo "the daemon at $(daemon_binary) could not report whether the fn chord $HOTKEY may observe the keyboard; remove exactly that file, then run bin/fm-voice.sh build and start again" ;;
   esac
 }
 

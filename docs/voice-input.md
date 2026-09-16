@@ -28,7 +28,7 @@ The daemon then watches the keyboard through an event tap, exactly as long as it
 macOS gates that tap behind Input Monitoring, and swallowing a key behind Accessibility, both granted to the terminal app hosting Herdr rather than to firstmate.
 `start` asks for whichever grant is still missing: the system dialog appears, adds that app to the named pane switched off, and `start` stops with that pane's name and exit 3, because a chord that is not observed is refused rather than started.
 Switch the app on in System Settings > Privacy & Security > Input Monitoring, or > Accessibility when that is the pane named, and run `start` again; a fresh machine may need one round for each.
-`doctor` and `status` report the same missing grant without asking for it.
+Neither `doctor` nor `status` asks for a grant: `doctor` names the missing one and its System Settings pane, while `status` only reports `not ready`.
 Nothing is recorded until the complete chord is held, and stopping the daemon removes the tap.
 
 ## Using it
