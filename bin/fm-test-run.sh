@@ -44,11 +44,18 @@
 #                   families never schedule under --jobs.
 #   --suite-timeout <seconds>
 #                   the most wall-clock time one selected script may take
-#                   (default: $FM_TEST_SUITE_TIMEOUT, else 600). A script still
+#                   (default: $FM_TEST_SUITE_TIMEOUT, else 3600). A script still
 #                   running at the limit is killed together with every process
 #                   in its process group, recorded as exit=124 with an
 #                   FM_TEST_TIMEOUT marker, and the run continues with the next
-#                   script. The limit is per script, never per run.
+#                   script. The limit is per script, never per run. It bounds
+#                   a wedged script, not a slow one: on a fleet machine whose
+#                   load stayed between 24 and 52, the honest
+#                   fm-session-start suite took 2303 s to pass, and a 600 s
+#                   limit killed two honest scripts in one full run, so the
+#                   default sits above that measurement and still ends a
+#                   wedge within the hour instead of days. Lower it only for a
+#                   selection whose scripts are known to be fast.
 #   -h, --help      print this header
 #
 # Process containment (every selection mode, serial and --jobs):
@@ -118,7 +125,7 @@ JOBS_MAX=8
 # Per-script wall-clock limit in seconds (header: --suite-timeout). The value
 # is validated after parsing so an env override is checked the same way as the
 # flag.
-SUITE_TIMEOUT=${FM_TEST_SUITE_TIMEOUT:-600}
+SUITE_TIMEOUT=${FM_TEST_SUITE_TIMEOUT:-3600}
 # Seconds a killed process group gets between SIGTERM and SIGKILL.
 SUITE_KILL_GRACE=2
 
