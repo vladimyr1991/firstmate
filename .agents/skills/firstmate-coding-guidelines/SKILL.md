@@ -116,6 +116,10 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 - Tests must exercise behavior through an executable or public interface and must never assert implementation-source bytes, including through parsers, regexes, snapshots, or indirect wrappers.
   A shipped `bin/*-check.sh` guard that inspects repository files is itself such an interface: the invariant lives in the guard, with its own contract and `--help`, and the test drives the guard - including against a deliberately broken fixture copy, so the guard's own failure path is proven.
   A helper that exists only to let a test read source bytes is the wrapper this forbids.
+- A test-suite fake that exists only so a negative assertion can say "never called" - a stub on PATH or a shell-function override whose log must stay empty - proves nothing until the same test file calls it positively once, through the same wiring the product would use, and shows both that the call reached its log and that the negative assertion fails on that log.
+  Without that call a fake whose log variable was never wired exits with an error the product would swallow (`pbcopy 2>/dev/null || true`), and every "untouched" assertion stays green on an empty log, which is how `tests/fm-voice.test.sh` carried ten clipboard assertions that could not fail.
+  When the real tool has a side effect, first assert that the name resolves to the fake (`command -v`) and make the positive call only on that proof, so a broken fixture fails on resolution and never reaches the real tool.
+  The broken-fixture run required of a shipped guard above is this same proof for a `bin/*-check.sh` guard, where the thing deliberately broken is the inspected file rather than the fake.
 - A maintainer-verification record under `docs/verification/` records active empirical facts, not assumptions or task chronology.
 - Include the date, version, exact commands run, and exact output needed to support the current guarantee.
 - Keep incident chronology and delivery evidence in private task reports or PR evidence unless a concise rationale is required to maintain a current safety boundary.
