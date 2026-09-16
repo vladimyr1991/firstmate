@@ -90,6 +90,10 @@
 # configured close verb (FM_CLASSIFY_RESOLVE_VERB, default "resolved") for the
 # same reason: the folds that count open decisions and open activities drop a key
 # only for a line carrying that configured verb.
+# The no-mistakes definition of done additionally prescribes that pause verb for
+# the pipeline run itself, written before the blocking `axi run` and naming the
+# run's branch as the owner, because otherwise the `done:` handoff stays the
+# last status event for the whole run and reads as finished.
 # Ship and scout briefs additionally key every blocked/needs-decision template
 # the crewmate copies, with the "[key=<slug>]" token between the verb and the
 # colon, so a second escalation cannot evict the first under the shared
@@ -633,6 +637,9 @@ Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
+Right before you invoke \`no-mistakes axi run\`, append \`$PAUSED_VERB: waiting on the no-mistakes run for fm/$ID\` to the status file.
+The run blocks your turn until its first gate, so the line goes BEFORE the call, exactly as the queue contract writes its waiting line before \`acquire\`; it names the owner of the wait because a bare pause reads from outside as "finished and waiting for firstmate" - the handoff \`done:\` above stayed the last event for an entire run and drew four empty check-ins of a worker that was mid-pipeline.
+If \`axi run\` returns an error instead of a gate or an outcome, that pause is no longer true: append the \`blocked [key=daemon-error]: {the daemon error}\` line from rule 7 for a daemon error, or \`failed: {what axi printed}\` otherwise, so a pause never stays the last event over a run that is not alive.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 An active run commits into the pipeline's own worktree while your checkout stays at the head you submitted, so when a live finding asserts a fact about the pipeline head, do not treat your checkout as confirming or refuting it.
 Verify such a claim from supported gate evidence; if it cannot be checked from that evidence, relay it as unverified instead of endorsing it, and do not make a scope decision that depends on it.

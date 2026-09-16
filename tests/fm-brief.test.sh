@@ -1886,6 +1886,110 @@ EOF
   pass "fm-brief.sh: every generated keyed template folds into its own open decision ($total templates)"
 }
 
+# During a no-mistakes run the handoff `done:` used to stay the last status event
+# for the whole pipeline, and a supervisor reading the log tail saw "finished and
+# waiting" - four empty check-ins of one live worker. The no-mistakes DOD must
+# therefore prescribe a pause line, written BEFORE the blocking `axi run` (the
+# call returns no turn until its first gate) and naming the run's branch as the
+# owner of the wait. The line is extracted from the generated brief, never
+# restated here, so a template/test drift shows as a missing line, and every
+# assertion runs it through the real readers: the classifier's pause and
+# captain-relevance predicates, and the Setup step's own branch name.
+test_no_mistakes_dod_prescribes_owned_pipeline_wait_line() {
+  local home id brief line handoff branch dod statusf n other verb
+  # shellcheck source=bin/fm-classify-lib.sh
+  . "$ROOT/bin/fm-classify-lib.sh"
+  home="$TMP_ROOT/pipeline-wait-home"
+  mkdir -p "$home/data"
+  statusf="$home/pipeline-wait.status"
+  id="brief-pipeline-wait-c1"
+  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "no-mistakes scaffold for the pipeline wait line exited non-zero"
+  brief="$home/data/$id/brief.md"
+
+  # AC-1: exactly one prescribed wait line, fully rendered, recognised as a pause.
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  n=$(grep -oE '`paused: waiting on the no-mistakes run for fm/[^`]*`' "$brief" | wc -l | tr -d ' ')
+  [ "$n" = "1" ] \
+    || fail "no-mistakes brief must prescribe exactly one pipeline wait line, found $n"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  line=$(grep -oE '`paused: waiting on the no-mistakes run for fm/[^`]*`' "$brief" | tr -d '`')
+  [ "$line" = "paused: waiting on the no-mistakes run for fm/$id" ] \
+    || fail "pipeline wait line names the wrong owner: '$line'"
+  printf '%s\n' "$line" > "$statusf"
+  status_is_paused "$(cat "$statusf")" \
+    || fail "the classifier does not read the prescribed wait line as a pause"
+
+  # AC-2: not captain-relevant under either regex, while the handoff line is.
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  handoff=$(grep -oE '`done: implemented and committed; ready for /no-mistakes`' "$brief" | head -1 | tr -d '`')
+  [ -n "$handoff" ] || fail "handoff done: line no longer extractable from the brief"
+  if status_is_captain_relevant "$line"; then
+    fail "the pipeline wait line reads as captain-relevant under the default regex"
+  fi
+  if FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" status_is_captain_relevant "$line"; then
+    fail "the pipeline wait line reads as captain-relevant under an explicit FM_CAPTAIN_RE"
+  fi
+  status_is_captain_relevant "$handoff" \
+    || fail "the handoff done: line stopped being captain-relevant under the default regex"
+  FM_CAPTAIN_RE="$FM_CLASSIFY_CAPTAIN_RE_DEFAULT" status_is_captain_relevant "$handoff" \
+    || fail "the handoff done: line stopped being captain-relevant under an explicit FM_CAPTAIN_RE"
+
+  # AC-3: executable at the moment it is written - no placeholder the worker
+  # would have to fetch from a run, and the branch is the one Setup creates.
+  case "$line" in
+    *[{}\<\>]*) fail "the pipeline wait line still carries a placeholder: '$line'" ;;
+  esac
+  branch=$(grep -oE 'git checkout -b fm/[^` ]*' "$brief" | head -1 | sed 's/^git checkout -b //')
+  [ -n "$branch" ] || fail "Setup branch command no longer extractable from the brief"
+  [ "${line##* }" = "$branch" ] \
+    || fail "the wait line names '${line##* }' but Setup creates '$branch'"
+  dod="$TMP_ROOT/pipeline-wait-dod.txt"
+  awk '/^# Definition of done$/,0' "$brief" > "$dod"
+  [ "$(sed -n '2p' "$dod")" = "Delivery contract: mode=no-mistakes" ] \
+    || fail "the delivery contract line must stay the first line after the definition of done header"
+  grep -qF -- "\`$line\`" "$dod" \
+    || fail "the pipeline wait line must be prescribed inside the definition of done"
+  assert_no_grep "only AFTER it returns" "$brief" \
+    "the brief must not license writing the wait line after the blocking call returns"
+
+  # AC-4: the pause verb comes from configuration, not a literal.
+  id="brief-pipeline-wait-c2"
+  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "no-mistakes scaffold under a custom pause verb exited non-zero"
+  other="$home/data/$id/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  verb=$(grep -oE '`awaiting: waiting on the no-mistakes run for fm/[^`]*`' "$other" | tr -d '`')
+  [ "$verb" = "awaiting: waiting on the no-mistakes run for fm/$id" ] \
+    || fail "custom pause verb did not render in the pipeline wait line: '$verb'"
+  FM_CLASSIFY_PAUSED_VERB=awaiting status_is_paused "$verb" \
+    || fail "the classifier under the custom verb does not read the rendered wait line as a pause"
+  assert_no_grep "paused: waiting on the no-mistakes run" "$other" \
+    "the pipeline wait line still hardcodes the default pause verb"
+
+  # AC-5: the line stays out of every other scaffold.
+  id="brief-pipeline-wait-c3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  assert_no_grep "waiting on the no-mistakes run" "$home/data/$id/brief.md" \
+    "the pipeline wait line leaked into the direct-PR brief"
+  id="brief-pipeline-wait-c4"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only >/dev/null 2>&1
+  assert_no_grep "waiting on the no-mistakes run" "$home/data/$id/brief.md" \
+    "the pipeline wait line leaked into the local-only brief"
+  id="brief-pipeline-wait-c5"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  assert_no_grep "waiting on the no-mistakes run" "$home/data/$id/brief.md" \
+    "the pipeline wait line leaked into the scout brief"
+  id="brief-pipeline-wait-c6"
+  FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" --secondmate alpha >/dev/null 2>&1
+  assert_no_grep "waiting on the no-mistakes run" "$home/data/$id/brief.md" \
+    "the pipeline wait line leaked into the secondmate charter"
+  pass "fm-brief.sh: no-mistakes DOD prescribes an owned pipeline wait line that its readers classify as a pause"
+}
+
 # Hard rule 4 lives only in firstmate's own AGENTS.md, which no worker reads, so
 # workers addressed the captain directly. Both worker scaffolds must state the
 # single-channel rule themselves.
@@ -2111,6 +2215,7 @@ test_resolve_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_outward_write_cleanup_rule_reaches_both_scaffolds
 test_pause_examples_name_pipeline_and_ci_waits
+test_no_mistakes_dod_prescribes_owned_pipeline_wait_line
 test_generated_keyed_templates_open_a_decision
 test_workers_report_to_firstmate_only
 test_staging_autonomy_generates_the_landing_contract
