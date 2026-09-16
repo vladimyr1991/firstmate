@@ -1024,6 +1024,46 @@ SH
   pass "a --jobs runner killed by pid releases its stdout at once and takes its suites down"
 }
 
+# The interrupt path must end a suite as completely as the normal path does: a
+# descendant that ignores SIGTERM has to die to the SIGKILL that follows the
+# grace period, or an aborted run would leave it behind. A regression here
+# leaves a 300 s sleeper alive past the budget and fails the test, never passes.
+test_interrupted_runner_kills_descendants_that_ignore_term() {
+  local tmp fixture out runner script_pid pid
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-sigkill.XXXXXX")
+  fixture="$tmp/ignores-term.test.sh"
+  out="$tmp/out"
+  cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+trap '' TERM
+# Started with SIGTERM ignored, so the child inherits that disposition.
+sleep 300 &
+printf '%s\n' "$!" >"$IGNORE_EVIDENCE/grandchild-pid"
+printf '%s\n' "$$" >"$IGNORE_EVIDENCE/script-pid"
+sleep 300
+echo "ok - never reached"
+SH
+  chmod +x "$fixture"
+  IGNORE_EVIDENCE="$tmp" "$RUNNER" --suite-timeout 30 "$fixture" >"$out" 2>"$tmp/err" &
+  runner=$!
+  printf '%s\n' "$runner" >"$tmp/runner-pid"
+  wait_evidence 100 "$tmp/script-pid" "$tmp/grandchild-pid" \
+    || { kill_saved_pid "$tmp/runner-pid"; kill_saved_pid "$tmp/script-pid"; kill_saved_pid "$tmp/grandchild-pid"; cat "$tmp/err"; rm -rf "$tmp"; fail "TERM-ignoring fixture did not record its pids"; }
+  script_pid=$(cat "$tmp/script-pid")
+  pid=$(cat "$tmp/grandchild-pid")
+  kill -TERM "$runner" 2>/dev/null \
+    || { kill_saved_pid "$tmp/script-pid"; kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "could not signal the runner by its saved pid"; }
+  set +e
+  wait "$runner"
+  set -e
+  wait_pid_gone "$pid" 60 \
+    || { kill_saved_pid "$tmp/script-pid"; kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "grandchild $pid ignoring SIGTERM survived the interrupted run"; }
+  wait_pid_gone "$script_pid" 60 \
+    || { kill_saved_pid "$tmp/script-pid"; rm -rf "$tmp"; fail "suite $script_pid ignoring SIGTERM survived the interrupted run"; }
+  rm -rf "$tmp"
+  pass "an interrupted runner kills suite descendants that ignore SIGTERM"
+}
+
 test_suite_timeout_validation() {
   local tmp rc v
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-timeout-arg.XXXXXX")
@@ -1068,4 +1108,5 @@ test_suite_timeout_kills_the_group_names_the_suite_and_continues
 test_jobs_worker_honours_suite_timeout
 test_dead_leader_is_reported_at_once_and_its_group_is_swept
 test_interrupted_jobs_runner_releases_its_stdout_and_kills_its_suites
+test_interrupted_runner_kills_descendants_that_ignore_term
 test_suite_timeout_validation

@@ -1504,13 +1504,16 @@ FAMILIES_TSV="$RUN_TMP/families.tsv"
 # Every live suite process group records its id in $RUN_TMP/pgid.<tag> for as
 # long as it runs, so an interrupted or killed runner still takes its suites
 # and their descendants down with it instead of leaving them to hold on to
-# whatever they inherited. The --jobs worker subshells share this runner's
-# stdout and are signalled by their saved pids for the same reason: a runner
-# killed by pid alone must not leave a worker holding the run's output open
-# until the suite limit. Groups and workers are addressed by saved ids only.
+# whatever they inherited. The --jobs worker subshells are signalled by their
+# saved pids for the same reason: a runner killed by pid alone must not leave
+# a worker polling for a suite that is already gone until the suite limit.
+# Groups get the same SIGTERM, grace, SIGKILL sequence as on the normal path,
+# so a descendant that ignores SIGTERM cannot outlive an interrupted run
+# either. Groups and workers are addressed by saved ids only.
 # shellcheck disable=SC2329 # Registered by the EXIT trap below.
 cleanup_run() {
-  local f pgid worker
+  local f pgid worker waited alive
+  local -a groups=()
   for f in "$RUN_TMP"/pgid.*; do
     [ -f "$f" ] || continue
     pgid=$(cat "$f" 2>/dev/null) || continue
@@ -1518,9 +1521,26 @@ cleanup_run() {
       ''|*[!0-9]*) continue ;;
     esac
     kill -TERM -- "-$pgid" 2>/dev/null || true
+    groups+=("$pgid")
   done
   for worker in ${WORKER_PIDS[@]+"${WORKER_PIDS[@]}"}; do
     kill -TERM "$worker" 2>/dev/null || true
+  done
+  waited=0
+  while [ "$waited" -lt $((SUITE_KILL_GRACE * 10)) ]; do
+    alive=0
+    for pgid in ${groups[@]+"${groups[@]}"}; do
+      if kill -0 -- "-$pgid" 2>/dev/null; then
+        alive=1
+        break
+      fi
+    done
+    [ "$alive" -eq 1 ] || break
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  for pgid in ${groups[@]+"${groups[@]}"}; do
+    kill -KILL -- "-$pgid" 2>/dev/null || true
   done
   rm -rf "$RUN_TMP"
 }
@@ -1613,7 +1633,9 @@ suite_group_kill() {
 #   run_suite_bounded <script> <capture-file> <tag> <stream 0|1>
 # The script becomes the leader of a fresh process group (bash job control
 # gives a background job its own group; the toggle is scoped to the launch),
-# reads stdin from /dev/null, and writes stdout+stderr only to <capture-file>.
+# reads stdin from /dev/null, and writes stdout+stderr only to <capture-file>;
+# the leader subshell itself gets /dev/null for stdout, so nothing launched
+# here holds the runner's stdout at the file-descriptor level.
 # With <stream>=1 new capture bytes are copied live to the runner's stdout.
 # The runner waits for the leader's exit record or for the leader itself to be
 # gone, never for descendants, and never longer than SUITE_TIMEOUT seconds; on
@@ -1639,7 +1661,7 @@ run_suite_bounded() {
     bash "$script" </dev/null >"$out" 2>&1
     rc=$?
     printf '%s\n' "$rc" >"$rcfile.partial" && mv -f "$rcfile.partial" "$rcfile"
-  ) </dev/null &
+  ) </dev/null >/dev/null &
   pgid=$!
   set +m
   printf '%s\n' "$pgid" >"$pgidfile"
@@ -1860,7 +1882,7 @@ else
       printf '%s\n' "$SUITE_STRAY" >"$work/stray"
       printf '%s\n' "$rc" >"$work/exit"
       exit 0
-    ) &
+    ) >/dev/null &
     WORKER_PIDS[worker_n]=$!
     WORKER_IDX[worker_n]=$worker_n
     WORKER_SCRIPTS[worker_n]=$script
