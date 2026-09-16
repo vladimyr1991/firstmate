@@ -414,7 +414,7 @@ It is off unless the firstmate home's gitignored `config/voice` exists; without 
 `bin/fm-voice.sh --help` is the single owner of the file's `KEY=VALUE` keys and defaults (hot key, weights path, language, recording cap, silence threshold, sound cues), the subcommands, and their exit codes.
 While the file exists, the detect-only session-start bootstrap step relays `bin/fm-voice.sh doctor` unchanged: `MISSING:`/`MISSING_MANUAL:` lines for whisper-cpp, swiftc, jq, and python3, then one `VOICE:` summary line, and it never installs, builds, or starts anything.
 whisper-cpp, swiftc, and python3 are therefore required only by an opted-in home and are not part of the universal toolchain above.
-[voice-input.md](voice-input.md) is the operator guide: enabling, the first-run microphone dialog, the chord limitation, privacy, and what happens when nothing is typed.
+[voice-input.md](voice-input.md) is the operator guide: enabling, the first-run microphone dialog, the grants an Fn chord asks for, privacy, and what happens when nothing is typed.
 
 ## Process-to-event sources (state/procevent)
 

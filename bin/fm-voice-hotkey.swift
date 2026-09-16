@@ -79,11 +79,12 @@ let fnPassthroughCallback: CGEventTapCallBack = { _, _, event, _ in
     Unmanaged.passUnretained(event)
 }
 
-// The real test, not a preflight API: try to create the exact kind of tap the
-// fn chord needs and drop it again at once. Input Monitoring alone lets a
-// process listen; swallowing the chord's key needs an active tap, which macOS
-// additionally gates behind Accessibility. The tap is disabled and invalidated
-// before this returns, so nothing is observed.
+// The Input Monitoring preflight first, then the real test rather than a second
+// preflight: try to create the exact kind of tap the fn chord needs and drop it
+// again at once. Input Monitoring alone lets a process listen; swallowing the
+// chord's key needs an active tap, which macOS additionally gates behind
+// Accessibility. The tap is disabled and invalidated before this returns, so
+// nothing is observed.
 func probeFnChord() -> String {
     guard CGPreflightListenEventAccess() else { return "input-monitoring" }
     guard let tap = CGEvent.tapCreate(
