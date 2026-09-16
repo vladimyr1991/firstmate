@@ -73,6 +73,10 @@
 #   Every single-task invocation holds one task-id-scoped lock across backend
 #   creation through metadata publication, so concurrent same-id spawns serialize
 #   even when they select different backends.
+#   The task record state/<id>.meta is published before the launch command is
+#   sent, and a spawn that cannot write it exits 1 without launching, so a live
+#   agent never exists without the record that supervision, capacity accounting,
+#   idle detection, and teardown all key off (tests/fm-spawn-meta-write.test.sh).
 #   With no harness arg, a crewmate/scout spawn resolves the CREW harness only when
 #   config/crew-dispatch.json is absent. When that file exists, crewmate/scout
 #   spawns require an explicit harness so firstmate cannot silently skip dispatch
