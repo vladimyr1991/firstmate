@@ -845,9 +845,9 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       ;;
     bin/fm-voice.sh|bin/fm-voice-hotkey.swift)
-      # The daemon source is compiled, never executed by a test, but its
-      # content hash is what start binds the built binary to, so a change here
-      # selects the same suite as the script that owns that binding.
+      # The daemon source is typechecked and driven through --simulate-events
+      # by the same suite as the script that binds start to its content hash,
+      # so a change here selects that suite.
       printf '%s\n' pure-contract-unit
       ;;
     bin/backends/herdr*|bin/fm-herdr-lab.sh|tests/herdr-test-safety.sh)

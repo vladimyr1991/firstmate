@@ -21,10 +21,18 @@
 # Configuration - config/voice, KEY=VALUE lines, every key optional
 # (an empty file enables the feature with these defaults):
 #   hotkey       modifier chord, default ctrl+alt+space. Grammar: one or more of
-#                ctrl, alt, shift, cmd joined by "+", then "+", then exactly one
-#                key: space, a-z, 0-9, f1-f19, esc, tab, return, ` - = [ ] ; ' , . /
-#                A bare modifier or the Fn key is impossible without Input
-#                Monitoring, so it is refused rather than approximated.
+#                ctrl, alt, shift, cmd, fn (fn at most once) joined by "+", then
+#                "+", then exactly one key: space, a-z, 0-9, f1-f19, esc, tab,
+#                return, ` - = [ ] ; ' , . /
+#                A chord without fn is a Carbon hot key and needs no grant. A
+#                chord with fn (e.g. fn+v) is an event tap, which macOS gates
+#                behind Input Monitoring and Accessibility for the terminal app
+#                hosting Herdr: start asks for the missing grant (the system
+#                dialog adds that app to the pane) and, while it is still not
+#                switched on, refuses with the pane's name; without asking,
+#                doctor names the missing grant and its pane while status only
+#                reports "not ready". Nothing is observed while the daemon is
+#                not running.
 #   model        whisper ggml weights path, default
 #                ${XDG_CACHE_HOME:-$HOME/.cache}/firstmate/voice/ggml-large-v3-turbo-q5_0.bin
 #   language     whisper language code or "auto", default ru
@@ -45,10 +53,12 @@
 #                  full-precision file) after printing URL, size, destination
 #                  and reading "yes" from the terminal (--yes skips the prompt);
 #                  exit 6 checksum/download failure, 8 declined
-#   start          validate config, refuse a second instance, sweep leftovers,
-#                  warm the model once, then exec the daemon in the foreground;
-#                  exit 2 invalid config or not ready, 3 microphone denied,
-#                  4 hot key registration failed, 5 already running
+#   start          validate config, refuse a second instance, for an fn chord
+#                  ask macOS for the missing grant, sweep leftovers, warm the
+#                  model once, then exec the daemon in the foreground;
+#                  exit 2 invalid config or not ready, 3 a permission denied
+#                  (microphone, or Input Monitoring/Accessibility for an fn
+#                  chord), 4 hot key registration failed, 5 already running
 #   stop           SIGTERM the recorded daemon; exit 1 when none runs
 #   submit <wav>   gate, transcribe, deliver; prints exactly one line
 #                  (typed into ... | nothing heard | refused: ... | failed: ...
@@ -193,7 +203,7 @@ is_int() {
 # Prints the first invalid-config reason, or nothing when the config is valid.
 config_error() {
   if ! hotkey_valid "$HOTKEY"; then
-    printf 'invalid hotkey: %s (expected <ctrl|alt|shift|cmd>[+...]+<key>)\n' "$HOTKEY"
+    printf 'invalid hotkey: %s (expected <ctrl|alt|shift|cmd|fn>[+...]+<key>)\n' "$HOTKEY"
     return
   fi
   if ! is_int "$MAX_SECONDS" || [ "$MAX_SECONDS" -lt 5 ] || [ "$MAX_SECONDS" -gt 600 ]; then
@@ -223,7 +233,7 @@ hotkey_key_valid() {
 }
 
 hotkey_valid() {
-  local spec=$1 part rest mods=0
+  local spec=$1 part rest mods=0 fn_seen=0
   case "$spec" in
     *+*) ;;
     *) return 1 ;;
@@ -236,11 +246,55 @@ hotkey_valid() {
     esac
     case "$part" in
       ctrl|alt|shift|cmd) mods=$((mods + 1)) ;;
+      fn)
+        [ "$fn_seen" -eq 0 ] || return 1
+        fn_seen=1
+        mods=$((mods + 1))
+        ;;
       *) return 1 ;;
     esac
   done
   [ "$mods" -ge 1 ] || return 1
   hotkey_key_valid "$rest"
+}
+
+hotkey_is_fn_chord() {  # a valid chord naming fn; only these need an event tap
+  case "+$HOTKEY+" in
+    *+fn+*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# fn_chord_access <daemon binary> [--request]: asks the daemon whether it can
+# create the fn chord's tap right now, with --request first raising the system
+# dialog for the missing grant. Prints authorized, or the pane still missing
+# (input-monitoring | accessibility), or unknown when the daemon cannot say.
+fn_chord_access() {
+  local bin=$1 flag=--probe-fn-chord result
+  [ "${2:-}" = --request ] && flag=--request-fn-chord
+  result=$("$bin" "$flag" 2>/dev/null) || result=unknown
+  case "$result" in
+    authorized|input-monitoring|accessibility) printf '%s\n' "$result" ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+fn_chord_pane() {  # <missing>: the System Settings pane that still blocks the chord
+  case "$1" in
+    input-monitoring) printf 'Input Monitoring\n' ;;
+    accessibility) printf 'Accessibility\n' ;;
+  esac
+}
+
+fn_chord_denial() {  # <missing>: the one-line refusal for a missing grant
+  case "$1" in
+    input-monitoring)
+      echo "Input Monitoring is not granted to the terminal app hosting Herdr, and the fn chord $HOTKEY can only be seen through keyboard events; switch that app on in System Settings > Privacy & Security > Input Monitoring, then start again" ;;
+    accessibility)
+      echo "Accessibility is not granted to the terminal app hosting Herdr, and only Accessibility lets the fn chord $HOTKEY swallow its key instead of typing it; switch that app on in System Settings > Privacy & Security > Accessibility, then start again" ;;
+    *)
+      echo "the daemon at $(daemon_binary) could not report whether the fn chord $HOTKEY may observe the keyboard; remove exactly that file, then run bin/fm-voice.sh build and start again" ;;
+  esac
 }
 
 # --- gate ---------------------------------------------------------------------
@@ -404,7 +458,7 @@ acquire_submit_lock() {  # succeeds once the lock is held with our pid inside
 
 # Fills NOT_READY (comma-separated reasons) and prints the MISSING lines.
 collect_readiness() {
-  local reasons='' r bin
+  local reasons='' r bin access
   if ! command -v whisper-cli >/dev/null 2>&1; then
     echo "MISSING: whisper-cpp (install: brew install whisper-cpp)"
     reasons="$reasons, whisper-cli missing"
@@ -430,6 +484,10 @@ collect_readiness() {
     reasons="$reasons, daemon not built (run bin/fm-voice.sh build)"
   elif [ "$("$bin" --probe-mic 2>/dev/null)" = denied ]; then
     reasons="$reasons, microphone denied for the hosting terminal app"
+  fi
+  if [ -x "$bin" ] && hotkey_is_fn_chord; then
+    access=$(fn_chord_access "$bin")
+    [ "$access" = authorized ] || reasons="$reasons, $(fn_chord_denial "$access")"
   fi
   if ! command -v herdr >/dev/null 2>&1 || ! herdr status >/dev/null 2>&1; then
     reasons="$reasons, herdr not running"
@@ -583,6 +641,24 @@ PY
   rm -rf -- "$dir"
 }
 
+# For an fn chord, ask macOS for the grant the tap still lacks. The system
+# dialog adds the hosting terminal app to that pane switched OFF and returns at
+# once, so a first start on any machine ends here with the pane named; the
+# operator switches it on and starts again. Never silent: a chord that is not
+# observed is refused, not started.
+request_fn_chord_access() {  # <daemon binary>
+  local bin=$1 access
+  access=$(fn_chord_access "$bin")
+  [ "$access" = authorized ] && return 0
+  if [ -n "$(fn_chord_pane "$access")" ]; then
+    echo "asking macOS for $(fn_chord_pane "$access") for the terminal app hosting Herdr, which the fn chord $HOTKEY needs to observe the keyboard; the dialog adds that app to System Settings > Privacy & Security > $(fn_chord_pane "$access")"
+    access=$(fn_chord_access "$bin" --request)
+    [ "$access" = authorized ] && return 0
+  fi
+  fn_chord_denial "$access"
+  exit 3
+}
+
 cmd_start() {
   local err pid bin
   require_enabled
@@ -605,6 +681,7 @@ cmd_start() {
     echo "daemon not built (run bin/fm-voice.sh build)"
     exit 2
   fi
+  if hotkey_is_fn_chord; then request_fn_chord_access "$bin"; fi
   collect_readiness >/dev/null
   if [ -n "$NOT_READY" ]; then
     echo "not ready - $NOT_READY"

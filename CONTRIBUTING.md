@@ -46,6 +46,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   It does not make `data/` tracked.
 - Helper scripts in `bin/` are plain bash.
   The one exception is `bin/fm-voice-hotkey.swift`, the macOS-only voice-input daemon: it is compiled by `bin/fm-voice.sh build` rather than executed, `shellcheck` and the Bash 3.2 sweep skip it, and the `macos-stock-bash` CI job typechecks it with `swiftc -typecheck` because no other job has a Swift toolchain.
+  `tests/fm-voice.test.sh` typechecks it too, and compiles it to drive `--simulate-events`, wherever a local `swiftc` exists; elsewhere those tests skip by name.
   Each starts with a usage header comment; keep it accurate when you change behavior.
   Test scripts and helpers in `tests/` are plain bash too.
   Every file `bin/fm-lint.sh --list-files` names must also parse under stock macOS Bash 3.2 (`/bin/bash -n <file>`), which the `macos-stock-bash` CI job enforces across that whole list.
