@@ -80,7 +80,7 @@ grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
-} >> "$TMP" || { rm -f "$TMP"; echo "error: cannot rewrite meta for task $ID at $TMP" >&2; exit 1; }
+} >> "$TMP"
 mv "$TMP" "$META"
 
 HOME_Q=$(printf '%q' "$FM_HOME")

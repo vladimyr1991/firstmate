@@ -406,16 +406,6 @@ The session-start digest separately prints an "Public commitments awaiting deliv
 `FM_PF_RETRY_BACKOFF_SECS` (default 900) sets the next-attempt time recorded with a retryable delivery error.
 See [verification/public-followup.md](verification/public-followup.md) for the current maintainer evidence behind the restart end-to-end and the relay-disabled zero-overhead guarantee.
 
-## Voice input (config/voice)
-
-Voice input types a local whisper.cpp transcription into the focused Herdr agent pane while you hold a key chord, and never presses Enter for you.
-It is off unless the firstmate home's gitignored `config/voice` exists; without that file no voice path runs, nothing is installed or downloaded, session start prints nothing about it, and every `bin/fm-voice.sh` subcommand except `--help` and `status` refuses.
-`config/voice` is per machine: it is not inherited by secondmate homes, and a secondmate never runs the daemon.
-`bin/fm-voice.sh --help` is the single owner of the file's `KEY=VALUE` keys and defaults (hot key, weights path, language, recording cap, silence threshold, sound cues), the subcommands, and their exit codes.
-While the file exists, the detect-only session-start bootstrap step relays `bin/fm-voice.sh doctor` unchanged: `MISSING:`/`MISSING_MANUAL:` lines for whisper-cpp, swiftc, jq, and python3, then one `VOICE:` summary line, and it never installs, builds, or starts anything.
-whisper-cpp, swiftc, and python3 are therefore required only by an opted-in home and are not part of the universal toolchain above.
-[voice-input.md](voice-input.md) is the operator guide: enabling, the first-run microphone dialog, the grants an Fn chord asks for, privacy, and what happens when nothing is typed.
-
 ## Process-to-event sources (state/procevent)
 
 A long-polling external process is registered as a *source* through its adapter, whose header and `--help` own the commands and flags.
@@ -503,11 +493,6 @@ FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
 FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
-FM_GATE_LOCK_DIR=       # machine-wide full-test-gate queue hold path; default ${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/fm-gate-lock, one directory per user rather than a fixed name in a world-writable directory, and shared by every home of that user on the machine (bin/fm-gate.sh); named limitation: the hold is per unix user, so two different users running fleets on one machine each get their own hold, do not see each other, and can put two full runs on that machine - point both fleets at one shared writable FM_GATE_LOCK_DIR to serialize them; the value must be an absolute path, because a relative one resolves against each worker's own worktree and is refused rather than silently giving every worktree its own hold
-FM_GATE_STALE_SECONDS=1500   # seconds a gate-queue hold must reach before it can be treated as abandoned; it is broken only if it is also older than this AND neither holder-liveness signal answers - the recorded holder process is gone and no check work remains in the hold's recorded worktree (a hold written by an older copy records no process, so the check-work probe answers alone); that check-work probe is not a guarantee - it only sees a runner whose argv carries the recorded worktree, so an orphaned `make test` that carries none leaves the hold on the ordinary age rule
-FM_GATE_MAX_HOLD_SECONDS=7200   # absolute ceiling: past this age a gate-queue hold is broken however alive its holder looks, loudly on stderr, so a recorded parent that outlives its run cannot wedge every home on the machine; a non-numeric or zero value falls back to 7200 and says so on stderr, because a zero ceiling breaks every hold instantly and grants the queue twice rather than disabling the ceiling
-FM_GATE_RESOURCE_WAIT_SECONDS=3600   # how long `fm-gate.sh acquire --wait` sits on a resource refusal (a full run live in another worktree while the hold itself is free) before giving up loudly and exiting non-zero, naming the task whose run is live; giving up never grants the queue, and a non-numeric or zero value falls back to 3600 and says so on stderr
-FM_GATE_POLL_SECONDS=30      # seconds between `fm-gate.sh acquire --wait` retries; a non-numeric or zero value falls back to 30, because a poll no `sleep` honours turns the wait into a hot spin
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision
 FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-crew-state.sh
 FM_CREW_STATE_RUNS_LIMIT=200  # recent no-mistakes run rows scanned when axi status cannot be attributed to the current code
