@@ -1457,6 +1457,8 @@ EOF
       || fail "$id: could not locate the Herdr, known-breakage, and Setup headings"
     [ "$herdr_line" -lt "$kb_line" ] && [ "$kb_line" -lt "$setup_line" ] \
       || fail "$id: known-breakage section is not between the Herdr declaration and Setup (herdr=$herdr_line kb=$kb_line setup=$setup_line)"
+    [ -z "$(sed -n "$((kb_line - 1))p" "$brief")" ] \
+      || fail "$id: known-breakage heading is not separated from the Herdr declaration by a blank line"
   done
 
   # Empty record refuses and writes no brief.

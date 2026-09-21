@@ -469,6 +469,7 @@ case "$REPO" in
       fi
       IFS= read -r -d '' KNOWN_BREAKAGE_SECTION <<EOF || true
 
+
 # Known breakage on $REPO's side - not yours to investigate
 Firstmate already knows the following about this project's stand, CI, or forge; it was proven not to be any worker's own doing.
 If a failure you hit matches an entry below, do not investigate it: append the blocked line your Definition of done prescribes for that failure, citing the entry's date and title, and stop.
