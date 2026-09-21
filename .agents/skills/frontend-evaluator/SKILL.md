@@ -50,8 +50,7 @@ git checkout fm/<task-id>
 
 No push and no remote are involved - worktrees of one clone share git refs, so a local commit in the generator's worktree is immediately visible from the evaluator's.
 
-**Never run the evaluator in the generator's worktree**, however tempting it looks given that the evaluator writes nothing.
-The danger is not writing, it is teardown: `fm-teardown.sh` acts on the `worktree=` path recorded in `state/<id>.meta`, and a teardown that reached the generator's live worktree would detach HEAD and `git branch -D` the generator's branch, delete its hook files, then `treehouse return --force` - which terminates the running agent and hard-resets the directory, discarding uncommitted work.
+**Never run the evaluator in the generator's worktree**, however tempting it looks given that the evaluator writes nothing. The danger is not writing, it is teardown: `fm-teardown.sh` acts on the `worktree=` path recorded in `state/<id>.meta`, and a teardown that reached the generator's live worktree would detach HEAD and `git branch -D` the generator's branch, delete its hook files, then `treehouse return --force` - which terminates the running agent and hard-resets the directory, discarding uncommitted work.
 `fm-teardown.sh` now refuses, before any runtime command and regardless of `--force`, while another live `state/<other>.meta` in the same home records the same canonical worktree, so two records naming one path produce a `REFUSED:` line rather than that destruction; its header owns the exact rule.
 That refusal is the only guard for this shape, and it means neither task can be torn down until one record is corrected: `validate_worktree_teardown_safety` returns immediately for `kind=scout`, because a scout's worktree is declared scratch, and a ship-shaped evaluator can never be torn down cleanly either, because the dirty check sees the generator's work and refuses.
 
