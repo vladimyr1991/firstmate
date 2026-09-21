@@ -79,7 +79,7 @@ That sentence contains no pointer, and when this was measured no boundary keywor
 Restored, and re-verified.
 
 The `never` family has since widened to fold `cannot` alongside `never`, so deleting that clause today is reported as a dropped boundary and this particular example no longer demonstrates the gap.
-What closed is the one example, not the class: the next such loss is whatever the current families still miss, and `bin/fm-skill-compact-check.sh --help` owns the current family list rather than a second copy here.
+What closed is the one example, not the class: the next such loss is whatever the current families still miss, and the `BOUNDARY_FAMILIES` table in `bin/fm-skill-compact-check.sh` owns the current spellings of each family rather than a second copy here.
 
 The scenario suite also caught, then nearly lost, a real miss in `secondmate-provisioning`: the compaction dropped the "or quarantined after cleanup failure" branch from a reader-facing answer.
 That sentence carries no pointer and no boundary keyword in any family, then or now, so the deterministic check could not see it either and still cannot.
