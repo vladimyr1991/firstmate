@@ -92,7 +92,7 @@ S4 is the opposite kind: it records an answer the pre-edit text already gave, so
 
 **Question:** What identifies the new attempt, and what happens to whatever the first attempt may have left in the card body?
 
-**Expected answer:** A new deliberate publication with a fresh publish id, made through the same single `insert_content` prepend; it is never an automatic retry. Whatever the first attempt left is never inspected, matched, updated, or deleted, so a block that did land simply stays above the new one.
+**Expected answer:** A new deliberate publication with a fresh publish id, made through the same single `insert_content` prepend; it is never an automatic retry. Whatever the first attempt left is never inspected, matched, updated, or deleted, so a block that did land simply stays in the body below the fresh prepended envelope.
 
 **Anchor:** "Publishing the structured statement", "A deliberate new publication always prepends a fresh envelope with a new publish id" and the third exit of the failure holder.
 

@@ -214,9 +214,9 @@ Only the PM on the connector-capable `claude` runtime writes the card.
 Firstmate hands the PM `spec_task_id`, `card_url`, `gate_outcome` (`READY` or `BLOCKED`), `publish_id`, and the exact envelope, in the PM brief when it spawns one and in a file a one-line steer names when a PM is already live.
 The PM must not derive content from the card or from the report path; it copies the envelope it was handed.
 When no connector-capable PM is live, firstmate spawns or recovers the verified `claude` PM under the normal harness rules and waits for it to become live before any card call; firstmate, the spec worker, and any implementation worker never substitute for it, and the spec task simply stays in its existing gate state through that operational wait.
-A PM recovery that fails is a publication failure and follows the failure row below.
+A PM recovery that fails is a publication failure and follows the failure row below with `connector_outcome=pm-unavailable`: no PM event line exists in that case, so firstmate itself writes that value into the hold reason, and it still never writes the card.
 
-The PM makes exactly one `notion-update-page` call for one publish id: `command: insert_content`, `position: {"type":"start"}`, carrying the envelope, with `allow_async: false` so the connector prefers a synchronous result.
+The PM makes exactly one content-writing `notion-update-page` call for one publish id: `command: insert_content`, `position: {"type":"start"}`, carrying the envelope, with `allow_async: false` so the connector prefers a synchronous result.
 It never edits, replaces, deletes, matches, counts, or shape-tests card body text: `update_content` and `replace_content` are forbidden here, `replace_content` stays exclusive to recycle step 4, and no existing body content, including a prior statement or an author's edit, is ever inspected or repaired.
 A deliberate new publication always prepends a fresh envelope with a new publish id, so authorized repeats accumulate short blocks by design and automatic growth is impossible.
 This publication adds no `query_data_sources` call to any cycle.
@@ -231,10 +231,11 @@ No fetch or body count follows a success either.
 
 The PM reports one machine-readable outcome, as one line in its report and one line appended to its status file:
 
-`statement_publish: spec_task_id=<id> card_url=<url> publish_id=<uuid> gate_outcome=<READY|BLOCKED> connector_outcome=<sync-success|async-success|async-failed|poll-timeout|tool-error|malformed>`
+`statement_publish: spec_task_id=<id> card_url=<url> publish_id=<uuid> gate_outcome=<READY|BLOCKED> connector_outcome=<sync-success|async-success|async-failed|poll-timeout|tool-error|malformed|pm-unavailable>`
 
 `sync-success` and `async-success` are the only values that release lifecycle progress.
 `async-failed` is a terminal `failed` poll status, `poll-timeout` is the twelfth non-terminal poll, `tool-error` is a tool error or transport error on the write or on any poll, including a synchronous timeout after the write may already have been accepted, and `malformed` is a reply on the write or on any poll that fits none of those shapes.
+`pm-unavailable` is the one value firstmate writes without a PM event line, when the verified `claude` PM could not be spawned or recovered, so no write was attempted.
 
 | Gate outcome and connector outcome | What follows |
 |---|---|
@@ -266,6 +267,7 @@ A bare `done:` with staging prose in it is not that signal: firstmate does not r
 
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
 The publication PM writes the `statement_publish:` row's status in the same turn as the failed write, under the same re-read rule as every other write here; that re-read serves the divergence check alone and never says anything about whether the block landed.
+For `pm-unavailable` there was no publication PM, so that row's status write is owed by the next live PM on its first turn, still under this table and the same re-read rule, and firstmate never writes it itself.
 Never move a card the captain moved by hand in the meantime; re-read the card before writing and, if it has moved somewhere this table did not put it, leave it and report the divergence.
 Reporting a divergence means leaving the card exactly as it is, writing it into the PM's scout report, and listing it on the rolling status page - never a silent correction, because only firstmate decides what to do about one.
 Name the card on both surfaces, because a divergence firstmate cannot identify is not a divergence it can act on: on a sprint-check take the `Name` and `url` from the row the witnessed read already returned, and on an event wake, which runs no such read, take them from the card the re-read above just fetched, so naming never costs a `query_data_sources` call this wake was not given.
