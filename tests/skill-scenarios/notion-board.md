@@ -1,7 +1,8 @@
 # Scenario fixtures: notion-board
 
 These scenarios probe the four contract defects the first witnessed sprint-board scan reported, plus the witnessed-read rule that had to survive them unchanged.
-Unlike a compaction fixture, whose answers predate the edit, S1 to S3 and S5 record the answer the repaired contract owes, because the pre-edit text settled none of them.
+Unlike a compaction fixture, whose answers predate the edit, S1 to S3, S5, and S6 to S11 record the answer the repaired contract owes, because the pre-edit text settled none of them.
+S6 to S11 belong to the later change that publishes a card's structured statement into its body before the implementer starts, and they record what that contract owes: when the write happens relative to the spawn, what proves a queued write landed, what an ambiguous write rules, whether anything is ever retried, how a human-directed new attempt differs from a retry, and where a BLOCKED card sits.
 The control run against the pre-edit skill is therefore expected to answer `NOT STATED` for those, which is what makes each one a regression a reader can see close.
 S4 is the opposite kind: it records an answer the pre-edit text already gave, so a control and a post-edit run must agree on it.
 
@@ -54,3 +55,63 @@ S4 is the opposite kind: it records an answer the pre-edit text already gave, so
 **Expected answer:** Unknown-not-orphaned, and no divergence at all from that sweep this scan, exactly as an incomplete cross-home snapshot rules. The list may be short by as many entries as the contradiction implies, so a card missing from it is not evidence that no task is working it.
 
 **Anchor:** "Status sync", the orphaned-status sweep rules, which own this verdict and reuse their own incomplete-cross-home-snapshot ruling for it.
+
+## S6 - A READY statement and a clean synchronous write
+
+**Situation:** A card-linked, non-mechanical specification has just been judged READY, capacity allows the implementation worker to start now, and a `claude` PM is live. The PM's one `notion-update-page` call returns a clean synchronous success.
+
+**Question:** In what order do the card write, the implementation spawn, and `bin/fm-notion-link.sh` happen, and what does the PM do to the card body after the call returns?
+
+**Expected answer:** The PM's `insert_content` prepend at `position: {"type":"start"}` comes first, then firstmate spawns the implementation worker, then links it; the card becomes `В работе` only after that durable link. After the success the PM neither fetches the card nor counts its blocks; the connector result alone is the proof.
+
+**Anchor:** "Publishing the structured statement", the outcome table's READY-success row and "No fetch or body count follows a success either."
+
+## S7 - A queued write
+
+**Situation:** The PM's `notion-update-page` call returns an `async_task` rather than a result. On the fourth `notion-get-async-task` poll the task reports `succeeded`.
+
+**Question:** What releases the READY or BLOCKED lifecycle action for that card, how many polls may the PM make and at what interval, and what does a `fetch` of the card contribute?
+
+**Expected answer:** Only that terminal `succeeded` poll result releases the lifecycle action, as `async-success`. The PM polls that exact task id every 5 seconds and at most 12 times. A `fetch` contributes nothing: it never confirms, denies, deduplicates, bounds, or authorizes a publication.
+
+**Anchor:** "Publishing the structured statement", the paragraph beginning "The connector result is the only authority".
+
+## S8 - A write whose fate is unknown
+
+**Situation:** The `notion-update-page` call times out after the write may already have been accepted, or the twelfth poll still reports `running`.
+
+**Question:** How many further `notion-update-page` calls does the automatic path make for that publish id, what is written into the backlog, what `Status` does the card get, and does the implementation worker start?
+
+**Expected answer:** None: the automatic attempt ends permanently with no retry, no second append, and no fetch to infer whether the block landed. Firstmate opens one captain-kind hold on the spec task naming the card and the publish id, the status table sets or retains `На ревью`, and no implementation worker starts.
+
+**Anchor:** "Publishing the structured statement", the outcome table's non-success row, and the `statement_publish:` row of the status-sync table.
+
+## S9 - The author asks for another try
+
+**Situation:** A publication failed and its hold is open. The card's author explicitly directs a new publication attempt.
+
+**Question:** What identifies the new attempt, and what happens to whatever the first attempt may have left in the card body?
+
+**Expected answer:** A new deliberate publication with a fresh publish id, made through the same single `insert_content` prepend; it is never an automatic retry. Whatever the first attempt left is never inspected, matched, updated, or deleted, so a block that did land simply stays in the body below the fresh prepended envelope.
+
+**Anchor:** "Publishing the structured statement", "A deliberate new publication always prepends a fresh envelope with a new publish id" and the third exit of the failure holder.
+
+## S10 - A BLOCKED specification with two questions
+
+**Situation:** A card-linked specification is judged BLOCKED with two captain questions, and the PM's prepend succeeds.
+
+**Question:** What does the appended block's status line say, what is spawned, and what `Status` does the card carry?
+
+**Expected answer:** The block carries `статус=нужен ответ` and the two numbered questions with their recommended answers; no implementation worker is spawned; each question becomes a hold through `decision-hold-lifecycle` and the card is at `На ревью`.
+
+**Anchor:** "Publishing the structured statement", the BLOCKED-success row of the outcome table, and the `needs-decision:` or `blocked:` row of the status-sync table.
+
+## S11 - No PM is live when the statement is ready
+
+**Situation:** A card-linked specification is READY, no PM is live, and firstmate itself holds the exact envelope.
+
+**Question:** Who may make the card write, and what happens to the spec task while that is arranged?
+
+**Expected answer:** Only a verified `claude` PM, which firstmate spawns or recovers and hands the exact envelope; firstmate, the spec worker, and any implementation worker never substitute. The spec task stays in its existing gate state through that wait, and a PM recovery that fails follows the failure row rather than any other writer.
+
+**Anchor:** "Publishing the structured statement", the paragraph beginning "When no connector-capable PM is live".
