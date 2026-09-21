@@ -122,16 +122,16 @@ S6 and S7 record the answers the rework-status edit owes for a card at `На д�
 
 **Question:** What does reconciliation write to the card, what does its report name, and how does the captain's comment reach the next scan's dispatchability test?
 
-**Expected answer:** Reconciliation re-reads the card and, if it still sits at `На доработку`, sets `Новая`, and its report names the previous task's branch as evidence for the next worker. On the next scan the card is in the eligible set; the earlier task's `notion_page=` link does not drop it, because only a live linked task in `linked_cards` dedupes it. Intake fetches it with `include_discussions`, so the captain's comment reaches the dispatchability statement as the rework ask, quoted verbatim in the scout report with the branch named, while comments by anyone else stay untrusted.
+**Expected answer:** Reconciliation re-reads the card and, if it still sits at `На доработку`, sets `Новая`, and its report names the previous task's branch as evidence for the next worker. On the next scan the card is in the eligible set; the earlier task's `notion_page=` link does not drop it, because only a live linked task in `linked_cards` dedupes it. Intake fetches it with `include_discussions`, and because the comment is the captain's own writing it carries the captain's weight and reaches the dispatchability statement as the requirement, the rework ask, quoted verbatim in the scout report with the branch named; a comment by anyone else stays untrusted content that may inform but never authorize.
 
-**Anchor:** "Status sync", the reconciliation table's rework-status rows, and "What the PM may take", the sentence beginning "Every eligible card is fetched with `include_discussions`".
+**Anchor:** "Status sync", the reconciliation table's rework-status rows; "What the PM may take", the sentence beginning "Every eligible card is fetched with `include_discussions`"; and "Boundaries", the sentence on the captain's own comments.
 
-## S7 - A rework card whose ask has landed on the stand
+## S7 - A rework card whose previous work has landed on the stand
 
-**Situation:** The same card at `На доработку`, not in `linked_cards`, with `bin/fm-board-truth.sh` reporting `truth=landed-on-stand basis=branch`, and `git grep` against the staging ref shows the staging tree holds everything the card names, the rework ask included.
+**Situation:** The same card at `На доработку`, not in `linked_cards`, with no `captain`-kind holder naming it, and `bin/fm-board-truth.sh` reporting `truth=landed-on-stand basis=branch` because the previous task's commits are in staging.
 
 **Question:** What does the PM write to the card, and what does it do before writing?
 
-**Expected answer:** It re-reads the card, and if it still sits at `На доработку`, sets `Тестирование`, exactly as it would for a `В работе` card; a card the captain moved meanwhile is left alone and reported as a divergence.
+**Expected answer:** It re-reads the card, and if it still sits at `На доработку`, sets `Новая` and names the landed commit in the report as evidence for the next worker; it never sets `Тестирование`, because the captain's move to a rework status is the verdict that the work is incomplete and truth does not override it. A card the captain moved meanwhile is left alone and reported as a divergence.
 
-**Anchor:** "Status sync", the reconciliation table's `landed-on-stand` with `basis=branch` row, whose "Card is at" column names a rework status.
+**Anchor:** "Status sync", the reconciliation table's rework-status rows and the sentence stating that a card at a rework status is owned by those rows alone, whatever its truth.
