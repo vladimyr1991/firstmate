@@ -447,6 +447,23 @@ test_watch_restart_rejects_reused_pid() {
   pass "watch restart refuses to signal a reused pid"
 }
 
+# Wait until a backgrounded pid has exec'd the named program. Between fork and
+# exec the child still carries this shell's command line, and fm_pid_identity
+# folds the command line into the identity, so a snapshot taken too early would
+# mismatch the running program and read as a reused pid.
+wait_for_exec() {
+  local pid=$1 name=$2 i=0 comm
+  while [ "$i" -lt 100 ]; do
+    comm=$(LC_ALL=C ps -p "$pid" -o comm= 2>/dev/null || true)
+    case "$comm" in
+      *"$name"*) return 0 ;;
+    esac
+    sleep 0.05
+    i=$((i + 1))
+  done
+  return 1
+}
+
 test_watch_restart_attaches_to_healthy_peer() {
   local dir state fakebin out peer identity armpid status i
   dir=$(make_case restart-healthy-peer)
@@ -456,6 +473,7 @@ test_watch_restart_attaches_to_healthy_peer() {
   mark_pr_check_migration_complete "$state"
   node -e 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 300000)' &
   peer=$!
+  wait_for_exec "$peer" node || fail "peer pid $peer never exec'd node"
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"
