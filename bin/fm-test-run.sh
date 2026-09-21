@@ -1773,7 +1773,7 @@ gate_status_field() {
 
 # True when the load is a number above the suspect threshold.
 load_is_suspect() {
-  awk -v load="$1" -v limit="$LOAD_SUSPECT" 'BEGIN { exit !(load + 0 > limit + 0) }'
+  awk -v load1="$1" -v limit="$LOAD_SUSPECT" 'BEGIN { exit !(load1 + 0 > limit + 0) }'
 }
 
 # Print the containment markers for one finished script.
