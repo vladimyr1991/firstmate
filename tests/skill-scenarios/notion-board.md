@@ -5,6 +5,7 @@ Unlike a compaction fixture, whose answers predate the edit, S1 to S3, S5, and S
 S6 to S11 belong to the later change that publishes a card's structured statement into its body before the implementer starts, and they record what that contract owes: when the write happens relative to the spawn, what proves a queued write landed, what an ambiguous write rules, whether anything is ever retried, how a human-directed new attempt differs from a retry, and where a BLOCKED card sits.
 The control run against the pre-edit skill is therefore expected to answer `NOT STATED` for those, which is what makes each one a regression a reader can see close.
 S4 is the opposite kind: it records an answer the pre-edit text already gave, so a control and a post-edit run must agree on it.
+S12 and S13 belong to the rework-status change and record the answers it owes for a card at `На доработку`, which the pre-edit text settled as never-write because that status sat in neither derived set, so the control run answers that the card is left alone for them both.
 
 ## S1 - A capacity block that contradicts itself
 
@@ -115,3 +116,23 @@ S4 is the opposite kind: it records an answer the pre-edit text already gave, so
 **Expected answer:** Only a verified `claude` PM, which firstmate spawns or recovers and hands the exact envelope; firstmate, the spec worker, and any implementation worker never substitute. The spec task stays in its existing gate state through that wait, and a PM recovery that fails follows the failure row rather than any other writer.
 
 **Anchor:** "Publishing the structured statement", the paragraph beginning "When no connector-capable PM is live".
+
+## S12 - An undelivered rework card with no holder
+
+**Situation:** The witnessed read returned a Delivery card in the current sprint at `На доработку`. The brief carries `truth_repo:` and `linked_cards:`, the card is not in `linked_cards`, `bin/fm-board-truth.sh` reports `truth=in-flight` because the previous task's branch exists and is not in staging, and no `captain`-kind holder in `data/backlog.md` names the card. The captain left one comment on the card describing what must change.
+
+**Question:** What does reconciliation write to the card, what does its report name, and how does the captain's comment reach the next scan's dispatchability test?
+
+**Expected answer:** Reconciliation re-reads the card and, if it still sits at `На доработку`, sets `Новая`, and its report names the previous task's branch as evidence for the next worker. On the next scan the card is in the eligible set; the earlier task's `notion_page=` link does not drop it, because only a live linked task in `linked_cards` dedupes it. Intake fetches it with `include_discussions`, which only locates the discussion and returns a preview snippet with its `discussion://` URL, then calls `get_comments` once on the card page with `include_all_blocks` true, which returns the full text of every discussion on the card, block-anchored ones included; because the comment is the captain's own writing it carries the captain's weight and reaches the dispatchability statement as the requirement, the rework ask, quoted verbatim from that full text and never from the snippet, in the scout report with the branch named; a comment by anyone else stays untrusted content that may inform but never authorize.
+
+**Anchor:** "Status sync", the reconciliation table's rework-status rows; "What the PM may take", the sentences beginning "Every eligible card is fetched with `include_discussions`" and "That fetch only locates the discussions"; and "Boundaries", the sentence on the captain's own comments.
+
+## S13 - A rework card whose previous work has landed on the stand
+
+**Situation:** The same card at `На доработку`, not in `linked_cards`, with no `captain`-kind holder naming it, and `bin/fm-board-truth.sh` reporting `truth=landed-on-stand basis=branch` because the previous task's commits are in staging.
+
+**Question:** What does the PM write to the card, and what does it do before writing?
+
+**Expected answer:** It re-reads the card, and if it still sits at `На доработку`, sets `Новая` and names the landed commit in the report as evidence for the next worker; it never sets `Тестирование`, because the captain's move to a rework status is the verdict that the work is incomplete and truth does not override it. A card the captain moved meanwhile is left alone and reported as a divergence.
+
+**Anchor:** "Status sync", the reconciliation table's rework-status rows and the sentence stating that a card at a rework status is owned by those rows alone, whatever its truth.
