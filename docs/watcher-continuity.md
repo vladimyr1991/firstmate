@@ -85,6 +85,8 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 
 ## Active limits and verification
 
+Session-owned continuity cannot report a session that has already disappeared, so the outside-session guard alerts but does not restart supervision.
+
 The goal is continuity without a Pi or OpenCode model-memory re-arm step.
 No zero-latency guarantee is claimed because lock verification, watcher startup, and bounded retry delays remain deliberate safety work.
 OpenCode support targets persistent TUI sessions rather than headless `opencode run`.
