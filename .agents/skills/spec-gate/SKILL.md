@@ -29,10 +29,12 @@ Firstmate never reads project code to write one: that split is what keeps hard r
 
 1. Scaffold a scout brief with `bin/fm-brief.sh <task-id> <repo> --scout`, and fill `{TASK}` with the captain's own request, the resolved project, and the instruction to follow `write-implementation-spec` and deliver its specification as the scout report.
    A crewmate in a project worktree cannot load a firstmate skill by name, so give the brief the absolute path of that skill's `SKILL.md` in firstmate's own checkout rather than its name alone.
+   When the task is linked to a Notion card and is not mechanical, the brief also requires the report to end with the `## Постановка для карточки` section that `notion-board` owns, and gives that skill's `SKILL.md` by absolute path for the same reason.
 2. Spawn it with `bin/fm-spawn.sh` and supervise it as an ordinary direct report under `AGENTS.md` section 8.
 3. Read the returned `data/<id>/report.md` when it lands; it is a draft, and marking it READY is firstmate's act, never the spec worker's.
 4. Run the interview below, then mark the specification READY or BLOCKED.
 5. Only after READY, dispatch the implementation worker, with a brief that points at the READY specification's absolute path and carries the delivery mode and yolo posture resolved at intake.
+   For a card-linked task, `notion-board`'s statement publication sits between the READY judgment and this dispatch, and the dispatch waits for the success that section defines.
 
 The spec worker's task author is firstmate, so its questions return as `needs-decision:` events on its own status and never reach the captain directly, exactly as hard rule 4 requires of every crewmate.
 Check a draft's structure with `python3 .agents/skills/write-implementation-spec/scripts/validate_spec.py <path>` before reading it closely; a structural pass is necessary and never sufficient.
@@ -53,5 +55,6 @@ Send an answer that changes project detail back to the spec worker rather than r
 
 A BLOCKED specification parks its own task and nothing else.
 Register each genuinely captain-owned question as a hold through `decision-hold-lifecycle`, exactly as for any other unresolved decision found in a report, and leave that task waiting on it.
+For a card-linked task, `notion-board`'s statement publication carries those questions to the card before the wait begins, and that section alone owns the write and what its outcome means.
 Every other READY task keeps dispatching on its own schedule: one unanswered question must never idle the fleet.
 When the captain answers, route it through that same owner, then return the task to this gate rather than straight to an implementation worker.

@@ -151,7 +151,7 @@ Firstmate reads that report, resolves each card's project independently through 
 For each card, firstmate takes delivery mode and yolo posture from the project's registry entry per `AGENTS.md` section 7 and classifies Ship or Scout by that section's deliverable rules.
 A card is ordinary intake, so a non-trivial ship card first passes the specification gate that `spec-gate` owns.
 Firstmate spawns that card's spec worker and binds the card to it with the same link step below, so a card's work never runs unlinked and the next scan cannot select the same card twice.
-Only a READY specification reaches an implementation brief; a card whose specification comes back BLOCKED is parked on its captain question, and the status table below moves it to `На ревью`.
+Only a READY specification reaches an implementation brief, and only after the publication section below has reported success for its statement; a card whose specification comes back BLOCKED is parked on its captain question, receives its questions through that same section, and the status table below moves it to `На ревью`.
 For every selected card the gate has released, while capacity remains, it writes an implementation brief before spawning, carrying the project's real landing contract.
 For a project whose standing posture in `data/captain.md` grants staging-inclusive landing autonomy, scaffold that brief with `bin/fm-brief.sh <id> <repo> --mode local-only --staging-autonomy` so the contract, including the keyed staging line the sync step below depends on, is generated rather than hand-written over contradicting boilerplate.
 It spawns one implementation worker per card through `bin/fm-spawn.sh`, then binds that card:
@@ -171,6 +171,81 @@ The PM re-reads every successfully linked card, leaves any card untouched if the
 An eligible card is not handled merely because its body already contains an asset, prompt, result, or earlier work note.
 Only a linked task and the status events in the table below prove lifecycle progress.
 
+## Publishing the structured statement
+
+A non-mechanical card goes to `В работе` with its `Description` untouched, so without this section the finished work is the only evidence the card's author ever gets of how the request was read.
+This section is the single owner of the statement publication: after firstmate judges a card-linked specification READY or BLOCKED, and before any implementation worker exists, the PM appends one short Russian statement of the approved scope, or of the unresolved questions, at the start of the card body.
+`spec-gate` names only where this step sits in its order and where the statement text comes from; every rule about the envelope, the write, its outcome, and the card's status lives here.
+A mechanical card has no specification and no statement, so this section never runs for it; record the gate exemption in the backlog note as `spec-gate` already requires, and nothing else.
+A task with no live `notion_page=` link has no card to publish to, and the gate runs for it exactly as it does today.
+
+### The envelope
+
+Three parties own three parts, and none of them re-authors another's part.
+The spec worker owns the statement content: a card-linked non-mechanical specification report ends with a section titled `## Постановка для карточки` holding the payload fields below, verbatim and ready to publish, from `**Задача:**` through `**Вопросы:**`.
+Firstmate owns the envelope: it creates `publish_id`, a fresh UUID (for example from `uuidgen`) for each deliberate publication, wraps the source payload in the two envelope lines, and writes the PM brief.
+The PM owns the Notion call and the terminal outcome report.
+No new durable text cache, body hash, ordinal, or parser is introduced anywhere in this flow.
+
+```markdown
+## Постановка (как понята)
+_Постановка: задача=<spec-task-id>; публикация=<publish-id>; статус=<готово к работе|нужен ответ>_
+**Задача:** <one literal line>
+**Зачем:** <one literal line>
+**Делаем:**
+- <one to four literal lines>
+**Не делаем:**
+- <one to three literal lines>
+**Готово, когда:**
+- <one to four literal lines>
+**Вопросы:** нет
+```
+
+For a BLOCKED specification, `статус=нужен ответ` and the final line becomes `**Вопросы:**` followed by one to three numbered literal lines, each carrying the question and the recommended answer.
+Either alternative occupies at most 22 newline-delimited source lines: 2 envelope lines, 2 scalar fields, 1 plus 4 scope lines, 1 plus 3 non-scope lines, 1 plus 4 acceptance lines, and 1 plus 3 question lines.
+The envelope plus all content is at most 1,400 Unicode characters, measured by firstmate before the PM is handed it; wrapped rendering is deliberately not counted because the Notion renderer controls it.
+The payload is Russian and concise, a summary and never the specification: no branch, commit, PR, worker, harness, mode, delivery posture, or implementation task id appears in it, and `spec-task-id` and `publish-id` are metadata identifying this appended block, not delivery mechanics.
+Firstmate builds the envelope only after its READY or BLOCKED judgment and only from that source, never re-authoring the statement.
+When the interview changes the specification or its outcome, or the source exceeds the bounds above, the revision goes back to the spec worker under `spec-gate`, so the source and the judgment agree before any envelope exists.
+
+### The write
+
+Only the PM on the connector-capable `claude` runtime writes the card.
+Firstmate hands the PM `spec_task_id`, `card_url`, `gate_outcome` (`READY` or `BLOCKED`), `publish_id`, and the exact envelope, in the PM brief when it spawns one and in a file a one-line steer names when a PM is already live.
+The PM must not derive content from the card or from the report path; it copies the envelope it was handed.
+When no connector-capable PM is live, firstmate spawns or recovers the verified `claude` PM under the normal harness rules and waits for it to become live before any card call; firstmate, the spec worker, and any implementation worker never substitute for it, and the spec task simply stays in its existing gate state through that operational wait.
+A PM recovery that fails is a publication failure and follows the failure row below.
+
+The PM makes exactly one `notion-update-page` call for one publish id: `command: insert_content`, `position: {"type":"start"}`, carrying the envelope, with `allow_async: false` so the connector prefers a synchronous result.
+It never edits, replaces, deletes, matches, counts, or shape-tests card body text: `update_content` and `replace_content` are forbidden here, `replace_content` stays exclusive to recycle step 4, and no existing body content, including a prior statement or an author's edit, is ever inspected or repaired.
+A deliberate new publication always prepends a fresh envelope with a new publish id, so authorized repeats accumulate short blocks by design and automatic growth is impossible.
+This publication adds no `query_data_sources` call to any cycle.
+
+The connector result is the only authority on whether the block landed.
+A clean synchronous success is a completed append.
+An `async_task` reply is polled with `notion-get-async-task` for that exact task id, every 5 seconds and at most 12 polls, and only a terminal `succeeded` status is async success; `queued`, `running`, and `retrying` are not.
+A fetch never confirms, denies, deduplicates, bounds, or authorizes a publication: a `fetch` render can lag, so a re-read after an ambiguous write proves nothing and is never made for that purpose.
+No fetch or body count follows a success either.
+
+### The outcome
+
+The PM reports one machine-readable outcome, as one line in its report and one line appended to its status file:
+
+`statement_publish: spec_task_id=<id> card_url=<url> publish_id=<uuid> gate_outcome=<READY|BLOCKED> connector_outcome=<sync-success|async-success|async-failed|poll-timeout|tool-error|malformed>`
+
+`sync-success` and `async-success` are the only values that release lifecycle progress.
+`async-failed` is a terminal `failed` poll status, `poll-timeout` is the twelfth non-terminal poll, `tool-error` is a tool error or transport error on the write or on any poll, including a synchronous timeout after the write may already have been accepted, and `malformed` is a reply on the write or on any poll that fits none of those shapes.
+
+| Gate outcome and connector outcome | What follows |
+|---|---|
+| READY, success | Continue the existing spawn-then-link order: publication precedes the implementation spawn, the link still follows the spawn, and the card becomes `В работе` only after the durable implementation link, through the status table below. |
+| BLOCKED, success | The questions are on the card with `статус=нужен ответ`; register each captain question as a hold through `decision-hold-lifecycle`, spawn no implementation worker, and the status table below sets `На ревью`. An answer routes through that same owner, and a revised gate outcome makes a new envelope and a new publication attempt. |
+| Either, any non-success | The automatic attempt ends permanently: no retry, no second append, no fetch to infer whether it landed, and no implementation worker. Firstmate opens one durable decision holder on the spec task, `tasks-axi hold <spec-task-id> --kind captain --reason "<card-url> statement publish <publish-id> <connector-outcome>"`, so the reconciliation table finds it and the status table below sets or retains `На ревью`. |
+
+A failed BLOCKED publication may leave the questions absent from the card; `На ревью` still makes the unresolved state visible, and firstmate never claims the questions were published.
+That failure holder has exactly three exits: the card's author confirms the block is visible and firstmate resolves the hold, after which a READY task dispatches as in the success row; the author withdraws or redirects the task and firstmate resolves it through ordinary backlog and status handling; or the author explicitly directs a new attempt, which is a new deliberate publication with a new publish id and never an automatic retry.
+No other wait exists in this contract: there is no drift hold, no duplicate hold, and no block-cap hold.
+
 ## Status sync
 
 This table is the only owner of the mapping.
@@ -179,6 +254,7 @@ This table is the only owner of the mapping.
 |---|---|
 | task dispatched | `В работе` |
 | `needs-decision:` or `blocked:` | `На ревью` |
+| `statement_publish: ... connector_outcome=` anything but `sync-success` or `async-success` | `На ревью` |
 | `done [key=staging]: ...` | `Тестирование` |
 | `failed:` | `Отложена`, with the plain reason in the card |
 | captain verified it on the stand | `Завершена` - **the captain's alone; never set it** |
@@ -189,6 +265,7 @@ Event sync is the fast path, never the guarantee: the event dies with the task t
 A bare `done:` with staging prose in it is not that signal: firstmate does not recover a terminal outward effect from a sentence, so treat a missing key as an unfinished contract and fix the brief rather than guessing the card is ready to test.
 
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
+The publication PM writes the `statement_publish:` row's status in the same turn as the failed write, under the same re-read rule as every other write here; that re-read serves the divergence check alone and never says anything about whether the block landed.
 Never move a card the captain moved by hand in the meantime; re-read the card before writing and, if it has moved somewhere this table did not put it, leave it and report the divergence.
 Reporting a divergence means leaving the card exactly as it is, writing it into the PM's scout report, and listing it on the rolling status page - never a silent correction, because only firstmate decides what to do about one.
 Name the card on both surfaces, because a divergence firstmate cannot identify is not a divergence it can act on: on a sprint-check take the `Name` and `url` from the row the witnessed read already returned, and on an event wake, which runs no such read, take them from the card the re-read above just fetched, so naming never costs a `query_data_sources` call this wake was not given.
