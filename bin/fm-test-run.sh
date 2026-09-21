@@ -56,6 +56,18 @@
 #                   default sits above that measurement and still ends a
 #                   wedge within the hour instead of days. Lower it only for a
 #                   selection whose scripts are known to be fast.
+#                   A script killed at the limit is followed by an FM_TEST_LOAD
+#                   marker carrying the machine's one-minute load average and
+#                   the test-gate queue's one-line status at that moment, and
+#                   when that load is above $FM_TEST_LOAD_SUSPECT (default 20)
+#                   the log names a second full run beside this one as the
+#                   usual cause: on this fleet's machine a timeout under a
+#                   load above 20 has meant exactly that every time it was
+#                   measured, and the measurement is worth nothing living in
+#                   someone's memory instead of in the run that hit it. The
+#                   probe is best effort: an unreadable load prints
+#                   load1=unknown, a gate that cannot answer prints
+#                   gate=unknown, and neither changes the run's exit status.
 #   -h, --help      print this header
 #
 # Process containment (every selection mode, serial and --jobs):
@@ -76,6 +88,7 @@
 # Per-script machine-parseable markers (stdout):
 #   FM_TEST_BEGIN <iso8601> <script> family=<family> expected_gate_skip=<class>
 #   FM_TEST_TIMEOUT <iso8601> <script> limit_s=<n>            (only when killed at the limit)
+#   FM_TEST_LOAD <iso8601> <script> load1=<n|unknown> gate=<status|unknown>  (right after FM_TEST_TIMEOUT)
 #   FM_TEST_STRAY_PROCESSES <iso8601> <script> action=killed  (only when the script left processes)
 #   FM_TEST_END <iso8601> <script> exit=<code> duration_ms=<n> gate_skip=<true|false>
 #
@@ -128,6 +141,12 @@ JOBS_MAX=8
 SUITE_TIMEOUT=${FM_TEST_SUITE_TIMEOUT:-3600}
 # Seconds a killed process group gets between SIGTERM and SIGKILL.
 SUITE_KILL_GRACE=2
+# One-minute load average above which a suite timeout is called out as the
+# likely symptom of a second full run on the machine (header: --suite-timeout).
+LOAD_SUSPECT=${FM_TEST_LOAD_SUSPECT:-20}
+case "$LOAD_SUSPECT" in
+  ''|*[!0-9.]*) LOAD_SUSPECT=20 ;;
+esac
 
 # How many separate-runner shards the portable serial remainder splits into.
 # One owner: CI lane names carry this count and are refused when they disagree.
@@ -1733,12 +1752,41 @@ record_script_result() {
   TOTAL=$((TOTAL + 1))
 }
 
+# The machine's one-minute load average as `uptime` prints it (macOS says
+# "load averages: a b c", Linux "load average: a, b, c"), or `unknown`.
+machine_load1() {
+  local load
+  load=$(uptime 2>/dev/null | sed -n 's/.*load average[s]*:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' | head -n 1)
+  case "$load" in
+    ''|*[!0-9.]*) printf 'unknown\n' ;;
+    *) printf '%s\n' "$load" ;;
+  esac
+}
+
+# The test-gate queue's one-line status with its spaces folded, so it fits one
+# marker field, or `unknown` when the gate cannot answer.
+gate_status_field() {
+  local line
+  line=$("$ROOT/bin/fm-gate.sh" status --line 2>/dev/null | head -n 1 | tr ' ' '_')
+  if [ -n "$line" ]; then printf '%s\n' "$line"; else printf 'unknown\n'; fi
+}
+
+# True when the load is a number above the suspect threshold.
+load_is_suspect() {
+  awk -v load1="$1" -v limit="$LOAD_SUSPECT" 'BEGIN { exit !(load1 + 0 > limit + 0) }'
+}
+
 # Print the containment markers for one finished script.
 print_containment_markers() {
-  local script=$1 timed_out=$2 stray=$3 end_iso=$4
+  local script=$1 timed_out=$2 stray=$3 end_iso=$4 load
   if [ "$timed_out" -eq 1 ]; then
     printf 'FM_TEST_TIMEOUT %s %s limit_s=%s\n' "$end_iso" "$script" "$SUITE_TIMEOUT"
     log "suite timeout: $script exceeded ${SUITE_TIMEOUT}s and was killed with its process group; continuing"
+    load=$(machine_load1)
+    printf 'FM_TEST_LOAD %s %s load1=%s gate=%s\n' "$end_iso" "$script" "$load" "$(gate_status_field)"
+    if [ "$load" != unknown ] && load_is_suspect "$load"; then
+      log "suite timeout under load $load: a second full run beside this one is the usual cause"
+    fi
   fi
   if [ "$stray" -eq 1 ]; then
     printf 'FM_TEST_STRAY_PROCESSES %s %s action=killed\n' "$end_iso" "$script"
