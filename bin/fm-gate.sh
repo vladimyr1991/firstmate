@@ -176,11 +176,23 @@
 #   `run` is the mandated shape for a worker: it queues, takes the hold, appends
 #   exactly `working: queue taken, gate running` to the --status file, starts the
 #   command as a CHILD (not exec, so the wrapper stays the recorded holder
-#   process), keeps the heartbeat, forwards SIGTERM and SIGINT to the child
-#   (INT is forwarded as TERM, because a background child of a non-interactive
-#   shell ignores INT), waits, releases unless the hold was parked meanwhile, and
-#   exits with the command's own status. Release on any exit status is therefore
-#   a property of the wrapper and no longer a discipline asked of the worker.
+#   process and the leader of its own PROCESS GROUP), keeps the heartbeat,
+#   forwards SIGTERM and SIGINT to that whole group (INT is forwarded as TERM,
+#   because a background child of a non-interactive shell ignores INT; the
+#   group, because a `bash -c` child dies on TERM at once and would leave the
+#   suite it started running as an orphan), waits, releases unless the hold was
+#   parked meanwhile, and exits with the command's own status. Release on any
+#   exit status is therefore a property of the wrapper and no longer a
+#   discipline asked of the worker. Two exceptions keep "release on every exit"
+#   from meaning "release over a live run": after a SIGNALLED exit the wrapper
+#   releases only when no check work still names the hold's worktree, and
+#   otherwise PARKS the hold (`run-orphaned-after-signal`, for the default park
+#   deadline), says so on stderr, and leaves the worker to stop the orphan and
+#   release; and a `run` for an id whose earlier run is still alive (fresh
+#   heartbeat, recorded process alive) is refused as `your own run <pid> is
+#   still live` rather than displacing it - the re-take is allowed only from a
+#   holder that is provably gone. A signal that lands after the grant and before
+#   the command started releases the hold (`signal-before-run`).
 #   If the hold is taken from under a live run - which only the ceiling on an
 #   inferred signal or a hand delete can do - the heartbeat notices the token
 #   change, stops, says so on stderr, journals `run-lost-hold`, and the run is
@@ -402,13 +414,24 @@ usage() {
 }
 
 # Process-wide cleanup: the ticket this process filed and the heartbeat it
-# started must not outlive it, whatever path ends it.
+# started must not outlive it, whatever path ends it. A `run` ended by a signal
+# after its hold was written but before its command started (RUN_STARTED still
+# empty) releases that hold here, so the window between the grant and the
+# traps run_command installs cannot leave a hold with nothing behind it.
 MY_TICKET=
 HB_PID=
+RUN_ID=
+RUN_STARTED=
+WROTE_TOKEN=
 # shellcheck disable=SC2329  # invoked by the EXIT trap below
 cleanup_on_exit() {
   [ -z "$HB_PID" ] || kill "$HB_PID" 2>/dev/null
   [ -z "$MY_TICKET" ] || rm -f "$MY_TICKET" 2>/dev/null
+  if [ -n "$RUN_ID" ] && [ -z "$RUN_STARTED" ] && [ -n "$WROTE_TOKEN" ] \
+    && [ "$(hold_token)" = "$WROTE_TOKEN" ]; then
+    echo "run interrupted before its command started; releasing" >&2
+    release_hold "$RUN_ID" signal-before-run
+  fi
 }
 trap cleanup_on_exit EXIT
 
@@ -881,7 +904,6 @@ trace_break_to_holder() {
   [ -n "$target" ] || return 0
   kind=$(path_kind "$target" file)
   case "$kind" in
-    absent) return 0 ;;
     file-own)
       printf 'blocked [key=gate-hold-broken]: the test-gate hold was broken by %s after %ss (%s); if a run is still live it is unprotected now - stop it or re-take the queue\n' \
         "$breaker" "$age" "$why" >> "$target" 2>/dev/null || true
@@ -1020,7 +1042,8 @@ write_hold_files() {
   else
     rm -f "$LOCK/owner_status" 2>/dev/null
   fi
-  printf '%s.%s.%s\n' "$$" "$(now_epoch)" "${RANDOM:-0}" > "$LOCK/token"
+  WROTE_TOKEN="$$.$(now_epoch).${RANDOM:-0}"
+  printf '%s\n' "$WROTE_TOKEN" > "$LOCK/token"
 }
 
 # The status file a plain acquire records for the break trace: this home's own
@@ -1144,9 +1167,20 @@ take_queue() {
     fi
     if [ "$holder" = "$id" ]; then
       if [ "$heartbeat" -eq 1 ]; then
-        # A run re-taking its own hold becomes its holder afresh: the recorded
-        # process, token and status file are this run's, and the heartbeat
-        # starts from now.
+        # A run re-takes its own hold only from a holder that is provably gone:
+        # a dead recorded process or a silent heartbeat. Beside an earlier run
+        # of this id that is still alive, re-taking would displace it - its
+        # heartbeat would stop on the token change and its command keep running
+        # unprotected beside the new one, two full runs of one task.
+        now=$(now_epoch)
+        if heartbeat_fresh "$now" && owner_process_alive && [ "$(owner_pid)" != "$holder_pid" ]; then
+          echo "QUEUE NOT YOURS - your own run $(owner_pid) is still live"
+          echo "your own run $(owner_pid) is still live; not re-taking the hold from under it" >&2
+          return 1
+        fi
+        # Otherwise the run becomes its holder afresh: the recorded process,
+        # token and status file are this run's, and the heartbeat starts from
+        # now.
         write_hold_files "$id" "$owner_wt" "$holder_pid" "$status"
         : > "$LOCK/heartbeat"
         journal taken "$id" "pid=$holder_pid" "heartbeat=1" "retaken=1"
@@ -1175,6 +1209,15 @@ release_hold() {
   fi
   journal released "$id" "reason=$reason"
   rm -rf "$LOCK"
+}
+
+# park_hold <id> <reason> <seconds>: the park record inside an own hold, with
+# its deadline, journaled. The reason carries no spaces (see journal_value).
+park_hold() {
+  local id=$1 reason=$2 secs=$3 deadline
+  deadline=$(( $(now_epoch) + secs ))
+  printf 'reason=%s\nuntil=%s\n' "$reason" "$deadline" > "$LOCK/parked"
+  journal parked "$id" "reason=$reason" "for=${secs}s" "until=$deadline"
 }
 
 # --- run: hold the queue around a child command with a heartbeat ---------------
@@ -1231,22 +1274,31 @@ stop_heartbeat() {
 RUN_CHILD=
 RUN_SIGNALLED=
 RUN_WAS_SIGNALLED=
-# Invoked from the TERM and INT traps that run_command installs.
+# Invoked from the TERM and INT traps that run_command installs. The signal
+# goes to the child's whole process group by its negative id: the child is a
+# `bash -c` more often than not, and a TERM that reached only that shell left
+# the suite it had started running as an orphan while the wrapper went on to
+# release the hold over it.
 # shellcheck disable=SC2329
 forward_signal() {
   RUN_SIGNALLED=$1
   RUN_WAS_SIGNALLED=$1
-  [ -n "$RUN_CHILD" ] && kill -"$1" "$RUN_CHILD" 2>/dev/null
+  [ -n "$RUN_CHILD" ] && kill -"$1" -- "-$RUN_CHILD" 2>/dev/null
 }
 
-# run_command <cmd...>: the command as a child of this wrapper, with TERM and
-# INT forwarded to it and its own exit status returned.
+# run_command <cmd...>: the command as a child of this wrapper and the leader
+# of its own process group (bash job control gives a background job its own
+# group; the toggle is scoped to the launch), with TERM and INT forwarded to
+# that group and the command's own exit status returned.
 run_command() {
   local rc
   trap 'forward_signal TERM' TERM
   trap 'forward_signal TERM' INT
+  RUN_STARTED=1
+  set -m
   "$@" &
   RUN_CHILD=$!
+  set +m
   while :; do
     wait "$RUN_CHILD"; rc=$?
     [ -n "$RUN_SIGNALLED" ] || break
@@ -1351,6 +1403,7 @@ case "${1:-}" in
         *) STATUS_FILE="$PWD/$STATUS_FILE" ;;
       esac
     fi
+    RUN_ID=$ID
     take_queue "$ID" "$WAIT" "$$" "$STATUS_FILE" 1 || exit 1
     if [ -n "$STATUS_FILE" ]; then
       printf 'working: queue taken, gate running\n' >> "$STATUS_FILE" 2>/dev/null \
@@ -1364,6 +1417,13 @@ case "${1:-}" in
     if [ "$(hold_token)" = "$RUN_TOKEN" ]; then
       if read_park; then
         echo "hold kept parked: $PARK_REASON" >&2
+      elif [ -n "$RUN_WAS_SIGNALLED" ] && check_work_live "$(owner_worktree)"; then
+        # The signal ended the child but not the run: check work still names
+        # this hold's worktree. Releasing now would grant the queue over a
+        # live run, so the hold is parked instead, for the default deadline,
+        # and the worker is told to stop the orphan or release by hand.
+        park_hold "$ID" run-orphaned-after-signal "$PARK_DEFAULT"
+        echo "run interrupted but check work is still live in $(owner_worktree); not releasing - hold parked (run-orphaned-after-signal, ${PARK_DEFAULT}s (FM_GATE_PARK_SECONDS)); stop the orphaned run, then release $ID" >&2
       else
         if [ -n "$RUN_WAS_SIGNALLED" ]; then
           echo "run interrupted; releasing" >&2
@@ -1426,9 +1486,7 @@ case "${1:-}" in
       echo "held by: $HOLDER" >&2
       exit 1
     fi
-    UNTIL=$(( $(now_epoch) + FOR ))
-    printf 'reason=%s\nuntil=%s\n' "$REASON" "$UNTIL" > "$LOCK/parked"
-    journal parked "$ID" "reason=$REASON" "for=${FOR}s" "until=$UNTIL"
+    park_hold "$ID" "$REASON" "$FOR"
     echo "queue parked by you: $ID ($REASON, ${FOR}s)"
     exit 0
     ;;
@@ -1478,11 +1536,18 @@ case "${1:-}" in
       exit 1
     fi
     if [ -n "$SHOW_JOURNAL" ]; then
-      if [ -f "$JOURNAL" ]; then
-        tail -n "$JOURNAL_N" "$JOURNAL"
-      else
-        echo "no journal yet at $JOURNAL"
-      fi
+      # Read only this user's regular file: a journal that is anything else is
+      # named and never followed, the same as when it is written.
+      JOURNAL_KIND=$(path_kind "$JOURNAL" file)
+      case "$JOURNAL_KIND" in
+        file-own) tail -n "$JOURNAL_N" "$JOURNAL" ;;
+        absent) echo "no journal yet at $JOURNAL" ;;
+        *)
+          echo "JOURNAL NOT AVAILABLE - not reading the queue journal: $(describe_kind "$JOURNAL" "$JOURNAL_KIND")"
+          echo "not reading the queue journal: $(describe_kind "$JOURNAL" "$JOURNAL_KIND")" >&2
+          exit 1
+          ;;
+      esac
       exit 0
     fi
     if [ -n "$LINE" ]; then

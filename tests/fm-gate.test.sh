@@ -1814,7 +1814,261 @@ test_breaking_a_hold_leaves_a_trace_where_firstmate_reads() {
     "the skipped trace must say why on stderr"
   [ "$(grep -c 'broken id=task-dead' "$journal" | tr -d ' ')" = 2 ] \
     || fail "the journal must record the second break as well"
+  gate "$state" release task-b >/dev/null 2>&1
+
+  # A recorded status file that is gone by the time of the break is said so,
+  # not skipped in silence: that break reaches nobody, which is the incident
+  # the trace exists for.
+  mkdir -p "$GATE_LOCK"
+  printf '%s\n' task-dead > "$GATE_LOCK/owner"
+  printf '%s\n' "$wt" > "$GATE_LOCK/owner_worktree"
+  printf '%s\n' "$TMP_ROOT/break-trace-removed.status" > "$GATE_LOCK/owner_status"
+  printf '%s\n' token-of-the-stale-hold > "$GATE_LOCK/token"
+  age_path "$GATE_LOCK" 3600
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_STALE_SECONDS=0 \
+    "$GATE" acquire task-b 2>"$err"); rc=$?
+  expect_code 0 "$rc" "the third abandoned hold must be broken too"
+  assert_contains "$(cat "$err")" "not writing the broken-hold line: $TMP_ROOT/break-trace-removed.status is absent" \
+    "a break whose recorded status file is gone must say so on stderr"
+  [ ! -e "$TMP_ROOT/break-trace-removed.status" ] || fail "the break must not create a status file that was gone"
+  [ "$(grep -c 'broken id=task-dead' "$journal" | tr -d ' ')" = 3 ] \
+    || fail "the journal must record the third break as well"
   pass "fm-gate.sh: breaking a hold leaves a trace where firstmate reads"
+}
+
+# A TERM forwarded to the child alone reached only the `bash -c` the mandated
+# one-liner wraps the gate command in; that shell died at once, the suite it
+# had started ran on as an orphan, and the wrapper released the hold over it -
+# the second full run, arriving through a harness tool-call timeout. The child
+# now leads its own process group and the signal goes to the whole group; when
+# check work still names the hold's worktree after a signalled exit, the hold
+# is parked rather than released.
+test_a_signal_to_run_reaches_the_whole_group_and_parks_over_an_orphan() {
+  local state wt statusf outf errf wrapper rc tries journal marker orphan
+  state=$(new_state run-signal)
+  GATE_LOCK=$(new_lock run-signal)
+  wt="$TMP_ROOT/run-signal-wt"
+  statusf="$TMP_ROOT/run-signal.status"
+  outf="$TMP_ROOT/run-signal.out"; errf="$TMP_ROOT/run-signal.err"
+  journal="$GATE_LOCK.journal"
+  register_task "$state" task-a "$wt"
+  : > "$statusf"
+
+  # The command is a shell that starts a grandchild and stays its parent, as
+  # the mandated `bash -c 'cd ... && make test'` does; the grandchild's argv
+  # carries the marker from the environment, and only the grandchild's.
+  cat > "$TMP_ROOT/run-signal-parent.sh" <<'SH'
+#!/usr/bin/env bash
+bash -c 'sleep 60; :' "$RUN_SIGNAL_MARKER"
+:
+SH
+  cat > "$TMP_ROOT/run-signal-orphan-parent.sh" <<'SH'
+#!/usr/bin/env bash
+bash -c 'trap "" TERM; sleep 60; :' "$RUN_SIGNAL_MARKER"
+:
+SH
+  # A grandchild that carries no worktree path: it must die with the group.
+  marker="run-signal-grandchild-$$"
+  RUN_SIGNAL_MARKER="$marker" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    "$GATE" run task-a --status "$statusf" -- \
+    bash "$TMP_ROOT/run-signal-parent.sh" >"$outf" 2>"$errf" &
+  wrapper=$!
+  FIXTURE_PIDS+=("$wrapper")
+  tries=0
+  while [ "$tries" -lt 200 ] && ! pgrep -f "$marker" >/dev/null 2>&1; do
+    tries=$((tries + 1)); sleep 0.05
+  done
+  pgrep -f "$marker" >/dev/null 2>&1 || fail "the grandchild never started"
+  kill -TERM "$wrapper"
+  wait "$wrapper"; rc=$?
+  expect_code 143 "$rc" "a signalled run must exit with the command's own signal status"
+  tries=0
+  while [ "$tries" -lt 40 ] && pgrep -f "$marker" >/dev/null 2>&1; do
+    tries=$((tries + 1)); sleep 0.05
+  done
+  if pgrep -f "$marker" >/dev/null 2>&1; then
+    pkill -KILL -f "$marker" 2>/dev/null
+    fail "the forwarded signal must reach the whole process group, not only the direct child"
+  fi
+  assert_contains "$(gate "$state" status 2>&1)" "free" \
+    "a signalled run whose tree is gone must release the hold"
+  assert_contains "$(cat "$journal")" "released id=task-a reason=signal" \
+    "the journal must record the release after the signal"
+
+  # A grandchild that ignores TERM and carries the recorded worktree: an orphan
+  # the wrapper must not release the queue over.
+  orphan="$wt/pytest-suite"
+  RUN_SIGNAL_MARKER="$orphan" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    "$GATE" run task-a --status "$statusf" -- \
+    bash "$TMP_ROOT/run-signal-orphan-parent.sh" >"$outf" 2>"$errf" &
+  wrapper=$!
+  FIXTURE_PIDS+=("$wrapper")
+  tries=0
+  while [ "$tries" -lt 200 ] && ! pgrep -f "$orphan" >/dev/null 2>&1; do
+    tries=$((tries + 1)); sleep 0.05
+  done
+  pgrep -f "$orphan" >/dev/null 2>&1 || fail "the orphan never started"
+  kill -TERM "$wrapper"
+  wait "$wrapper"; rc=$?
+  expect_code 143 "$rc" "the signalled run must still carry the signal status out"
+  pgrep -f "$orphan" >/dev/null 2>&1 || fail "the orphan fixture must survive the group signal for this proof"
+  assert_contains "$(gate "$state" status 2>&1)" "held by: task-a" \
+    "a signalled run with check work still live must keep the hold"
+  assert_contains "$(gate "$state" status 2>&1)" "parked: run-orphaned-after-signal" \
+    "the kept hold must be parked with the orphan reason"
+  assert_contains "$(cat "$errf")" "not releasing" "the wrapper must say it is not releasing"
+  assert_contains "$(cat "$errf")" "run-orphaned-after-signal" "stderr must name the park reason"
+  assert_contains "$(cat "$errf")" "s (FM_GATE_PARK_SECONDS)" "stderr must name the park deadline by its variable"
+  assert_contains "$(cat "$journal")" "parked id=task-a reason=run-orphaned-after-signal" \
+    "the journal must record the park"
+  [ "$(grep -c 'released id=task-a' "$journal" | tr -d ' ')" = 1 ] \
+    || fail "the orphaned run's hold must not be released: $(cat "$journal")"
+  pkill -KILL -f "$orphan" 2>/dev/null
+  gate "$state" release task-a >/dev/null 2>&1
+  pass "fm-gate.sh: a signal to run reaches the whole group and parks over an orphan"
+}
+
+# `run` for an id whose earlier run is still alive re-took the hold outright:
+# the first wrapper's heartbeat saw the token change and stopped, its command
+# kept running unprotected, and the second command started - two full runs of
+# one task. The re-take is refused while the earlier holder proves itself
+# alive, and allowed once it is provably gone.
+test_a_run_does_not_displace_its_own_live_run() {
+  local state wt statusf out rc token wrapper tries holder_pid trace journal
+  state=$(new_state run-retake)
+  GATE_LOCK=$(new_lock run-retake)
+  wt="$TMP_ROOT/run-retake-wt"
+  statusf="$TMP_ROOT/run-retake.status"
+  trace="$TMP_ROOT/run-retake.trace"
+  journal="$GATE_LOCK.journal"
+  register_task "$state" task-a "$wt"
+  : > "$statusf"
+  FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_HEARTBEAT_SECONDS=1 \
+    "$GATE" run task-a --status "$statusf" -- sleep 60 >/dev/null 2>&1 &
+  wrapper=$!
+  FIXTURE_PIDS+=("$wrapper")
+  tries=0
+  while [ "$tries" -lt 300 ]; do
+    case "$(gate "$state" status 2>/dev/null)" in *"held by: task-a"*) break ;; esac
+    tries=$((tries + 1)); sleep 0.05
+  done
+  token=$(cat "$GATE_LOCK/token")
+  holder_pid=$(cat "$GATE_LOCK/owner_pid")
+  [ "$holder_pid" = "$wrapper" ] || fail "the run wrapper must be the recorded holder process"
+
+  out=$(gate "$state" run task-a --status "$statusf" -- touch "$trace" 2>"$TMP_ROOT/run-retake.err"); rc=$?
+  expect_code 1 "$rc" "a run beside its own live run must be refused"
+  assert_contains "$out" "QUEUE NOT YOURS - your own run $wrapper is still live" \
+    "the refusal must name the live run's pid on stdout"
+  assert_contains "$(cat "$TMP_ROOT/run-retake.err")" "your own run $wrapper is still live" \
+    "the refusal must reach stderr"
+  [ "$(cat "$GATE_LOCK/token")" = "$token" ] || fail "a refused re-take must not touch the hold"
+  [ ! -e "$trace" ] || fail "a refused re-take must never start its command"
+  sleep 1.5
+  assert_not_contains "$(cat "$journal")" "run-lost-hold" "the live run must not have lost its hold"
+  assert_not_contains "$(cat "$journal")" "retaken" "nothing must have been re-taken"
+
+  # The earlier wrapper killed outright: its recorded process is gone, its
+  # heartbeat still fresh. That holder is provably gone, so the re-take is
+  # allowed.
+  kill -KILL "$wrapper" 2>/dev/null
+  wait "$wrapper" 2>/dev/null
+  sleep 1.5
+  assert_contains "$(gate "$state" status 2>&1)" "holder process gone" \
+    "the killed wrapper must read as gone before the re-take"
+  out=$(gate "$state" run task-a --status "$statusf" -- touch "$trace" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "a re-take from a holder that is provably gone must be allowed"
+  [ -e "$trace" ] || fail "the allowed re-take must run its command"
+  assert_contains "$(cat "$journal")" "retaken=1" "the journal must record the re-take"
+  assert_contains "$(gate "$state" status 2>&1)" "free" "the re-taken run must release at the end"
+  pass "fm-gate.sh: a run does not displace its own live run"
+}
+
+# A signal between the grant and the traps run_command installs killed the
+# wrapper with the hold written and nothing behind it, to be judged abandoned
+# only after the stale age. The wrapper's exit path releases such a hold: its
+# token is this process's own and its command never started.
+test_a_signal_before_the_command_starts_releases_the_hold() {
+  local state wt statusf trace outf errf fakebin calls wrapper rc tries journal
+  state=$(new_state run-early-signal)
+  GATE_LOCK=$(new_lock run-early-signal)
+  wt="$TMP_ROOT/run-early-signal-wt"
+  statusf="$TMP_ROOT/run-early-signal.status"
+  trace="$TMP_ROOT/run-early-signal.trace"
+  outf="$TMP_ROOT/run-early-signal.out"; errf="$TMP_ROOT/run-early-signal.err"
+  journal="$GATE_LOCK.journal"
+  register_task "$state" task-a "$wt"
+  register_task "$state" task-n "$TMP_ROOT/run-early-signal-wt-n"
+  : > "$statusf"
+
+  # The resource probe runs after the hold is written and before the command
+  # starts; a slow fake pgrep holds the wrapper inside that window.
+  fakebin=$(fm_fakebin "$TMP_ROOT/run-early-signal")
+  calls="$TMP_ROOT/run-early-signal.pgrep-calls"
+  : > "$calls"
+  cat > "$fakebin/pgrep" <<SH
+#!/usr/bin/env bash
+echo "pgrep \$*" >> "$calls"
+sleep 3
+exit 1
+SH
+  chmod +x "$fakebin/pgrep"
+  # The test shell has run the real pgrep already and bash 3.2 remembers it;
+  # the wrapper below is a fresh process and resolves the fake regardless.
+  hash -r
+  [ "$(PATH="$fakebin:$PATH" command -v pgrep)" = "$fakebin/pgrep" ] \
+    || fail "pgrep must resolve to the fake on the test PATH"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    "$GATE" run task-a --status "$statusf" -- touch "$trace" >"$outf" 2>"$errf" &
+  wrapper=$!
+  FIXTURE_PIDS+=("$wrapper")
+  tries=0
+  while [ "$tries" -lt 200 ] && [ ! -s "$calls" ]; do
+    tries=$((tries + 1)); sleep 0.05
+  done
+  [ -s "$calls" ] || fail "the wrapper never reached the resource probe"
+  assert_contains "$(gate "$state" status 2>&1)" "held by: task-a" \
+    "the hold must already be written while the probe runs"
+  kill -TERM "$wrapper"
+  wait "$wrapper"; rc=$?
+  [ "$rc" -ne 0 ] || fail "a wrapper killed before its command must not exit 0"
+  [ ! -e "$trace" ] || fail "the command must never have started"
+  assert_contains "$(gate "$state" status 2>&1)" "free" \
+    "a hold whose run was killed before its command started must be released"
+  assert_contains "$(cat "$journal")" "released id=task-a reason=signal-before-run" \
+    "the journal must record the early release by its reason"
+  assert_contains "$(cat "$errf")" "before its command started" "the wrapper must say why it released"
+  pass "fm-gate.sh: a signal before the command starts releases the hold"
+}
+
+# `status --journal` read whatever sat at the journal's path, following a
+# symlink another user could have planted there. It reads only this user's
+# regular file and names anything else, as the writer already did.
+test_status_journal_reads_only_this_users_regular_file() {
+  local state out rc err target
+  state=$(new_state journal-tail)
+  GATE_LOCK=$(new_lock journal-tail)
+  err="$TMP_ROOT/journal-tail.err"
+
+  gate "$state" acquire task-a >/dev/null 2>&1 || fail "the queue must be free to take"
+  gate "$state" release task-a >/dev/null 2>&1
+  out=$(gate "$state" status --journal 1 2>"$err"); rc=$?
+  expect_code 0 "$rc" "tailing an own journal must succeed"
+  assert_contains "$out" "released id=task-a" "the tail must show the last event"
+  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 1 ] || fail "the tail must honour its line count: $out"
+
+  rm -f "$GATE_LOCK.journal"
+  target="$TMP_ROOT/journal-tail-target"
+  printf 'secret-line-of-another-user\n' > "$target"
+  ln -s "$target" "$GATE_LOCK.journal"
+  out=$(gate "$state" status --journal 2>"$err"); rc=$?
+  expect_code 1 "$rc" "a symlinked journal must be refused"
+  assert_not_contains "$out" "secret-line-of-another-user" "a symlinked journal must never be read through"
+  assert_contains "$out" "$GATE_LOCK.journal is a symbolic link" "the refusal must name what it found"
+  assert_contains "$(cat "$err")" "is a symbolic link" "the refusal must reach stderr"
+  [ -L "$GATE_LOCK.journal" ] || fail "a foreign journal must never be removed"
+  pass "fm-gate.sh: status --journal reads only this user's regular file"
 }
 
 # Three documents and three numbers for one threshold: the brief said "25
@@ -1892,3 +2146,7 @@ test_a_parked_hold_is_neither_abandoned_nor_over_the_ceiling_until_it_expires
 test_run_writes_the_running_line_releases_on_failure_and_carries_the_exit_status
 test_breaking_a_hold_leaves_a_trace_where_firstmate_reads
 test_limits_and_messages_name_thresholds_by_variable
+test_a_signal_to_run_reaches_the_whole_group_and_parks_over_an_orphan
+test_a_run_does_not_displace_its_own_live_run
+test_a_signal_before_the_command_starts_releases_the_hold
+test_status_journal_reads_only_this_users_regular_file
