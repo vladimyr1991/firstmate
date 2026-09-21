@@ -839,6 +839,78 @@ assert rows[sys.argv[3]]["timed_out"] is False, rows
   pass "a suite past --suite-timeout is killed with its descendants, named, and the run continues"
 }
 
+# A suite timeout under a high load has meant a second full run on the machine
+# every time it was measured, and that reading lived in one worker's memory.
+# The runner prints the load and the gate's status beside the timeout marker,
+# and names the second run as the usual cause when the load is above the
+# suspect threshold; an unreadable load says so and changes nothing else.
+test_suite_timeout_under_load_names_a_second_full_run() {
+  local tmp hang fakebin out err rc_high rc_low rc_none
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-load.XXXXXX")
+  hang="$tmp/hang.test.sh"
+  fakebin="$tmp/fakebin"
+  out="$tmp/out"
+  err="$tmp/err"
+  mkdir -p "$fakebin"
+  cat >"$hang" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+  chmod +x "$hang"
+  # A gate hold of this test's own, free, so the marker reads a known status.
+  mkdir -p "$tmp/gate"
+
+  cat >"$fakebin/uptime" <<'SH'
+#!/usr/bin/env bash
+echo "16:02  up 3 days,  4:11, 5 users, load averages: 52.10 40.00 30.00"
+SH
+  chmod +x "$fakebin/uptime"
+  [ "$(PATH="$fakebin:$PATH" command -v uptime)" = "$fakebin/uptime" ] \
+    || { rm -rf "$tmp"; fail "uptime must resolve to the fake on the test PATH"; }
+  set +e
+  PATH="$fakebin:$PATH" FM_GATE_LOCK_DIR="$tmp/gate/hold" "$RUNNER" --suite-timeout 1 "$hang" >"$out" 2>"$err"
+  rc_high=$?
+  set -e
+  grep -Eq "^FM_TEST_TIMEOUT [^ ]+ $hang limit_s=1$" "$out" \
+    || { cat "$out" "$err"; rm -rf "$tmp"; fail "FM_TEST_TIMEOUT marker missing"; }
+  grep -A1 "^FM_TEST_TIMEOUT " "$out" | grep -Eq "^FM_TEST_LOAD [^ ]+ $hang load1=52\.10 gate=free;_waiting:_0$" \
+    || { cat "$out" "$err"; rm -rf "$tmp"; fail "FM_TEST_LOAD must follow FM_TEST_TIMEOUT with the load and the gate status"; }
+  grep -Fq 'suite timeout under load 52.10: a second full run beside this one is the usual cause' "$err" \
+    || { cat "$err"; rm -rf "$tmp"; fail "a timeout under high load must name a second full run as the usual cause"; }
+
+  cat >"$fakebin/uptime" <<'SH'
+#!/usr/bin/env bash
+echo "16:02  up 3 days,  4:11, 5 users, load averages: 3.00 2.50 2.00"
+SH
+  set +e
+  PATH="$fakebin:$PATH" FM_GATE_LOCK_DIR="$tmp/gate/hold" "$RUNNER" --suite-timeout 1 "$hang" >"$out" 2>"$err"
+  rc_low=$?
+  set -e
+  grep -Eq "^FM_TEST_LOAD [^ ]+ $hang load1=3\.00 gate=" "$out" \
+    || { cat "$out"; rm -rf "$tmp"; fail "FM_TEST_LOAD must be printed at a low load too"; }
+  ! grep -Fq 'suite timeout under load' "$err" \
+    || { cat "$err"; rm -rf "$tmp"; fail "a timeout at a low load must not blame a second full run"; }
+
+  # A load that cannot be read is said to be unknown and blames nothing.
+  cat >"$fakebin/uptime" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  set +e
+  PATH="$fakebin:$PATH" FM_GATE_LOCK_DIR="$tmp/gate/hold" "$RUNNER" --suite-timeout 1 "$hang" >"$out" 2>"$err"
+  rc_none=$?
+  set -e
+  grep -Eq "^FM_TEST_LOAD [^ ]+ $hang load1=unknown gate=" "$out" \
+    || { cat "$out"; rm -rf "$tmp"; fail "an unreadable load must print load1=unknown"; }
+  ! grep -Fq 'suite timeout under load' "$err" \
+    || { cat "$err"; rm -rf "$tmp"; fail "an unreadable load must not blame a second full run"; }
+  [ "$rc_high" = "$rc_low" ] && [ "$rc_low" = "$rc_none" ] \
+    || { rm -rf "$tmp"; fail "the load probe must not change the run's exit status ($rc_high/$rc_low/$rc_none)"; }
+  [ "$rc_high" -ne 0 ] || { rm -rf "$tmp"; fail "a timed-out suite must still fail the run"; }
+  rm -rf "$tmp"
+  pass "a suite timeout under load names a second full run as the usual cause"
+}
+
 # The --jobs path runs suites in worker subshells with its own capture files;
 # the same limit and group kill must hold there, with the env form of the limit.
 test_jobs_worker_honours_suite_timeout() {
@@ -1105,6 +1177,7 @@ test_jobs_parallel_scheduler_and_failure_propagation
 test_aggregate_json
 test_orphaned_child_holding_stdout_cannot_wedge_the_run
 test_suite_timeout_kills_the_group_names_the_suite_and_continues
+test_suite_timeout_under_load_names_a_second_full_run
 test_jobs_worker_honours_suite_timeout
 test_dead_leader_is_reported_at_once_and_its_group_is_swept
 test_interrupted_jobs_runner_releases_its_stdout_and_kills_its_suites

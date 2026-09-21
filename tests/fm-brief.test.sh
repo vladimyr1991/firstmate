@@ -1190,10 +1190,18 @@ test_gate_queue_contract_reaches_ship_and_scout() {
       "$id ($kind): the pipeline boundary lost the false-safety it exists to prevent"
 
     # One command carries wait, run, and release, because the wait dies with the
-    # turn that started it; the release hangs off ';' so a failed run still frees
-    # the queue.
-    assert_grep "rc=1; '$ROOT/bin/fm-gate.sh' acquire $id --wait && { echo \"working: queue taken, gate running\" >> '$home/state/$id.status'; {the project's full gate command}; rc=\$?; }; '$ROOT/bin/fm-gate.sh' release $id; (exit \$rc)" "$brief" \
-      "$id ($kind): queue contract lost the single acquire-run-release command"
+    # turn that started it; `run` is the wrapper that releases on every exit
+    # status, so a failed run still frees the queue and no worker is asked to
+    # remember a release.
+    assert_grep "'$ROOT/bin/fm-gate.sh' run $id --wait --status '$home/state/$id.status' -- {the project's full gate command}" "$brief" \
+      "$id ($kind): queue contract lost the single run command"
+    assert_no_grep "acquire $id --wait &&" "$brief" \
+      "$id ($kind): queue contract still prescribes the old acquire-and-release shape"
+    assert_no_grep "release $id; (exit" "$brief" \
+      "$id ($kind): queue contract still asks the worker to release by hand"
+    # The command is argv, and shell syntax needs a shell to carry it.
+    assert_grep "wrap it as \`bash -c '...'\`" "$brief" \
+      "$id ($kind): queue contract lost the argv-versus-shell-text rule"
     # The command must carry the GATE's status out past the release. Ending on the
     # release made a red gate - and a queue that was never taken, so the gate never
     # ran at all - both report success.
@@ -1205,6 +1213,14 @@ test_gate_queue_contract_reaches_ship_and_scout() {
       "$id ($kind): queue contract lost the reason the wait cannot span turns"
     assert_grep "Release even when the run fails" "$brief" \
       "$id ($kind): queue contract lost the mandatory release"
+    assert_grep "is a property of that wrapper, not a discipline asked of you" "$brief" \
+      "$id ($kind): the release rule is no longer stated as the wrapper's own property"
+    # Thresholds are named by variable and the `limits` command, never by a
+    # number: three documents once carried three numbers for one threshold.
+    assert_grep "the abandonment threshold (FM_GATE_STALE_SECONDS; run \`'$ROOT/bin/fm-gate.sh' limits\` to see it)" "$brief" \
+      "$id ($kind): queue contract lost the threshold's variable name and the limits command"
+    assert_no_grep "25 minutes" "$brief" \
+      "$id ($kind): queue contract still names a threshold by a number"
 
     # Status lines: the waiting one before the command, the running one INSIDE it.
     # Written from outside, the running line could only ever be a guess, and no
@@ -1215,9 +1231,11 @@ test_gate_queue_contract_reaches_ship_and_scout() {
       "$id ($kind): queue contract kept an instruction to write a line after the whole command returns"
     assert_grep "\`paused: waiting for the test-gate queue\`" "$brief" \
       "$id ($kind): queue contract lost its waiting status line"
-    assert_grep "echo \"working: queue taken, gate running\" >> '$home/state/$id.status'" "$brief" \
+    assert_grep "--status '$home/state/$id.status' --" "$brief" \
+      "$id ($kind): the command does not hand run the status file that receives the running line"
+    assert_grep "written by the command the instant the queue becomes yours: \`working: queue taken, gate running\`" "$brief" \
       "$id ($kind): the running status line is not emitted by the command itself"
-    assert_grep "until \`acquire\` returns you are waiting and not working" "$brief" \
+    assert_grep "until \`run\` hands you the queue you are waiting and not working" "$brief" \
       "$id ($kind): queue contract lost the declared-working-with-nothing-alive reason"
     assert_grep "the queue can never be reported taken without the run starting" "$brief" \
       "$id ($kind): queue contract lost the owner-with-nothing-running stop"
@@ -1327,11 +1345,13 @@ test_gate_queue_quotes_foreign_firstmate_path() {
     "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "$id: brief was not scaffolded"
-  assert_grep "rc=1; $gate acquire $id --wait && { echo \"working: queue taken, gate running\" >> '$home/state/$id.status'; {the project's full gate command}; rc=\$?; }; $gate release $id; (exit \$rc)" "$brief" \
+  assert_grep "$gate run $id --wait --status '$home/state/$id.status' -- {the project's full gate command}" "$brief" \
     "the queue command must shell-quote an absolute Firstmate gate path"
   assert_grep "check \`$gate status\`" "$brief" \
     "the end-of-wait rule must shell-quote the gate path it names"
-  assert_no_grep "$foreign_root/bin/fm-gate.sh acquire" "$brief" \
+  assert_grep "run \`$gate limits\` to see it" "$brief" \
+    "the threshold pointer must shell-quote the gate path it names"
+  assert_no_grep "$foreign_root/bin/fm-gate.sh run" "$brief" \
     "the queue command must not emit an unquoted path containing a space"
   pass "fm-brief.sh: the test-gate queue command quotes its Firstmate-owned gate path"
 }

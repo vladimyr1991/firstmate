@@ -102,13 +102,17 @@
 # Ship and scout briefs both carry the test-gate queue contract, because a full
 # gate run costs the same on the machine whichever kind started it. It names
 # bin/fm-gate.sh by absolute path, has the worker take and release the queue
-# itself with no firstmate in the loop, prescribes the single acquire-run-release
-# command (the wait dies with the turn that started it), carries the running
-# status line INSIDE that command so it cannot be written while nothing runs and
-# the gate cannot be reported without starting, and states the unconditional rule that any
-# end of a wait is a reason to re-read state rather than to wait again. Each rule
-# carries its measured reason because the spoken version of this contract was
-# talked around by the first inconvenient case, twelve times in one day.
+# itself with no firstmate in the loop, prescribes the single `run` command
+# that queues, takes, runs and releases as one wrapper (the wait dies with the
+# turn that started it), has that wrapper write the running status line the
+# instant the queue is granted so it cannot be written while nothing runs and
+# the gate cannot be reported without starting, names every threshold by its
+# variable and the `limits` command rather than by a number (bin/fm-gate.sh's
+# header is the one owner of what the thresholds mean), and states the
+# unconditional rule that any end of a wait is a reason to re-read state rather
+# than to wait again. Each rule carries its measured reason because the spoken
+# version of this contract was talked around by the first inconvenient case,
+# twelve times in one day.
 # Ship briefs no longer mandate a baseline gate run before the first edit: the
 # captain withdrew that requirement after five workers in one evening stalled on
 # it, one of them holding the gate queue for a measurement nobody wanted. The
@@ -466,15 +470,16 @@ The queue covers FULL runs, the whole suite and its browser half, and deliberate
 The hold covers the gate runs you launch yourself: a validation pipeline you drive runs its own test step outside this queue and takes no hold, so a green pipeline is never evidence that the machine was serialised while it ran.
 
 Take the queue, run the gate, and release it in ONE command, and do not end your turn before that command returns:
-   \`rc=1; $GATE_CMD acquire $ID --wait && { echo "working: queue taken, gate running" >> $STATUS_FILE; {the project's full gate command}; rc=\$?; }; $GATE_CMD release $ID; (exit \$rc)\`
+   \`$GATE_CMD run $ID --wait --status $STATUS_FILE -- {the project's full gate command}\`
+Everything after \`--\` is the gate command as argv, not shell text: when it needs shell syntax (a pipe, \`&&\`, a redirection, an environment assignment), wrap it as \`bash -c '...'\`.
 The wait lives only inside your turn and dies with it, so "start the wait, write a status line, end the turn" leaves you awake with no wait running and stopped forever - three workers stood exactly that way in one night.
-Release even when the run fails, which is why the release hangs off \`;\` and not off \`&&\`: an abandoned hold is only broken after 25 minutes, and every minute of that is paid by the workers queued behind you.
-That command's exit status is the GATE's own, which is what \`rc\` carries past the release: a non-zero status means either the gate failed or the queue was never taken and the gate never ran, and neither of those is a finished run - without it the release's own success would report a red gate, or a refused queue, as green.
+Release even when the run fails is a property of that wrapper, not a discipline asked of you: \`run\` releases the queue whatever the gate's exit status, keeps a heartbeat on the hold while the gate is alive so a live run is never broken however long it takes, and a hold left behind by a dead wrapper is only broken after the abandonment threshold (FM_GATE_STALE_SECONDS; run \`$GATE_CMD limits\` to see it), every minute of which is paid by the workers queued behind you.
+That command's exit status is the GATE's own, which is what \`run\` carries out past the release: a non-zero status means either the gate failed or the queue was never taken and the gate never ran, and neither of those is a finished run - without it the release's own success would report a red gate, or a refused queue, as green.
 
 Append the waiting line BEFORE you run that command, and let the command itself write the running line, which is why that line sits inside it:
    before the command: \`$PAUSED_VERB: waiting for the test-gate queue\`
    written by the command the instant the queue becomes yours: \`working: queue taken, gate running\`
-Written from outside, that line can only be a guess: until \`acquire\` returns you are waiting and not working, and two workers in a row declared themselves running with zero processes alive.
+Written from outside, that line can only be a guess: until \`run\` hands you the queue you are waiting and not working, and two workers in a row declared themselves running with zero processes alive.
 Inside the command the gate starts in the same breath as the line, so the queue can never be reported taken without the run starting - a worker who took the queue, reported it, and ended the turn owned the queue with nothing running and held three workers behind it.
 
 **The end of a wait, in any form whatsoever, is a reason to read the ground again and never a reason to wait again.**
@@ -638,7 +643,7 @@ You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
 Right before you invoke \`no-mistakes axi run\`, append \`$PAUSED_VERB: waiting on the no-mistakes run for fm/$ID\` to the status file.
-The run blocks your turn until its first gate, so the line goes BEFORE the call, exactly as the queue contract writes its waiting line before \`acquire\`; it names the owner of the wait because a bare pause reads from outside as "finished and waiting for firstmate" - the handoff \`done:\` above stayed the last event for an entire run and drew four empty check-ins of a worker that was mid-pipeline.
+The run blocks your turn until its first gate, so the line goes BEFORE the call, exactly as the queue contract writes its waiting line before \`run\`; it names the owner of the wait because a bare pause reads from outside as "finished and waiting for firstmate" - the handoff \`done:\` above stayed the last event for an entire run and drew four empty check-ins of a worker that was mid-pipeline.
 If \`axi run\` returns an error instead of a gate or an outcome, that pause is no longer true: append the \`blocked [key=daemon-error]: {the daemon error}\` line from rule 7 for a daemon error, or \`failed: {what axi printed}\` otherwise, so a pause never stays the last event over a run that is not alive.
 Never produce a pipeline step's artifact by hand, including opening the pull request, while the run still owns that step - a step that has stopped responding has not released it.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
