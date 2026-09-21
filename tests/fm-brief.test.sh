@@ -1394,6 +1394,129 @@ test_own_deployment_reporting_rule() {
   pass "fm-brief.sh: every ship mode reports only its own deployment"
 }
 
+# A known stand-side breakage is recorded once per project in
+# data/known-breakage/<repo>.md and folded into every ship and scout brief for
+# that repo, so the landing worker reads it instead of re-investigating it. The
+# reader copies bytes verbatim through a variable, so the body's shell text must
+# arrive literally with nothing executed; absence must leave the brief exactly as
+# before; an empty record and one carrying the {TASK} placeholder must refuse
+# through the executable; an unsafe repo name skips the lookup; a charter never
+# looks.
+test_known_breakage_record_reaches_ship_and_scout_briefs() {
+  local home id brief err status override rc kind mode
+  home="$TMP_ROOT/known-breakage-home"
+  write_registry "$home"
+  err="$TMP_ROOT/known-breakage.err"
+  local heading="# Known breakage on some-proj's side - not yours to investigate"
+  local entry="## 2026-09-04 staging deploy dies pulling the image from ghcr (unauthorized)"
+
+  # Absent record: no section in any kind.
+  for id in kb-a1 kb-a2 kb-a3 kb-a4; do
+    case "$id" in
+      kb-a1) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1 ;;
+      kb-a2) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1 ;;
+      kb-a3) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only >/dev/null 2>&1 ;;
+      kb-a4) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1 ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded without a record"
+    assert_no_grep "Known breakage" "$brief" "$id: a brief carried a known-breakage section with no record present"
+  done
+
+  mkdir -p "$home/data/known-breakage"
+  cat > "$home/data/known-breakage/some-proj.md" <<'EOF'
+## 2026-09-04 staging deploy dies pulling the image from ghcr (unauthorized)
+Build succeeds and pushes the image; the deploy step fails at the pull with `unauthorized`.
+Evidence: runs 33758182306 and 33880323369, identical failure, confirmed three times.
+Your change did not cause this. Do not investigate it: append your blocked line citing this entry and stop.
+EOF
+
+  # Present record: ship (staging autonomy) and scout both carry it, placed
+  # between the Herdr declaration and Setup.
+  for id in kb-1 kb-2; do
+    if [ "$id" = kb-1 ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --staging-autonomy >/dev/null 2>"$err"; rc=$?
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>"$err"; rc=$?
+    fi
+    expect_code 0 "$rc" "$id: scaffold with a record present must succeed ($(cat "$err"))"
+    brief="$home/data/$id/brief.md"
+    assert_grep "$heading" "$brief" "$id: brief lost the known-breakage heading"
+    assert_grep "$entry" "$brief" "$id: brief lost the record's entry line"
+    assert_grep "If a failure you hit matches an entry below, do not investigate it" "$brief" \
+      "$id: section lost the do-not-investigate instruction"
+    assert_grep "read the conclusion of the previous run on your target branch with one \`gh-axi run list\` call before you push" "$brief" \
+      "$id: section lost the pre-push previous-run read"
+    assert_grep "your blocked line must name the failed run and the failed step" "$brief" \
+      "$id: section lost the unlisted-failure reporting rule"
+    local herdr_line kb_line setup_line
+    herdr_line=$(grep -n -F '# Herdr lifecycle declaration' "$brief" | head -1 | cut -d: -f1)
+    kb_line=$(grep -n -F "$heading" "$brief" | head -1 | cut -d: -f1)
+    setup_line=$(grep -n -F '# Setup' "$brief" | head -1 | cut -d: -f1)
+    [ -n "$herdr_line" ] && [ -n "$kb_line" ] && [ -n "$setup_line" ] \
+      || fail "$id: could not locate the Herdr, known-breakage, and Setup headings"
+    [ "$herdr_line" -lt "$kb_line" ] && [ "$kb_line" -lt "$setup_line" ] \
+      || fail "$id: known-breakage section is not between the Herdr declaration and Setup (herdr=$herdr_line kb=$kb_line setup=$setup_line)"
+    [ -z "$(sed -n "$((kb_line - 1))p" "$brief")" ] \
+      || fail "$id: known-breakage heading is not separated from the Herdr declaration by a blank line"
+  done
+
+  # Empty record refuses and writes no brief.
+  printf '\n' > "$home/data/known-breakage/some-proj.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kb-4 some-proj --mode direct-PR >/dev/null 2>"$err"; rc=$?
+  expect_code 1 "$rc" "kb-4: an empty record must refuse"
+  assert_grep "exists but is empty" "$err" "kb-4: empty-record refusal lost its message"
+  assert_absent "$home/data/kb-4/brief.md" "kb-4: a brief was written despite the empty-record refusal"
+
+  # Placeholder in the record refuses and writes no brief.
+  printf 'see {TASK} above\n' > "$home/data/known-breakage/some-proj.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kb-5 some-proj --mode direct-PR >/dev/null 2>"$err"; rc=$?
+  expect_code 1 "$rc" "kb-5: a record carrying {TASK} must refuse"
+  assert_grep "contains the literal {TASK}" "$err" "kb-5: placeholder refusal lost its message"
+  assert_grep "known-breakage/some-proj.md" "$err" "kb-5: placeholder refusal did not name the file"
+  assert_absent "$home/data/kb-5/brief.md" "kb-5: a brief was written despite the placeholder refusal"
+
+  # Body is emitted literally: nothing in it runs, and a bare EOF line does not
+  # end the section early.
+  rm -f "$TMP_ROOT/kb-executed"
+  cat > "$home/data/known-breakage/some-proj.md" <<EOF
+## 2026-09-05 literal body
+Contains \`\$(touch "$TMP_ROOT/kb-executed")\` and \$HOME and a bare line:
+EOF
+  printf '%s\n' 'EOF' 'after the bare EOF line' >> "$home/data/known-breakage/some-proj.md"
+  ( cd "$ROOT" && FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kb-6 some-proj --mode direct-PR >/dev/null 2>"$err" ); rc=$?
+  expect_code 0 "$rc" "kb-6: literal-body scaffold must succeed ($(cat "$err"))"
+  brief="$home/data/kb-6/brief.md"
+  assert_grep "\$(touch \"$TMP_ROOT/kb-executed\")" "$brief" "kb-6: command substitution text did not arrive verbatim"
+  # shellcheck disable=SC2016 # The literal $HOME text is the assertion's subject.
+  assert_grep '$HOME' "$brief" "kb-6: \$HOME did not arrive verbatim"
+  assert_grep "after the bare EOF line" "$brief" "kb-6: a bare EOF line in the record cut the section short"
+  assert_absent "$TMP_ROOT/kb-executed" "kb-6: the record's command substitution was executed while scaffolding"
+  [ ! -s "$err" ] || fail "kb-6: scaffolding with a record wrote to stderr: $(cat "$err")"
+
+  # Unsafe repo name skips the lookup with a warning and still scaffolds.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kb-7 'x/../some-proj' --mode direct-PR >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "kb-7: an unsafe repo name must still scaffold"
+  assert_grep "known-breakage lookup skipped" "$err" "kb-7: unsafe repo name did not warn"
+  assert_no_grep "Known breakage" "$home/data/kb-7/brief.md" "kb-7: unsafe repo name reached the record"
+
+  # Secondmate charter never looks.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" sm-kb --secondmate some-proj >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "sm-kb: charter scaffold must succeed ($(cat "$err"))"
+  assert_no_grep "Known breakage" "$home/data/sm-kb/brief.md" "sm-kb: a secondmate charter carried the record"
+
+  # FM_DATA_OVERRIDE is honoured for the lookup, with FM_HOME pointing elsewhere.
+  override="$TMP_ROOT/known-breakage-override"
+  mkdir -p "$override/known-breakage"
+  printf '%s\n' "$entry" 'Evidence: run 1.' > "$override/known-breakage/some-proj.md"
+  FM_HOME="$TMP_ROOT/known-breakage-elsewhere" FM_DATA_OVERRIDE="$override" \
+    "$ROOT/bin/fm-brief.sh" kb-9 some-proj --scout >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "kb-9: override scaffold must succeed ($(cat "$err"))"
+  assert_grep "$heading" "$override/kb-9/brief.md" "kb-9: the data override was not honoured for the record lookup"
+
+  pass "fm-brief.sh: a known-breakage record reaches every ship and scout brief for its repo, verbatim, and only then"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -2243,6 +2366,7 @@ test_gate_queue_contract_reaches_ship_and_scout
 test_brief_prose_is_not_executed_while_scaffolding
 test_gate_queue_quotes_foreign_firstmate_path
 test_own_deployment_reporting_rule
+test_known_breakage_record_reaches_ship_and_scout_briefs
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
