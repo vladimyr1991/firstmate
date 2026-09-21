@@ -183,16 +183,25 @@
 #   suite it started running as an orphan), waits, releases unless the hold was
 #   parked meanwhile, and exits with the command's own status. Release on any
 #   exit status is therefore a property of the wrapper and no longer a
-#   discipline asked of the worker. Two exceptions keep "release on every exit"
-#   from meaning "release over a live run": after a SIGNALLED exit the wrapper
-#   releases only when no check work still names the hold's worktree, and
-#   otherwise PARKS the hold (`run-orphaned-after-signal`, for the default park
-#   deadline), says so on stderr, and leaves the worker to stop the orphan and
-#   release; and a `run` for an id whose earlier run is still alive (fresh
-#   heartbeat, recorded process alive) is refused as `your own run <pid> is
-#   still live` rather than displacing it - the re-take is allowed only from a
-#   holder that is provably gone. A signal that lands after the grant and before
-#   the command started releases the hold (`signal-before-run`).
+#   discipline asked of the worker. The command's stdin is /dev/null: a job in
+#   its own group is never handed the terminal, so a command that read its
+#   terminal would stop silently with a fresh heartbeat; it reads EOF instead,
+#   and a run's command never reads its terminal. Two exceptions keep "release
+#   on every exit" from meaning "release over a live run": after a SIGNALLED
+#   exit the wrapper gives the group a bounded grace to shut down (runners
+#   handle TERM gracefully and are still winding down when the `bash -c` that
+#   started them has already died), polling the group and the check-work probe
+#   against the hold's worktree, and releases once the tree has drained; only
+#   when the run is still seen at the end of the grace does it PARK the hold
+#   (`run-orphaned-after-signal`, for the default park deadline), say so on
+#   stderr, and leave the worker to stop the orphan and release. And a `run`
+#   for an id whose earlier run is still alive (fresh heartbeat, recorded
+#   process alive) is refused as `your own run <pid> is still live` rather than
+#   displacing it - the re-take is allowed only from a holder that is provably
+#   gone, and it ends any park that holder left (journaled `unparked`): the
+#   park described the previous holder's state, not this run's. A signal that
+#   lands after the grant and before the command started releases the hold
+#   (`signal-before-run`).
 #   If the hold is taken from under a live run - which only the ceiling on an
 #   inferred signal or a hand delete can do - the heartbeat notices the token
 #   change, stops, says so on stderr, journals `run-lost-hold`, and the run is
@@ -1179,8 +1188,13 @@ take_queue() {
           return 1
         fi
         # Otherwise the run becomes its holder afresh: the recorded process,
-        # token and status file are this run's, and the heartbeat starts from
-        # now.
+        # token and status file are this run's, the heartbeat starts from now,
+        # and a park the previous holder left ends here - it described that
+        # holder's state, not this run's.
+        if read_park; then
+          journal unparked "$id" "reason=$PARK_REASON"
+          rm -f "$LOCK/parked" 2>/dev/null
+        fi
         write_hold_files "$id" "$owner_wt" "$holder_pid" "$status"
         : > "$LOCK/heartbeat"
         journal taken "$id" "pid=$holder_pid" "heartbeat=1" "retaken=1"
@@ -1272,8 +1286,13 @@ stop_heartbeat() {
 }
 
 RUN_CHILD=
+RUN_PGID=
 RUN_SIGNALLED=
 RUN_WAS_SIGNALLED=
+# Seconds a signalled group gets to shut down before the wrapper decides
+# whether its run is orphaned. Fixed like fm-test-run.sh's own kill grace, and
+# not a threshold: it bounds a wait, it does not judge a hold.
+RUN_SIGNAL_GRACE=5
 # Invoked from the TERM and INT traps that run_command installs. The signal
 # goes to the child's whole process group by its negative id: the child is a
 # `bash -c` more often than not, and a TERM that reached only that shell left
@@ -1288,17 +1307,19 @@ forward_signal() {
 
 # run_command <cmd...>: the command as a child of this wrapper and the leader
 # of its own process group (bash job control gives a background job its own
-# group; the toggle is scoped to the launch), with TERM and INT forwarded to
-# that group and the command's own exit status returned.
+# group; the toggle is scoped to the launch), reading stdin from /dev/null,
+# with TERM and INT forwarded to that group and the command's own exit status
+# returned. The group id outlives this call in RUN_PGID.
 run_command() {
   local rc
   trap 'forward_signal TERM' TERM
   trap 'forward_signal TERM' INT
   RUN_STARTED=1
   set -m
-  "$@" &
+  "$@" </dev/null &
   RUN_CHILD=$!
   set +m
+  RUN_PGID=$RUN_CHILD
   while :; do
     wait "$RUN_CHILD"; rc=$?
     [ -n "$RUN_SIGNALLED" ] || break
@@ -1308,6 +1329,23 @@ run_command() {
   trap - TERM INT
   RUN_CHILD=
   return "$rc"
+}
+
+# run_still_live_after_signal: true when, after the grace, the signalled run
+# is still seen. The group and the check-work probe against the hold's own
+# worktree are polled together; the tree has drained as soon as either the
+# group is gone or the probe sees nothing, and the decision to park waits for
+# the whole grace only while both still answer "alive".
+run_still_live_after_signal() {
+  local waited=0 wt
+  wt=$(owner_worktree)
+  while :; do
+    kill -0 -- "-$RUN_PGID" 2>/dev/null || return 1
+    check_work_live "$wt" || return 1
+    [ "$waited" -lt $(( RUN_SIGNAL_GRACE * 2 )) ] || return 0
+    waited=$(( waited + 1 ))
+    sleep 0.5
+  done
 }
 
 # --- status ----------------------------------------------------------------------
@@ -1417,11 +1455,12 @@ case "${1:-}" in
     if [ "$(hold_token)" = "$RUN_TOKEN" ]; then
       if read_park; then
         echo "hold kept parked: $PARK_REASON" >&2
-      elif [ -n "$RUN_WAS_SIGNALLED" ] && check_work_live "$(owner_worktree)"; then
-        # The signal ended the child but not the run: check work still names
-        # this hold's worktree. Releasing now would grant the queue over a
-        # live run, so the hold is parked instead, for the default deadline,
-        # and the worker is told to stop the orphan or release by hand.
+      elif [ -n "$RUN_WAS_SIGNALLED" ] && run_still_live_after_signal; then
+        # The signal ended the child but not the run: past the grace, check
+        # work still names this hold's worktree. Releasing now would grant the
+        # queue over a live run, so the hold is parked instead, for the
+        # default deadline, and the worker is told to stop the orphan or
+        # release by hand.
         park_hold "$ID" run-orphaned-after-signal "$PARK_DEFAULT"
         echo "run interrupted but check work is still live in $(owner_worktree); not releasing - hold parked (run-orphaned-after-signal, ${PARK_DEFAULT}s (FM_GATE_PARK_SECONDS)); stop the orphaned run, then release $ID" >&2
       else

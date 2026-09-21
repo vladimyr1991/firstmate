@@ -1842,9 +1842,12 @@ test_breaking_a_hold_leaves_a_trace_where_firstmate_reads() {
 # the second full run, arriving through a harness tool-call timeout. The child
 # now leads its own process group and the signal goes to the whole group; when
 # check work still names the hold's worktree after a signalled exit, the hold
-# is parked rather than released.
+# is parked rather than released - but only after a grace: runners handle
+# TERM gracefully and are still winding down when the shell that started them
+# is already gone, and a probe taken that instant parked the machine-wide
+# queue for an hour on every routine timeout.
 test_a_signal_to_run_reaches_the_whole_group_and_parks_over_an_orphan() {
-  local state wt statusf outf errf wrapper rc tries journal marker orphan
+  local state wt statusf outf errf wrapper rc tries journal marker orphan graceful
   state=$(new_state run-signal)
   GATE_LOCK=$(new_lock run-signal)
   wt="$TMP_ROOT/run-signal-wt"
@@ -1865,6 +1868,11 @@ SH
   cat > "$TMP_ROOT/run-signal-orphan-parent.sh" <<'SH'
 #!/usr/bin/env bash
 bash -c 'trap "" TERM; sleep 60; :' "$RUN_SIGNAL_MARKER"
+:
+SH
+  cat > "$TMP_ROOT/run-signal-graceful-parent.sh" <<'SH'
+#!/usr/bin/env bash
+bash -c 'trap "sleep 1.5; exit 0" TERM; sleep 60; :' "$RUN_SIGNAL_MARKER"
 :
 SH
   # A grandchild that carries no worktree path: it must die with the group.
@@ -1895,8 +1903,33 @@ SH
   assert_contains "$(cat "$journal")" "released id=task-a reason=signal" \
     "the journal must record the release after the signal"
 
+  # A grandchild that carries the recorded worktree and takes its time to shut
+  # down on TERM, as vitest, playwright and jest do: it is dying, not
+  # orphaned, and the hold must be released once it has drained.
+  graceful="$wt/pytest-suite-graceful"
+  RUN_SIGNAL_MARKER="$graceful" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    "$GATE" run task-a --status "$statusf" -- \
+    bash "$TMP_ROOT/run-signal-graceful-parent.sh" >"$outf" 2>"$errf" &
+  wrapper=$!
+  FIXTURE_PIDS+=("$wrapper")
+  tries=0
+  while [ "$tries" -lt 200 ] && ! pgrep -f "$graceful" >/dev/null 2>&1; do
+    tries=$((tries + 1)); sleep 0.05
+  done
+  pgrep -f "$graceful" >/dev/null 2>&1 || fail "the graceful grandchild never started"
+  kill -TERM "$wrapper"
+  wait "$wrapper"; rc=$?
+  expect_code 143 "$rc" "the signalled run must carry the signal status out"
+  pgrep -f "$graceful" >/dev/null 2>&1 && fail "the graceful grandchild must have finished shutting down before the wrapper decided"
+  assert_contains "$(gate "$state" status 2>&1)" "free" \
+    "a run whose tree drained within the grace must be released, not parked"
+  assert_not_contains "$(cat "$journal")" "parked id=task-a" \
+    "a run that was dying, not orphaned, must never be parked"
+  [ "$(grep -c 'released id=task-a reason=signal' "$journal" | tr -d ' ')" = 2 ] \
+    || fail "the journal must record the second release after the signal: $(cat "$journal")"
+
   # A grandchild that ignores TERM and carries the recorded worktree: an orphan
-  # the wrapper must not release the queue over.
+  # the wrapper must not release the queue over, even after the grace.
   orphan="$wt/pytest-suite"
   RUN_SIGNAL_MARKER="$orphan" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
     "$GATE" run task-a --status "$statusf" -- \
@@ -1921,7 +1954,7 @@ SH
   assert_contains "$(cat "$errf")" "s (FM_GATE_PARK_SECONDS)" "stderr must name the park deadline by its variable"
   assert_contains "$(cat "$journal")" "parked id=task-a reason=run-orphaned-after-signal" \
     "the journal must record the park"
-  [ "$(grep -c 'released id=task-a' "$journal" | tr -d ' ')" = 1 ] \
+  [ "$(grep -c 'released id=task-a' "$journal" | tr -d ' ')" = 2 ] \
     || fail "the orphaned run's hold must not be released: $(cat "$journal")"
   pkill -KILL -f "$orphan" 2>/dev/null
   gate "$state" release task-a >/dev/null 2>&1
@@ -1981,7 +2014,42 @@ test_a_run_does_not_displace_its_own_live_run() {
   [ -e "$trace" ] || fail "the allowed re-take must run its command"
   assert_contains "$(cat "$journal")" "retaken=1" "the journal must record the re-take"
   assert_contains "$(gate "$state" status 2>&1)" "free" "the re-taken run must release at the end"
+
+  # A park the previous holder left - the orphan park after a timeout, or a
+  # deliberate one from a shell that is gone - describes that holder, not the
+  # re-taking run: the re-take ends it, and the run releases at its end.
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
+    bash -c '"$1" park task-a --reason "left-by-the-previous-holder"' _ "$GATE" 2>&1); rc=$?
+  expect_code 0 "$rc" "the free queue must be parkable for this proof"
+  rm -f "$trace"
+  out=$(gate "$state" run task-a --status "$statusf" -- touch "$trace" 2>"$TMP_ROOT/run-retake.err"); rc=$?
+  expect_code 0 "$rc" "a re-take over a park whose holder is gone must be allowed"
+  [ -e "$trace" ] || fail "the re-take over the park must run its command"
+  assert_contains "$(gate "$state" status 2>&1)" "free" \
+    "the re-taken run must release at its end rather than inherit the park"
+  assert_contains "$(cat "$journal")" "unparked id=task-a reason=left-by-the-previous-holder" \
+    "the journal must record the park ending on the re-take"
+  assert_not_contains "$(cat "$TMP_ROOT/run-retake.err")" "hold kept parked" \
+    "the re-taking run must not report a park it never asked for"
   pass "fm-gate.sh: a run does not displace its own live run"
+}
+
+# A job in its own process group is never handed the terminal, so a gate
+# command that read its terminal would stop on SIGTTIN with a fresh heartbeat
+# and read as alive to every waiter forever. The command's stdin is /dev/null
+# instead: it reads EOF, never the wrapper's own input.
+test_a_run_command_reads_eof_not_the_wrappers_stdin() {
+  local state out rc
+  state=$(new_state run-stdin)
+  GATE_LOCK=$(new_lock run-stdin)
+
+  out=$(printf 'line-from-the-wrappers-stdin\n' | gate "$state" run task-a -- cat 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "a command reading EOF must end and carry its status out"
+  assert_not_contains "$out" "line-from-the-wrappers-stdin" \
+    "the command must not read the wrapper's stdin"
+  assert_contains "$out" "queue held by you: task-a" "the run must still have been granted"
+  assert_contains "$(gate "$state" status 2>&1)" "free" "the run must release at its end"
+  pass "fm-gate.sh: a run's command reads EOF, not the wrapper's stdin"
 }
 
 # A signal between the grant and the traps run_command installs killed the
@@ -2148,5 +2216,6 @@ test_breaking_a_hold_leaves_a_trace_where_firstmate_reads
 test_limits_and_messages_name_thresholds_by_variable
 test_a_signal_to_run_reaches_the_whole_group_and_parks_over_an_orphan
 test_a_run_does_not_displace_its_own_live_run
+test_a_run_command_reads_eof_not_the_wrappers_stdin
 test_a_signal_before_the_command_starts_releases_the_hold
 test_status_journal_reads_only_this_users_regular_file
