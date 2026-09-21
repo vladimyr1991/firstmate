@@ -1208,6 +1208,44 @@ test_no_run_idle_pane_custom_paused_verb() {
   pass "no run + idle pane honors the configured paused verb"
 }
 
+# (g'') the pause line the no-mistakes DOD prescribes right before `axi run`,
+# taken from a brief generated in this fixture rather than restated as a literal.
+# With no attributable run and an idle pane it must read as a pause naming the
+# run's branch, where the older `done:` handoff tail read as finished; and a live
+# run on this branch must still win over that tail (run-step outranks the log).
+test_no_run_idle_pane_prescribed_pipeline_wait_line() {
+  reset_fakes
+  local d id brief line out
+  d=$(new_case pipeline-wait)
+  id=feat-pipeline-wait
+  make_repo_on_branch "$d/wt" "fm/$id"
+  make_fakebin "$d" >/dev/null
+  mkdir -p "$d/home/data"
+  FM_HOME="$d/home" FM_CLASSIFY_PAUSED_VERB=paused \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "no-mistakes scaffold for the pipeline wait line exited non-zero"
+  brief="$d/home/data/$id/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  line=$(grep -oE '`paused: waiting on the no-mistakes run for fm/[^`]*`' "$brief" | head -1 | tr -d '`')
+  [ -n "$line" ] || fail "the generated no-mistakes brief prescribes no pipeline wait line to extract"
+  fm_write_meta "$d/state/$id.meta" "window=fm:fm-$id" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'done: implemented and committed; ready for /no-mistakes\n%s\n' "$line" > "$d/state/$id.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" "$id"
+  out=$(run_crew_state "$d" "$id")
+  assert_contains "$out" "state: paused" "prescribed wait line with no run -> paused"
+  assert_contains "$out" "source: status-log" "prescribed wait line with no run -> status-log source"
+  assert_contains "$out" "waiting on the no-mistakes run for fm/$id" "the owner of the wait is carried in the detail"
+  assert_not_contains "$out" "state: done" "the handoff done: above the wait line must not resurface as the state"
+
+  FM_FAKE_AXI_STATUS="$(run_running "fm/$id")"
+  out=$(run_crew_state "$d" "$id")
+  assert_contains "$out" "state: working" "a live run on this branch still outranks the pause tail"
+  assert_contains "$out" "source: run-step" "a live run on this branch still reports run-step"
+  pass "no run + idle pane on the brief-prescribed pipeline wait line reports paused with its owner; a live run still wins"
+}
+
 # A trailing keyed resolved: event is a decision-CLOSING event, not a run-state
 # verb. It must never become the current state or leak its resolution prose as the
 # detail: a healthy idle secondmate that just closed a keyed decision falls through
@@ -1563,6 +1601,7 @@ test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb
+test_no_run_idle_pane_prescribed_pipeline_wait_line
 test_no_run_idle_secondmate_resolved_event_not_state
 test_dead_window_ignores_stale_status_log
 test_dead_window_still_reports_terminal_run_step

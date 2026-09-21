@@ -42,18 +42,51 @@
 #                   selected script is in the proven-isolated set
 #                   (bin/fm-test-isolation-proof.sh --list). Cap is 8. Stateful
 #                   families never schedule under --jobs.
+#   --suite-timeout <seconds>
+#                   the most wall-clock time one selected script may take
+#                   (default: $FM_TEST_SUITE_TIMEOUT, else 3600). A script still
+#                   running at the limit is killed together with every process
+#                   in its process group, recorded as exit=124 with an
+#                   FM_TEST_TIMEOUT marker, and the run continues with the next
+#                   script. The limit is per script, never per run. It bounds
+#                   a wedged script, not a slow one: on a fleet machine whose
+#                   load stayed between 24 and 52, the honest
+#                   fm-session-start suite took 2303 s to pass, and a 600 s
+#                   limit killed two honest scripts in one full run, so the
+#                   default sits above that measurement and still ends a
+#                   wedge within the hour instead of days. Lower it only for a
+#                   selection whose scripts are known to be fast.
 #   -h, --help      print this header
+#
+# Process containment (every selection mode, serial and --jobs):
+#   Each script runs as the leader of its own process group, with stdin from
+#   /dev/null and stdout+stderr into a private capture file that the runner
+#   streams to its own stdout. The runner's stdout is therefore never inherited
+#   by a script or its descendants, so no leftover child can hold the run's
+#   output open, and the runner waits on the script alone, never on its
+#   descendants. When the script exits, or when --suite-timeout elapses, the
+#   runner sends SIGTERM to that process group by its saved group id (never by
+#   command-line pattern), then SIGKILL to whatever ignored it. A script that
+#   left processes behind is reported with an FM_TEST_STRAY_PROCESSES marker;
+#   that is not a failure by itself, but every such marker names a script whose
+#   cleanup path is broken and would have wedged the run before this
+#   containment existed. A descendant that moves itself into a new session or
+#   process group escapes the group kill; the runner still does not wait on it.
 #
 # Per-script machine-parseable markers (stdout):
 #   FM_TEST_BEGIN <iso8601> <script> family=<family> expected_gate_skip=<class>
+#   FM_TEST_TIMEOUT <iso8601> <script> limit_s=<n>            (only when killed at the limit)
+#   FM_TEST_STRAY_PROCESSES <iso8601> <script> action=killed  (only when the script left processes)
 #   FM_TEST_END <iso8601> <script> exit=<code> duration_ms=<n> gate_skip=<true|false>
 #
 # After all scripts (stdout):
 #   FM_TEST_SUMMARY total=<n> failed=<n> skipped_gate=<n> duration_ms=<n>
+#   FM_TEST_TIMED_OUT script=<path> limit_s=<n>               (one per script killed at the limit)
 #   FM_TEST_SUMMARY_FAMILY family=<name> count=<n> duration_ms=<n> failed=<n>
 #   FM_TEST_SLOWEST rank=<k> script=<path> duration_ms=<n>
 #
-# Exit status is non-zero if any selected script exits non-zero or a configured
+# Exit status is non-zero if any selected script exits non-zero, is killed at
+# the suite timeout (exit=124, counted in failed), or a configured
 # --fail-on-gate-skip token appears. Other gate skips (first meaningful line
 # matching ^skip:) remain successful and are counted as skipped_gate.
 #
@@ -88,6 +121,13 @@ EXCLUDE_FAMILIES=()
 FAIL_ON_GATE_SKIP=
 JOBS=1
 JOBS_MAX=8
+
+# Per-script wall-clock limit in seconds (header: --suite-timeout). The value
+# is validated after parsing so an env override is checked the same way as the
+# flag.
+SUITE_TIMEOUT=${FM_TEST_SUITE_TIMEOUT:-3600}
+# Seconds a killed process group gets between SIGTERM and SIGKILL.
+SUITE_KILL_GRACE=2
 
 # How many separate-runner shards the portable serial remainder splits into.
 # One owner: CI lane names carry this count and are refused when they disagree.
@@ -132,8 +172,8 @@ now_ms() {
 # unclassified so new tests are still runnable and visible in summaries.
 family_for_basename() {
   case "$1" in
-    fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
-    fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
+    fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|fm-board-truth.test.sh|\
+    fm-brief.test.sh|fm-gate.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|fm-limit-dialog.test.sh|\
@@ -146,7 +186,7 @@ family_for_basename() {
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-transition-lib.test.sh|\
-    fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
+    fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-voice.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
@@ -183,7 +223,7 @@ family_for_basename() {
       ;;
     fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
-    fm-spawn-dispatch-profile.test.sh|fm-spawn-worktree-settle.test.sh|\
+    fm-spawn-dispatch-profile.test.sh|fm-spawn-meta-write.test.sh|fm-spawn-worktree-settle.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
       ;;
@@ -700,6 +740,7 @@ lanes = []
 all_scripts = []
 failed = 0
 skipped = 0
+timed_out = 0
 total = 0
 wall_ms = 0
 for path in inputs:
@@ -717,6 +758,7 @@ for path in inputs:
     total += int(summary.get("total") or 0)
     failed += int(summary.get("failed") or 0)
     skipped += int(summary.get("skipped_gate") or 0)
+    timed_out += int(summary.get("timed_out") or 0)
     wall_ms = max(wall_ms, int(summary.get("duration_ms") or 0))
     for s in doc.get("scripts") or []:
         row = dict(s)
@@ -733,6 +775,7 @@ agg = {
         "total": total,
         "failed": failed,
         "skipped_gate": skipped,
+        "timed_out": timed_out,
         "critical_path_duration_ms": wall_ms,
     },
     "scripts": all_scripts,
@@ -740,7 +783,7 @@ agg = {
 }
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps(agg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-print(f"FM_TEST_AGGREGATE lanes={len(lanes)} total={total} failed={failed} skipped_gate={skipped} critical_path_duration_ms={wall_ms}")
+print(f"FM_TEST_AGGREGATE lanes={len(lanes)} total={total} failed={failed} skipped_gate={skipped} timed_out={timed_out} critical_path_duration_ms={wall_ms}")
 PY
 }
 
@@ -841,6 +884,15 @@ families_for_changed_path() {
     bin/fm-quota-dash.sh|bin/fm-test-run.sh|bin/fm-test-isolation-proof.sh)
       printf '%s\n' pure-contract-unit
       ;;
+    bin/fm-board-truth.sh|bin/fm-notion-index-lib.sh|bin/fm-notion-link.sh)
+      printf '%s\n' pure-contract-unit
+      ;;
+    bin/fm-voice.sh|bin/fm-voice-hotkey.swift)
+      # The daemon source is typechecked and driven through --simulate-events
+      # by the same suite as the script that binds start to its content hash,
+      # so a change here selects that suite.
+      printf '%s\n' pure-contract-unit
+      ;;
     bin/backends/herdr*|bin/fm-herdr-lab.sh|tests/herdr-test-safety.sh)
       printf '%s\n' real-herdr-gated
       printf '%s\n' backend-dispatch
@@ -937,7 +989,7 @@ families_for_changed_path() {
       printf '%s\n' real-herdr-gated
       ;;
     bin/fm-lint.sh|bin/fm-install-shellcheck.sh|\
-    bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
+    bin/fm-brief.sh|bin/fm-gate.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
     bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
@@ -1133,7 +1185,7 @@ with open(records_file, encoding="utf-8") as fh:
         line = line.rstrip("\n")
         if not line:
             continue
-        path, family, expected, exit_s, dur_s, gate = line.split("\t")
+        path, family, expected, exit_s, dur_s, gate, timed_out = line.split("\t")
         scripts.append({
             "path": path,
             "family": family,
@@ -1141,6 +1193,7 @@ with open(records_file, encoding="utf-8") as fh:
             "duration_ms": int(dur_s),
             "exit": int(exit_s),
             "gate_skip": gate == "true",
+            "timed_out": timed_out == "1",
         })
 
 families = []
@@ -1166,6 +1219,7 @@ doc = {
         "total": int(total),
         "failed": int(failed),
         "skipped_gate": int(skipped),
+        "timed_out": sum(1 for s in scripts if s["timed_out"]),
         "duration_ms": int(duration),
     },
     "scripts": scripts,
@@ -1241,6 +1295,11 @@ while [ "$#" -gt 0 ]; do
     --jobs)
       [ "$#" -gt 1 ] || die "--jobs requires a positive integer"
       JOBS=$2
+      shift 2
+      ;;
+    --suite-timeout)
+      [ "$#" -gt 1 ] || die "--suite-timeout requires a positive integer (seconds)"
+      SUITE_TIMEOUT=$2
       shift 2
       ;;
     --jobs=*)
@@ -1348,6 +1407,11 @@ esac
 [ "$JOBS" -ge 1 ] || die "--jobs must be >= 1"
 [ "$JOBS" -le "$JOBS_MAX" ] || die "--jobs is capped at $JOBS_MAX (got $JOBS)"
 
+case "$SUITE_TIMEOUT" in
+  ''|*[!0-9]*) die "--suite-timeout must be a positive integer number of seconds (got '$SUITE_TIMEOUT')" ;;
+esac
+[ "$SUITE_TIMEOUT" -ge 1 ] || die "--suite-timeout must be >= 1 second"
+
 case "${MODE:-}" in
   all)
     select_all
@@ -1436,7 +1500,53 @@ RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run.XXXXXX")
 RECORDS="$RUN_TMP/records.tsv"
 FAMILIES_TSV="$RUN_TMP/families.tsv"
 : >"$RECORDS"
-trap 'rm -rf "$RUN_TMP"' EXIT
+
+# Every live suite process group records its id in $RUN_TMP/pgid.<tag> for as
+# long as it runs, so an interrupted or killed runner still takes its suites
+# and their descendants down with it instead of leaving them to hold on to
+# whatever they inherited. The --jobs worker subshells are signalled by their
+# saved pids for the same reason: a runner killed by pid alone must not leave
+# a worker polling for a suite that is already gone until the suite limit.
+# Groups get the same SIGTERM, grace, SIGKILL sequence as on the normal path,
+# so a descendant that ignores SIGTERM cannot outlive an interrupted run
+# either. Groups and workers are addressed by saved ids only.
+# shellcheck disable=SC2329 # Registered by the EXIT trap below.
+cleanup_run() {
+  local f pgid worker waited alive
+  local -a groups=()
+  for f in "$RUN_TMP"/pgid.*; do
+    [ -f "$f" ] || continue
+    pgid=$(cat "$f" 2>/dev/null) || continue
+    case "$pgid" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    groups+=("$pgid")
+  done
+  for worker in ${WORKER_PIDS[@]+"${WORKER_PIDS[@]}"}; do
+    kill -TERM "$worker" 2>/dev/null || true
+  done
+  waited=0
+  while [ "$waited" -lt $((SUITE_KILL_GRACE * 10)) ]; do
+    alive=0
+    for pgid in ${groups[@]+"${groups[@]}"}; do
+      if kill -0 -- "-$pgid" 2>/dev/null; then
+        alive=1
+        break
+      fi
+    done
+    [ "$alive" -eq 1 ] || break
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  for pgid in ${groups[@]+"${groups[@]}"}; do
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+  done
+  rm -rf "$RUN_TMP"
+}
+trap cleanup_run EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 RUN_STARTED_ISO=$(now_iso)
 RUN_STARTED_MS=$(now_ms)
@@ -1477,8 +1587,120 @@ family_bump() {
   mv "$tmp" "$FAMILIES_TSV"
 }
 
+# Copy the bytes appended to $1 since the last call to this runner's stdout.
+# STREAM_OFF is the caller's cursor; the size is read first and the copy is
+# capped at it, so bytes written during the copy are seen by the next call and
+# never twice.
+stream_suite_output() {
+  local out=$1 size
+  size=$(($(wc -c <"$out")))
+  if [ "$size" -gt "$STREAM_OFF" ]; then
+    tail -c "+$((STREAM_OFF + 1))" "$out" | head -c "$((size - STREAM_OFF))"
+    STREAM_OFF=$size
+  fi
+}
+
+# True while any process still belongs to group $1.
+suite_group_alive() {
+  kill -0 -- "-$1" 2>/dev/null
+}
+
+# Send SIGTERM to process group $1 by id, wait SUITE_KILL_GRACE seconds for it
+# to empty, then SIGKILL whatever is left and wait once more. Returns 0 when
+# the group was still populated at entry (something outlived the script) and 1
+# when it was already empty.
+suite_group_kill() {
+  local pgid=$1 waited
+  suite_group_alive "$pgid" || return 1
+  kill -TERM -- "-$pgid" 2>/dev/null || true
+  waited=0
+  while suite_group_alive "$pgid" && [ "$waited" -lt $((SUITE_KILL_GRACE * 10)) ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if suite_group_alive "$pgid"; then
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+    waited=0
+    while suite_group_alive "$pgid" && [ "$waited" -lt 20 ]; do
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+  fi
+  return 0
+}
+
+# Run one script under the containment contract in this file's header:
+#   run_suite_bounded <script> <capture-file> <tag> <stream 0|1>
+# The script becomes the leader of a fresh process group (bash job control
+# gives a background job its own group; the toggle is scoped to the launch),
+# reads stdin from /dev/null, and writes stdout+stderr only to <capture-file>;
+# the leader subshell itself gets /dev/null for stdout, so nothing launched
+# here holds the runner's stdout at the file-descriptor level.
+# With <stream>=1 new capture bytes are copied live to the runner's stdout.
+# The runner waits for the leader's exit record or for the leader itself to be
+# gone, never for descendants, and never longer than SUITE_TIMEOUT seconds; on
+# every exit path it kills the whole group by its saved id. A leader that died
+# without leaving an exit record (killed by an operator or the kernel) is
+# reported as exit=1. Results are returned in SUITE_RC (124 when killed at the
+# limit), SUITE_TIMED_OUT, and SUITE_STRAY (1 when processes outlived the
+# script and were killed).
+run_suite_bounded() {
+  local script=$1 out=$2 tag=$3 stream=$4
+  local pgid rcfile pgidfile started
+  rcfile="$RUN_TMP/rc.$tag"
+  pgidfile="$RUN_TMP/pgid.$tag"
+  rm -f "$rcfile"
+  : >"$out"
+  STREAM_OFF=0
+  SUITE_TIMED_OUT=0
+  SUITE_STRAY=0
+
+  set +e
+  set -m
+  (
+    bash "$script" </dev/null >"$out" 2>&1
+    rc=$?
+    printf '%s\n' "$rc" >"$rcfile.partial" && mv -f "$rcfile.partial" "$rcfile"
+  ) </dev/null >/dev/null &
+  pgid=$!
+  set +m
+  printf '%s\n' "$pgid" >"$pgidfile"
+
+  started=$SECONDS
+  while :; do
+    [ "$stream" -eq 1 ] && stream_suite_output "$out"
+    [ -f "$rcfile" ] && break
+    kill -0 "$pgid" 2>/dev/null || break
+    if [ $((SECONDS - started)) -ge "$SUITE_TIMEOUT" ]; then
+      SUITE_TIMED_OUT=1
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ "$SUITE_TIMED_OUT" -eq 1 ]; then
+    suite_group_kill "$pgid" || true
+    wait "$pgid" 2>/dev/null
+    SUITE_RC=124
+  else
+    # Reap the leader first so the sweep below only ever sees what outlived it.
+    wait "$pgid" 2>/dev/null
+    SUITE_RC=$(cat "$rcfile" 2>/dev/null)
+    case "$SUITE_RC" in
+      ''|*[!0-9]*) SUITE_RC=1 ;;
+    esac
+    if suite_group_kill "$pgid"; then
+      SUITE_STRAY=1
+    fi
+  fi
+  rm -f "$pgidfile"
+  [ "$stream" -eq 1 ] && stream_suite_output "$out"
+  set -e
+  return 0
+}
+
 record_script_result() {
-  local script=$1 rc=$2 duration=$3 out=$4 end_iso=$5
+  local script=$1 rc=$2 duration=$3 out=$4 end_iso=$5 timed_out=${6:-0}
   local base family expected gate_skip fail_delta
   base=$(basename "$script")
   family=$(family_for_basename "$base")
@@ -1505,10 +1727,23 @@ record_script_result() {
     AGG_RC=1
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$script" "$family" "$expected" "$rc" "$duration" "$gate_skip" >>"$RECORDS"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$script" "$family" "$expected" "$rc" "$duration" "$gate_skip" "$timed_out" >>"$RECORDS"
   family_bump "$family" "$duration" "$fail_delta"
   TOTAL=$((TOTAL + 1))
+}
+
+# Print the containment markers for one finished script.
+print_containment_markers() {
+  local script=$1 timed_out=$2 stray=$3 end_iso=$4
+  if [ "$timed_out" -eq 1 ]; then
+    printf 'FM_TEST_TIMEOUT %s %s limit_s=%s\n' "$end_iso" "$script" "$SUITE_TIMEOUT"
+    log "suite timeout: $script exceeded ${SUITE_TIMEOUT}s and was killed with its process group; continuing"
+  fi
+  if [ "$stray" -eq 1 ]; then
+    printf 'FM_TEST_STRAY_PROCESSES %s %s action=killed\n' "$end_iso" "$script"
+    log "stray processes: $script left processes running after it exited; killed by process group"
+  fi
 }
 
 run_one_serial() {
@@ -1524,13 +1759,10 @@ run_one_serial() {
   printf 'FM_TEST_BEGIN %s %s family=%s expected_gate_skip=%s\n' \
     "$begin_iso" "$script" "$family" "$expected"
 
-  set +e
-  # Stream live output while retaining a copy for gate-skip detection.
-  # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-  bash "$script" 2>&1 | tee "$out"
-  rc=${PIPESTATUS[0]}
-  set -e
-  : "${rc:=1}"
+  # Live output is streamed from the capture file, which is also what
+  # gate-skip detection reads; the script never inherits this stdout.
+  run_suite_bounded "$script" "$out" serial 1
+  rc=$SUITE_RC
 
   end_ms=$(now_ms)
   end_iso=$(now_iso)
@@ -1538,7 +1770,8 @@ run_one_serial() {
   if [ "$duration" -lt 0 ]; then
     duration=0
   fi
-  record_script_result "$script" "$rc" "$duration" "$out" "$end_iso"
+  print_containment_markers "$script" "$SUITE_TIMED_OUT" "$SUITE_STRAY" "$end_iso"
+  record_script_result "$script" "$rc" "$duration" "$out" "$end_iso" "$SUITE_TIMED_OUT"
 }
 
 if [ "$JOBS" -eq 1 ]; then
@@ -1556,7 +1789,7 @@ else
   active_workers=0
 
   wait_one_job_worker() {
-    local slot=$1 pid idx work script rc duration mode out end_iso
+    local slot=$1 pid idx work script rc duration mode out end_iso timed_out stray
     pid=${WORKER_PIDS[$slot]}
     idx=${WORKER_IDX[$slot]}
     script=${WORKER_SCRIPTS[$slot]}
@@ -1570,12 +1803,15 @@ else
     work="$RUN_TMP/w$idx"
     rc=$(cat "$work/exit" 2>/dev/null || echo 1)
     duration=$(cat "$work/duration_ms" 2>/dev/null || echo 0)
+    timed_out=$(cat "$work/timed_out" 2>/dev/null || echo 0)
+    stray=$(cat "$work/stray" 2>/dev/null || echo 0)
     out="$work/output"
     end_iso=$(now_iso)
     # Replay captured output after the worker finishes so markers stay ordered.
     if [ -s "$out" ]; then
       cat "$out"
     fi
+    print_containment_markers "$script" "$timed_out" "$stray" "$end_iso"
     mode=$(stat -c %a "$work" 2>/dev/null || stat -f %Lp "$work" 2>/dev/null || echo unknown)
     case "$mode" in
       700|0700) ;;
@@ -1584,7 +1820,7 @@ else
         rc=1
         ;;
     esac
-    record_script_result "$script" "$rc" "$duration" "$out" "$end_iso"
+    record_script_result "$script" "$rc" "$duration" "$out" "$end_iso" "$timed_out"
   }
 
   worker_pid_is_running() {
@@ -1634,17 +1870,19 @@ else
         FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
-      bash "$script" >"$work/output" 2>&1
-      rc=$?
+      run_suite_bounded "$script" "$work/output" "w$worker_n" 0
+      rc=$SUITE_RC
       end_ms=$(now_ms)
       duration=$((end_ms - begin_ms))
       if [ "$duration" -lt 0 ]; then
         duration=0
       fi
       printf '%s\n' "$duration" >"$work/duration_ms"
+      printf '%s\n' "$SUITE_TIMED_OUT" >"$work/timed_out"
+      printf '%s\n' "$SUITE_STRAY" >"$work/stray"
       printf '%s\n' "$rc" >"$work/exit"
       exit 0
-    ) &
+    ) >/dev/null &
     WORKER_PIDS[worker_n]=$!
     WORKER_IDX[worker_n]=$worker_n
     WORKER_SCRIPTS[worker_n]=$script
@@ -1664,6 +1902,15 @@ fi
 
 printf 'FM_TEST_SUMMARY total=%s failed=%s skipped_gate=%s duration_ms=%s\n' \
   "$TOTAL" "$FAILED" "$SKIPPED_GATE" "$RUN_DURATION"
+
+# Name every script killed at the suite limit, so a run that continued past a
+# wedged script still says which one it was.
+if [ -s "$RECORDS" ]; then
+  while IFS=$'\t' read -r path _family _expected _rc _duration _gate timed_out; do
+    [ "${timed_out:-0}" = 1 ] || continue
+    printf 'FM_TEST_TIMED_OUT script=%s limit_s=%s\n' "$path" "$SUITE_TIMEOUT"
+  done <"$RECORDS"
+fi
 
 if [ -s "$FAMILIES_TSV" ]; then
   # Stable family summary order by name.

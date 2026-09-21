@@ -12,6 +12,8 @@ Pushing through it runs an AI-driven review/test/lint pipeline in an isolated wo
 A GitHub Actions check (`Require no-mistakes`) runs on PRs targeting `main` and fails if the body is missing the deterministic signature that no-mistakes writes.
 It evaluates every PR opening and body edit independently, so a later edit cannot replace an earlier pending compliance check.
 GitHub Actions and Dependabot are exempt so their automation keeps working, but regular contributor PRs without the signature will not be reviewed or merged.
+Only the pipeline writes that signature, so a hand-written body cannot satisfy the check, and a prose note explaining why the pipeline was bypassed fails it exactly like an ordinary manual PR.
+When a pipeline step stalls or is unavailable, resume or re-run the pipeline and let it raise the PR; pushing the branch to `origin` yourself produces a PR that this check can never pass.
 
 ## Workflow
 
@@ -43,6 +45,8 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   A local `config/backend` file explicitly overrides runtime auto-detection for new task endpoints and stays gitignored; spawn-supported values are `tmux` plus experimental `herdr`, `zellij`, `orca`, and `cmux`, while `codex-app` is documented only in `docs/codex-app-backend.md`.
   It does not make `data/` tracked.
 - Helper scripts in `bin/` are plain bash.
+  The one exception is `bin/fm-voice-hotkey.swift`, the macOS-only voice-input daemon: it is compiled by `bin/fm-voice.sh build` rather than executed, `shellcheck` and the Bash 3.2 sweep skip it, and the `macos-stock-bash` CI job typechecks it with `swiftc -typecheck` because no other job has a Swift toolchain.
+  `tests/fm-voice.test.sh` typechecks it too, and compiles it to drive `--simulate-events`, wherever a local `swiftc` exists; elsewhere those tests skip by name.
   Each starts with a usage header comment; keep it accurate when you change behavior.
   Test scripts and helpers in `tests/` are plain bash too.
   Every file `bin/fm-lint.sh --list-files` names must also parse under stock macOS Bash 3.2 (`/bin/bash -n <file>`), which the `macos-stock-bash` CI job enforces across that whole list.
@@ -93,7 +97,7 @@ bin/fm-test-isolation-proof.sh --jobs 4 --json /tmp/fm-isolation-proof.json   # 
 tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
 ```
 
-`bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, optional local `--jobs` for the proven-isolated set only, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
+`bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, optional local `--jobs` for the proven-isolated set only, per-script timing markers, family totals, the coverage guard, the optional JSON timing artifact, and per-script containment: every script runs in its own process group that is killed when the script ends or when its `--suite-timeout` elapses, so a script's leftover child can neither wedge the run nor outlive it.
 Its header and `--help` own the flags, family labels, lanes, and changed-file map; this section only documents the entry points.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the Phase 2 concurrent isolation proof and the exact proven candidate set; see `docs/fm-test-isolation-proof.md`.
 Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.

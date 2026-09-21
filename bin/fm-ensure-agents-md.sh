@@ -77,7 +77,7 @@ ensure_maintenance_section() {
   {
     printf '%s' "$sep"
     write_maintenance_section_with_eol "$eol"
-  } >> "$AGENTS"
+  } >> "$AGENTS" || { echo "error: cannot append ## Maintaining this file to $AGENTS" >&2; exit 1; }
   MAINT_INJECTED=1
 }
 

@@ -367,7 +367,7 @@ MD
     printf '%s\n%s\n\n' "$FACTS_OPEN" "$FACTS_CLOSE"
     printf '## Attestation\n\n'
     printf '%s\n%s\n' "$ATTEST_OPEN" "$ATTEST_CLOSE"
-  } > "$file"
+  } > "$file" || fail "cannot write the retro record $file"
 }
 
 # Accumulate one `key=value` fact line into the block body being built.

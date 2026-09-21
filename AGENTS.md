@@ -77,11 +77,13 @@ config/startup-memory-budget     primary-authoritative per-home startup-memory b
 config/herdr-presentation-spaces  optional presence flag for Herdr's default-off disposable single-task visual projection; LOCAL, gitignored; inherited by secondmate homes; see docs/herdr-backend.md "Optional presentation spaces"
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
+config/voice    optional hold-to-talk voice input; LOCAL, gitignored, not inherited; absent = inert; bin/fm-voice.sh --help owns keys and mechanics
 config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
   captain-shared.md  main-authoritative shared captain preferences propagated read-only to secondmate homes; LOCAL, gitignored, owned by secondmate-provisioning
+  notion-cards.tsv   durable card index: which Notion card each task was bound to and on which branch its work lives; append-only, written by fm-notion-link.sh, read by fm-board-truth.sh, and the record that outlives every teardown (bin/fm-notion-index-lib.sh)
   learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
   projects.md        thin fleet navigation registry recording each project's standing delivery posture; firstmate-private, parsed for mechanical sync and seeding by fm-project-mode.sh (section 6)
   secondmates.md      secondmate routing table; firstmate-private, maintained by fm-home-seed.sh (section 6)
@@ -117,6 +119,7 @@ state/               volatile runtime signals; gitignored
   x-poll.error x-poll.claim-error  generated X-mode relay and offer-claim diagnostic dedupe markers
   .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
+  (no .gate-lock here)  the full-test-gate queue hold is MACHINE-wide, not per-home, so every home of this user on the machine contends for one hold; workers take and release it themselves through `bin/fm-gate.sh` and firstmate is never in that loop (path and tunables: `FM_GATE_*` in docs/configuration.md)
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
   .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
@@ -507,7 +510,7 @@ It performs guarded fast-forward updates of firstmate and registered secondmate 
 
 These skills are not captain-invocable; load them only at their precise triggers.
 
-- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `NUDGE_SECONDMATES:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
+- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `NUDGE_SECONDMATES:`, `FMX:`, or `VOICE:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `spec-gate` - load before dispatching any ship task, to judge whether the specification gate applies and to run it, when a spec worker's draft comes back, and when a blocked specification's question must reach the captain.
 - `write-implementation-spec` - load before drafting, reviewing, or validating an implementation specification, and before marking one READY or BLOCKED.
@@ -530,6 +533,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `notion-board` - load when the captain names the board, Notion, or a sprint, on a heartbeat or post-teardown re-evaluation that finds no dispatchable local work, on any terminal wake for a task carrying `notion_page=` in its meta, and before recycling a finished card; relevant only when the captain keeps work on the Notion board.
 - `frontend-evaluator` - load when a frontend, UI, or visual task in a project with a web interface reaches a green test gate but has not landed, before relaying evaluation findings or spawning a re-evaluation round, and when deciding whether a verdict blocks landing; relevant only for projects with a runnable web interface.
 - `mui-design` - load before designing, adding, or restyling UI in a project whose frontend uses MUI, when choosing between an MUI component and a hand-written one, when starting a screen an official template may already cover, and before judging design-system conformance on such a project; relevant only where MUI is an actual dependency.
+- `security-assessment` - load before an active security check against our own deployed application, before the daily review of what landed for security defects, before writing up or grading a security finding, and before briefing security work on the voice-agent product; relevant only where the captain keeps a security domain.
 - `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.
 

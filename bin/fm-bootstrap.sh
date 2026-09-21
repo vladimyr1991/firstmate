@@ -68,6 +68,9 @@
 #          guesses at malformed or unsafe existing files, and secondmate homes
 #          await the primary-authoritative inherited value instead of creating
 #          their own.
+#          Voice input is OPTIONAL and inert unless config/voice exists; when it
+#          does, bootstrap relays bin/fm-voice.sh doctor (MISSING lines and one
+#          VOICE: summary) and never installs, builds, or starts anything.
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
@@ -514,6 +517,7 @@ secondmate_liveness_sweep() {
 install_cmd() {
   case "$1" in
     tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
+    whisper-cpp) echo "brew install whisper-cpp" ;;
     cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
     treehouse) echo "curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh" ;;
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
@@ -696,6 +700,18 @@ x_mode_remove_artifact() {
   [ -d "$parent" ] && [ ! -L "$parent" ] || return 1
   rm -f -- "$artifact" 2>/dev/null || return 1
   ! x_mode_artifact_present "$artifact"
+}
+
+# Voice input (opt-in): a hard no-op unless config/voice exists; otherwise relay
+# bin/fm-voice.sh doctor's stdout unchanged (MISSING lines plus one VOICE:
+# summary). Detect-only by construction: it never installs, downloads, builds,
+# or starts anything, so it runs on the read-only path too. The script owns
+# every line format and reason (bin/fm-voice.sh header).
+voice_setup() {
+  [ -f "$CONFIG/voice" ] || return 0
+  FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_CONFIG_OVERRIDE="$CONFIG" \
+    FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-voice.sh" doctor 2>/dev/null || true
+  return 0
 }
 
 # X mode (opt-in): when this home's .env carries a non-empty FMX_PAIRING_TOKEN,
@@ -996,6 +1012,7 @@ secondmate_harness_drift_check() {
   return 0
 }
 secondmate_harness_drift_check
+voice_setup
 if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
   && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
   echo "BOOTSTRAP_INFO: tasks-axi available"

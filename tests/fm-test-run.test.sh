@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Contract tests for bin/fm-test-run.sh - the single owner of behavior suite
 # selection, portable lane composition, proven-isolated --jobs, timing markers,
-# JSON artifacts, coverage guard, and aggregate exit status.
+# JSON artifacts, coverage guard, aggregate exit status, and per-suite
+# containment (process-group cleanup and the suite timeout).
 #
 # These tests intentionally exercise the runner with fixtures, --list, and
 # focused scheduler checks, not the complete Firstmate suite.
@@ -225,7 +226,7 @@ test_empty_selection_emits_summary() {
   python3 -c '
 import json, sys
 doc = json.load(open(sys.argv[1]))
-assert doc["summary"] == {"duration_ms": 0, "failed": 0, "skipped_gate": 0, "total": 0}
+assert doc["summary"] == {"duration_ms": 0, "failed": 0, "skipped_gate": 0, "timed_out": 0, "total": 0}
 assert doc["scripts"] == []
 assert doc["families"] == []
 ' "$json" || { rm -rf "$tmp"; fail "empty selection JSON summary is wrong"; }
@@ -699,6 +700,391 @@ assert len(doc["scripts"])==3
   pass "aggregate-json merges lane timing artifacts"
 }
 
+# Wait up to $2 tenths of a second for pid $1 to disappear; 0 when it did.
+wait_pid_gone() {
+  local pid=$1 budget=$2 waited=0
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$budget" ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  ! kill -0 "$pid" 2>/dev/null
+}
+
+# Kill by saved pid only (never by command-line pattern); used on failure paths
+# so a broken runner cannot leave this test's own sleepers behind.
+kill_saved_pid() {
+  local file=$1 pid
+  pid=$(cat "$file" 2>/dev/null) || return 0
+  case "$pid" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+# Wait up to $2 tenths of a second for every named evidence file to be
+# non-empty; 0 when they all appeared.
+wait_evidence() {
+  local budget=$1 waited=0 f all
+  shift
+  while [ "$waited" -lt "$budget" ]; do
+    all=1
+    for f in "$@"; do
+      [ -s "$f" ] || { all=0; break; }
+    done
+    [ "$all" -eq 1 ] && return 0
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+# The failure that cost the fleet four days: a suite backgrounds a long-lived
+# child that inherits the suite's stdout, then exits without killing it. A
+# runner that hands its own output pipe to the suite never sees end of stream
+# and waits for that child - here a 300 s sleeper, so a regression turns this
+# test into a five-minute hang and then a failed assertion, never a pass.
+test_orphaned_child_holding_stdout_cannot_wedge_the_run() {
+  local tmp fixture out rc pid started elapsed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-orphan.XXXXXX")
+  fixture="$tmp/orphan.test.sh"
+  out="$tmp/out"
+  cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+# Deliberately orphaned: inherits stdout, outlives the suite, is never killed here.
+sleep 300 &
+printf '%s\n' "$!" >"$ORPHAN_EVIDENCE/orphan-pid"
+echo "ok - suite exits while its child keeps stdout open"
+exit 0
+SH
+  chmod +x "$fixture"
+  started=$SECONDS
+  set +e
+  ORPHAN_EVIDENCE="$tmp" "$RUNNER" "$fixture" >"$out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+  pid=$(cat "$tmp/orphan-pid" 2>/dev/null || true)
+  [ -n "$pid" ] || { rm -rf "$tmp"; fail "orphan fixture did not record its child's pid"; }
+  [ "$elapsed" -lt 60 ] || { kill_saved_pid "$tmp/orphan-pid"; rm -rf "$tmp"; fail "runner waited ${elapsed}s on a suite whose orphaned child held stdout"; }
+  [ "$rc" -eq 0 ] || { kill_saved_pid "$tmp/orphan-pid"; cat "$out" "$tmp/err"; rm -rf "$tmp"; fail "a green suite with a stray child must still be reported green, got exit $rc"; }
+  grep -Eq "^FM_TEST_STRAY_PROCESSES [^ ]+ $fixture action=killed$" "$out" \
+    || { kill_saved_pid "$tmp/orphan-pid"; cat "$out"; rm -rf "$tmp"; fail "runner did not name the suite that left a process behind"; }
+  grep -Eq '^FM_TEST_END .+ exit=0 duration_ms=[0-9]+ gate_skip=false$' "$out" \
+    || { kill_saved_pid "$tmp/orphan-pid"; rm -rf "$tmp"; fail "END marker missing for the orphan fixture: $(grep '^FM_TEST_END' "$out")"; }
+  grep -Fq 'ok - suite exits while its child keeps stdout open' "$out" \
+    || { kill_saved_pid "$tmp/orphan-pid"; rm -rf "$tmp"; fail "suite output was not streamed to the runner's stdout"; }
+  wait_pid_gone "$pid" 30 \
+    || { kill_saved_pid "$tmp/orphan-pid"; rm -rf "$tmp"; fail "orphaned child $pid survived the end of its suite"; }
+  rm -rf "$tmp"
+  pass "an orphaned child holding stdout neither wedges the run nor outlives its suite"
+}
+
+# The insurance for the class: a suite that never finishes, with a grandchild
+# of its own, is killed at --suite-timeout together with that grandchild, is
+# named in the report, and the run continues with the next suite.
+test_suite_timeout_kills_the_group_names_the_suite_and_continues() {
+  local tmp hang ok out json rc pid started elapsed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-timeout.XXXXXX")
+  hang="$tmp/hang.test.sh"
+  ok="$tmp/after.test.sh"
+  out="$tmp/out"
+  json="$tmp/timing.json"
+  cat >"$hang" <<'SH'
+#!/usr/bin/env bash
+sleep 300 &
+printf '%s\n' "$!" >"$HANG_EVIDENCE/grandchild-pid"
+echo "hang fixture started"
+sleep 300
+echo "ok - never reached"
+SH
+  cat >"$ok" <<'SH'
+#!/usr/bin/env bash
+echo "ok - ran after the timed-out suite"
+SH
+  chmod +x "$hang" "$ok"
+  started=$SECONDS
+  set +e
+  HANG_EVIDENCE="$tmp" "$RUNNER" --suite-timeout 2 --json "$json" "$hang" "$ok" >"$out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+  pid=$(cat "$tmp/grandchild-pid" 2>/dev/null || true)
+  [ -n "$pid" ] || { rm -rf "$tmp"; fail "hang fixture did not record its grandchild's pid"; }
+  [ "$elapsed" -lt 60 ] || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "runner took ${elapsed}s with a 2 s suite timeout"; }
+  [ "$rc" -ne 0 ] || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "a timed-out suite must fail the run"; }
+  grep -Eq "^FM_TEST_TIMEOUT [^ ]+ $hang limit_s=2$" "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out" "$tmp/err"; rm -rf "$tmp"; fail "FM_TEST_TIMEOUT marker missing or unnamed"; }
+  grep -Eq "^FM_TEST_END [^ ]+ $hang exit=124 duration_ms=[0-9]+ gate_skip=false$" "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "timed-out suite must end with exit=124: $(grep '^FM_TEST_END' "$out")"; }
+  grep -Fq 'hang fixture started' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "output written before the timeout was lost"; }
+  grep -Fq 'ok - ran after the timed-out suite' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "run did not continue with the next suite after a timeout"; }
+  grep -q '^FM_TEST_SUMMARY total=2 failed=1 skipped_gate=0 ' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "summary must count the timed-out suite as failed: $(grep '^FM_TEST_SUMMARY ' "$out")"; }
+  grep -Fxq "FM_TEST_TIMED_OUT script=$hang limit_s=2" "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "report does not name the timed-out suite after the summary"; }
+  python3 -c '
+import json,sys
+doc=json.load(open(sys.argv[1]))
+assert doc["summary"]["timed_out"]==1, doc["summary"]
+assert doc["summary"]["failed"]==1, doc["summary"]
+rows={s["path"]:s for s in doc["scripts"]}
+assert rows[sys.argv[2]]["timed_out"] is True and rows[sys.argv[2]]["exit"]==124, rows
+assert rows[sys.argv[3]]["timed_out"] is False, rows
+' "$json" "$hang" "$ok" || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "timing JSON does not carry the timeout"; }
+  wait_pid_gone "$pid" 30 \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "grandchild $pid of the timed-out suite survived the group kill"; }
+  rm -rf "$tmp"
+  pass "a suite past --suite-timeout is killed with its descendants, named, and the run continues"
+}
+
+# The --jobs path runs suites in worker subshells with its own capture files;
+# the same limit and group kill must hold there, with the env form of the limit.
+test_jobs_worker_honours_suite_timeout() {
+  local tmp repo runner fake_bin a b out rc pid started elapsed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-timeout.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fake_bin="$tmp/fake-bin"
+  a=tests/fm-brief.test.sh
+  b=tests/fm-composer-lib.test.sh
+  mkdir -p "$repo/bin" "$repo/tests" "$fake_bin"
+  cp "$RUNNER" "$runner"
+  cat >"$fake_bin/stat" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
+  printf '700\n'
+  exit 0
+fi
+if [ "$1" = "-f" ] && [ "$2" = "%Lp" ]; then
+  printf '700\n'
+  exit 0
+fi
+exit 1
+SH
+  cat >"$repo/$a" <<'SH'
+#!/usr/bin/env bash
+sleep 300 &
+printf '%s\n' "$!" >"$JOBS_EVIDENCE/grandchild-pid"
+sleep 300
+echo "ok - never reached"
+SH
+  cat >"$repo/$b" <<'SH'
+#!/usr/bin/env bash
+echo "ok - fast fixture"
+SH
+  chmod +x "$runner" "$repo/$a" "$repo/$b" "$fake_bin/stat"
+  started=$SECONDS
+  set +e
+  PATH="$fake_bin:$PATH" JOBS_EVIDENCE="$tmp" FM_TEST_SUITE_TIMEOUT=2 \
+    "$runner" --jobs 2 "$a" "$b" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+  out="$tmp/out"
+  pid=$(cat "$tmp/grandchild-pid" 2>/dev/null || true)
+  [ -n "$pid" ] || { cat "$out" "$tmp/err"; rm -rf "$tmp"; fail "jobs hang fixture did not record its grandchild's pid"; }
+  [ "$elapsed" -lt 60 ] || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "jobs runner took ${elapsed}s with a 2 s suite timeout"; }
+  [ "$rc" -ne 0 ] || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "a timed-out suite under --jobs must fail the run"; }
+  grep -Eq "^FM_TEST_TIMEOUT [^ ]+ $a limit_s=2$" "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out" "$tmp/err"; rm -rf "$tmp"; fail "FM_TEST_TIMEOUT marker missing under --jobs"; }
+  grep -Eq "^FM_TEST_END [^ ]+ $a exit=124 " "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "timed-out suite under --jobs must end with exit=124"; }
+  grep -q '^FM_TEST_SUMMARY total=2 failed=1 ' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "jobs summary wrong: $(grep '^FM_TEST_SUMMARY ' "$out")"; }
+  grep -Fxq "FM_TEST_TIMED_OUT script=$a limit_s=2" "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "jobs report does not name the timed-out suite"; }
+  wait_pid_gone "$pid" 30 \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "grandchild $pid survived the --jobs group kill"; }
+  rm -rf "$tmp"
+  pass "--jobs workers kill a suite past FM_TEST_SUITE_TIMEOUT with its descendants and name it"
+}
+
+# The leader of a suite's group can die without an exit record: an operator
+# kills that pid to unstick a run, or the kernel does. The runner must notice
+# at once instead of polling until the limit, report the suite as exit=1 (not
+# 124, and with no timeout marker), still sweep what the leader left behind,
+# and continue. A 30 s limit turns a regression into a run that lasts the whole
+# limit and ends in exit=124, so the assertions below cannot pass by accident.
+test_dead_leader_is_reported_at_once_and_its_group_is_swept() {
+  local tmp fixture next out rc runner leader pid started elapsed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-leader.XXXXXX")
+  fixture="$tmp/leader.test.sh"
+  next="$tmp/next.test.sh"
+  out="$tmp/out"
+  cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+sleep 300 &
+printf '%s\n' "$!" >"$LEADER_EVIDENCE/grandchild-pid"
+# $PPID is the subshell the runner made the leader of this suite's group.
+printf '%s\n' "$PPID" >"$LEADER_EVIDENCE/leader-pid"
+sleep 300
+echo "ok - never reached"
+SH
+  cat >"$next" <<'SH'
+#!/usr/bin/env bash
+echo "ok - next suite ran"
+SH
+  chmod +x "$fixture" "$next"
+  LEADER_EVIDENCE="$tmp" "$RUNNER" --suite-timeout 30 "$fixture" "$next" >"$out" 2>"$tmp/err" &
+  runner=$!
+  printf '%s\n' "$runner" >"$tmp/runner-pid"
+  wait_evidence 100 "$tmp/leader-pid" "$tmp/grandchild-pid" \
+    || { kill_saved_pid "$tmp/runner-pid"; kill_saved_pid "$tmp/grandchild-pid"; cat "$tmp/err"; rm -rf "$tmp"; fail "leader fixture did not record its leader and grandchild pids"; }
+  leader=$(cat "$tmp/leader-pid")
+  pid=$(cat "$tmp/grandchild-pid")
+  started=$SECONDS
+  kill -TERM "$leader" 2>/dev/null \
+    || { kill_saved_pid "$tmp/runner-pid"; kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "could not signal the suite's group leader $leader"; }
+  set +e
+  wait "$runner"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+  [ "$elapsed" -lt 15 ] || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "runner waited ${elapsed}s on a suite whose leader was already dead"; }
+  [ "$rc" -ne 0 ] || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "a suite whose leader died must fail the run"; }
+  grep -Eq "^FM_TEST_END [^ ]+ $fixture exit=1 " "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out" "$tmp/err"; rm -rf "$tmp"; fail "a dead leader must map to exit=1: $(grep '^FM_TEST_END' "$out")"; }
+  ! grep -q '^FM_TEST_TIMEOUT ' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out"; rm -rf "$tmp"; fail "a dead leader must not be reported as a timeout"; }
+  grep -Eq "^FM_TEST_STRAY_PROCESSES [^ ]+ $fixture action=killed$" "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out"; rm -rf "$tmp"; fail "the sweep did not report what the dead leader left behind"; }
+  grep -Fxq 'ok - next suite ran' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; cat "$out"; rm -rf "$tmp"; fail "run did not continue after the dead leader"; }
+  grep -q '^FM_TEST_SUMMARY total=2 failed=1 ' "$out" \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "summary wrong after a dead leader: $(grep '^FM_TEST_SUMMARY ' "$out")"; }
+  wait_pid_gone "$pid" 30 \
+    || { kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "grandchild $pid survived the sweep after its leader died"; }
+  rm -rf "$tmp"
+  pass "a suite whose group leader dies is reported at once as exit=1, swept, and the run continues"
+}
+
+# A runner killed by its pid alone (a queue abort, not Ctrl-C) exits through
+# its EXIT trap while its --jobs workers keep running. Those workers share the
+# runner's stdout, so anything reading that stream (the queue's tee) would see
+# no end of stream until the suite limit unless the trap takes the workers
+# down by their saved pids. The 30 s limit and 10 s budget make a regression
+# fail here rather than pass slowly.
+test_interrupted_jobs_runner_releases_its_stdout_and_kills_its_suites() {
+  local tmp repo runner fake_bin a b consumer started elapsed pid_a pid_b
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-abort.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fake_bin="$tmp/fake-bin"
+  a=tests/fm-brief.test.sh
+  b=tests/fm-composer-lib.test.sh
+  mkdir -p "$repo/bin" "$repo/tests" "$fake_bin"
+  cp "$RUNNER" "$runner"
+  cat >"$fake_bin/stat" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
+  printf '700\n'
+  exit 0
+fi
+if [ "$1" = "-f" ] && [ "$2" = "%Lp" ]; then
+  printf '700\n'
+  exit 0
+fi
+exit 1
+SH
+  cat >"$repo/$a" <<'SH'
+#!/usr/bin/env bash
+sleep 300 &
+printf '%s\n' "$!" >"$ABORT_EVIDENCE/grandchild-pid-a"
+sleep 300
+SH
+  cat >"$repo/$b" <<'SH'
+#!/usr/bin/env bash
+sleep 300 &
+printf '%s\n' "$!" >"$ABORT_EVIDENCE/grandchild-pid-b"
+sleep 300
+SH
+  chmod +x "$runner" "$repo/$a" "$repo/$b" "$fake_bin/stat"
+  # The runner's stdout is a pipe read by a consumer, as under the queue; the
+  # runner records its own pid before exec so the test can kill it by that pid.
+  PATH="$fake_bin:$PATH" ABORT_EVIDENCE="$tmp" FM_TEST_SUITE_TIMEOUT=30 \
+    bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' bash "$tmp/runner-pid" \
+      "$runner" --jobs 2 "$a" "$b" 2>"$tmp/err" | cat >"$tmp/out" &
+  consumer=$!
+  wait_evidence 100 "$tmp/runner-pid" "$tmp/grandchild-pid-a" "$tmp/grandchild-pid-b" \
+    || { kill_saved_pid "$tmp/runner-pid"; kill_saved_pid "$tmp/grandchild-pid-a"; kill_saved_pid "$tmp/grandchild-pid-b"; cat "$tmp/err"; rm -rf "$tmp"; fail "jobs abort fixtures did not record their pids"; }
+  pid_a=$(cat "$tmp/grandchild-pid-a")
+  pid_b=$(cat "$tmp/grandchild-pid-b")
+  started=$SECONDS
+  kill -TERM "$(cat "$tmp/runner-pid")" 2>/dev/null \
+    || { kill_saved_pid "$tmp/grandchild-pid-a"; kill_saved_pid "$tmp/grandchild-pid-b"; rm -rf "$tmp"; fail "could not signal the runner by its saved pid"; }
+  wait_pid_gone "$consumer" 100 \
+    || { elapsed=$((SECONDS - started)); kill_saved_pid "$tmp/grandchild-pid-a"; kill_saved_pid "$tmp/grandchild-pid-b"; rm -rf "$tmp"; fail "the runner's stdout was still held open ${elapsed}s after the runner was killed"; }
+  wait_pid_gone "$pid_a" 30 \
+    || { kill_saved_pid "$tmp/grandchild-pid-a"; kill_saved_pid "$tmp/grandchild-pid-b"; rm -rf "$tmp"; fail "grandchild $pid_a survived the interrupted --jobs runner"; }
+  wait_pid_gone "$pid_b" 30 \
+    || { kill_saved_pid "$tmp/grandchild-pid-b"; rm -rf "$tmp"; fail "grandchild $pid_b survived the interrupted --jobs runner"; }
+  rm -rf "$tmp"
+  pass "a --jobs runner killed by pid releases its stdout at once and takes its suites down"
+}
+
+# The interrupt path must end a suite as completely as the normal path does: a
+# descendant that ignores SIGTERM has to die to the SIGKILL that follows the
+# grace period, or an aborted run would leave it behind. A regression here
+# leaves a 300 s sleeper alive past the budget and fails the test, never passes.
+test_interrupted_runner_kills_descendants_that_ignore_term() {
+  local tmp fixture out runner script_pid pid
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-sigkill.XXXXXX")
+  fixture="$tmp/ignores-term.test.sh"
+  out="$tmp/out"
+  cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+trap '' TERM
+# Started with SIGTERM ignored, so the child inherits that disposition.
+sleep 300 &
+printf '%s\n' "$!" >"$IGNORE_EVIDENCE/grandchild-pid"
+printf '%s\n' "$$" >"$IGNORE_EVIDENCE/script-pid"
+sleep 300
+echo "ok - never reached"
+SH
+  chmod +x "$fixture"
+  IGNORE_EVIDENCE="$tmp" "$RUNNER" --suite-timeout 30 "$fixture" >"$out" 2>"$tmp/err" &
+  runner=$!
+  printf '%s\n' "$runner" >"$tmp/runner-pid"
+  wait_evidence 100 "$tmp/script-pid" "$tmp/grandchild-pid" \
+    || { kill_saved_pid "$tmp/runner-pid"; kill_saved_pid "$tmp/script-pid"; kill_saved_pid "$tmp/grandchild-pid"; cat "$tmp/err"; rm -rf "$tmp"; fail "TERM-ignoring fixture did not record its pids"; }
+  script_pid=$(cat "$tmp/script-pid")
+  pid=$(cat "$tmp/grandchild-pid")
+  kill -TERM "$runner" 2>/dev/null \
+    || { kill_saved_pid "$tmp/script-pid"; kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "could not signal the runner by its saved pid"; }
+  set +e
+  wait "$runner"
+  set -e
+  wait_pid_gone "$pid" 60 \
+    || { kill_saved_pid "$tmp/script-pid"; kill_saved_pid "$tmp/grandchild-pid"; rm -rf "$tmp"; fail "grandchild $pid ignoring SIGTERM survived the interrupted run"; }
+  wait_pid_gone "$script_pid" 60 \
+    || { kill_saved_pid "$tmp/script-pid"; rm -rf "$tmp"; fail "suite $script_pid ignoring SIGTERM survived the interrupted run"; }
+  rm -rf "$tmp"
+  pass "an interrupted runner kills suite descendants that ignore SIGTERM"
+}
+
+test_suite_timeout_validation() {
+  local tmp rc v
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-timeout-arg.XXXXXX")
+  for v in 0 abc ''; do
+    set +e
+    "$RUNNER" --suite-timeout "$v" --list --all >"$tmp/out" 2>"$tmp/err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "--suite-timeout '$v' must be refused with exit 2, got $rc"; }
+    grep -q -- '--suite-timeout must be' "$tmp/err" \
+      || { rm -rf "$tmp"; fail "--suite-timeout '$v' refusal message missing: $(cat "$tmp/err")"; }
+  done
+  set +e
+  FM_TEST_SUITE_TIMEOUT=-5 "$RUNNER" --list --all >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "FM_TEST_SUITE_TIMEOUT=-5 must be refused with exit 2, got $rc"; }
+  rm -rf "$tmp"
+  pass "--suite-timeout and FM_TEST_SUITE_TIMEOUT refuse non-positive or non-numeric limits"
+}
+
 test_list_all_exact_suite_coverage
 test_family_selection
 test_single_script_selection
@@ -717,3 +1103,10 @@ test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
 test_aggregate_json
+test_orphaned_child_holding_stdout_cannot_wedge_the_run
+test_suite_timeout_kills_the_group_names_the_suite_and_continues
+test_jobs_worker_honours_suite_timeout
+test_dead_leader_is_reported_at_once_and_its_group_is_swept
+test_interrupted_jobs_runner_releases_its_stdout_and_kills_its_suites
+test_interrupted_runner_kills_descendants_that_ignore_term
+test_suite_timeout_validation
