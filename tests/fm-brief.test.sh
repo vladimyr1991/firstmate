@@ -1249,6 +1249,13 @@ test_gate_queue_contract_reaches_ship_and_scout() {
       "$id ($kind): the end-of-wait rule lost its unconditional framing"
     assert_grep "Whenever a wait of yours ends, for any reason at all" "$brief" \
       "$id ($kind): the end-of-wait rule narrowed to enumerated endings"
+    # The orphan park's own instruction reaches only the wrapper's stderr, which
+    # after a harness timeout is the tool call that was just killed; the brief
+    # is where the worker reads what that status means.
+    assert_grep "A status reading \`parked: run-orphaned-after-signal\` is an instruction, not a state to wait out" "$brief" \
+      "$id ($kind): the end-of-wait rule does not name the orphan park as an instruction"
+    assert_grep "stop your orphaned run, then \`'$ROOT/bin/fm-gate.sh' release $id\`; never re-run the gate beside it" "$brief" \
+      "$id ($kind): the orphan park recovery does not say stop, release, never re-run"
 
     # The pause enumeration in rule 4 must not contradict this contract: naming a
     # gate the worker "started" as a legitimate idle reads as permission to end

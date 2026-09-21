@@ -485,6 +485,7 @@ Inside the command the gate starts in the same breath as the line, so the queue 
 **The end of a wait, in any form whatsoever, is a reason to read the ground again and never a reason to wait again.**
 Read that as unconditional, because it deliberately names no shapes: while a rule enumerates the ways a wait can end - returned empty, cut off, reported killed - the one shape nobody listed walks straight past it, and that is why seven spoken warnings in a single day changed nothing.
 Whenever a wait of yours ends, for any reason at all, check \`$GATE_CMD status\` and check whether your own run is actually alive before you do anything else, including before waiting again.
+A status reading \`parked: run-orphaned-after-signal\` is an instruction, not a state to wait out: your gate outlived the wrapper that was killed around it, so stop your orphaned run, then \`$GATE_CMD release $ID\`; never re-run the gate beside it.
 EOF
 GATE_SECTION=${GATE_SECTION%$'\n'}
 
