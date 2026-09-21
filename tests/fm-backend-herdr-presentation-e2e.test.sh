@@ -380,10 +380,27 @@ make_project() {  # <dir>
   git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
 }
 
+# Treehouse hands a pool slot out again as soon as no process has its cwd
+# inside it, and the lab's session stop/provision cycles kill every pane
+# process, as does the 120s spawn command expiring. A task record whose slot
+# was re-issued to a later spawn is exactly the shape fm-teardown.sh now
+# refuses, so each spawned task keeps a holder process parked in its worktree
+# until the worktree is returned (teardown and cleanup both `return --force`,
+# which terminates it) or the test root is gone. The holder is double-forked so
+# it is never a job of this shell.
+hold_task_worktree() {  # <id> <home>
+  local wt
+  wt=$(grep '^worktree=' "$2/state/$1.meta" 2>/dev/null | cut -d= -f2-)
+  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  ( ( cd "$wt" && while [ -d "$TMP_ROOT" ]; do sleep 1; done ) >/dev/null 2>&1 & )
+}
+
 spawn_task() {  # <id> <home> <project>
   local id=$1 home=$2 project=$3
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr
+    "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr \
+    || return $?
+  hold_task_worktree "$id" "$home"
 }
 
 spawn_secondmate_task() {
