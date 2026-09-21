@@ -126,6 +126,27 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# Ship and scout briefs fold in the project's known-breakage record when one
+# exists: data/known-breakage/<repo>.md under the resolved data directory (the
+# same FM_HOME / FM_DATA_OVERRIDE resolution the brief path uses). Firstmate
+# writes that file by hand under inspect-then-update, exactly like
+# data/learnings.md; no script writes it. Convention for the writer, not enforced
+# by the reader: one "## <YYYY-MM-DD> <short title>" heading per entry followed by
+# the symptom, the evidence (run id or URL), and the instruction for the worker;
+# delete an entry when the breakage is fixed and the file when no entry remains.
+# When present, the body is emitted verbatim under a
+# "# Known breakage on <repo>'s side - not yours to investigate" heading placed
+# between the Herdr declaration and "# Setup", after a fixed instruction telling
+# the worker to stop with its mode's blocked line citing the entry rather than
+# investigate, to read the previous run's conclusion once before pushing when an
+# entry names a landing failure, and to name the failed run and step for any
+# stand-side failure no entry covers. Absent, the brief is byte-identical to a
+# scaffold with no record. An existing but empty (whitespace-only) record refuses
+# with exit 1 ("exists but is empty"), a record containing the literal {TASK}
+# refuses with exit 1 because the later placeholder replacement would corrupt it,
+# and a repo name that is not a single path component (empty, ".", "..", or
+# containing "/") skips the lookup with a stderr warning and scaffolds as usual.
+# Secondmate charters perform no lookup.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -423,6 +444,43 @@ fi
 
 REPO=${POS[1]}
 
+# Known-breakage record: data/known-breakage/<repo>.md, written by firstmate by
+# hand under inspect-then-update (the data/learnings.md contract) and read only
+# here. The bytes are copied verbatim through a variable, never inlined into a
+# heredoc, so a body containing a bare EOF line, backticks, or $(...) is emitted
+# literally and nothing in it is executed. When present the section carries its
+# own leading blank line so an absent record leaves the brief byte-identical.
+KNOWN_BREAKAGE_SECTION=""
+case "$REPO" in
+  ""|.|..|*/*)
+    echo "warning: known-breakage lookup skipped: repo name '$REPO' is not a single path component" >&2
+    ;;
+  *)
+    KNOWN_BREAKAGE_FILE="$DATA/known-breakage/$REPO.md"
+    if [ -e "$KNOWN_BREAKAGE_FILE" ]; then
+      KNOWN_BREAKAGE_BODY=$(cat -- "$KNOWN_BREAKAGE_FILE")
+      if [ -z "$(printf '%s' "$KNOWN_BREAKAGE_BODY" | tr -d '[:space:]')" ]; then
+        echo "error: $KNOWN_BREAKAGE_FILE exists but is empty; delete it or record the breakage" >&2
+        exit 1
+      fi
+      if printf '%s' "$KNOWN_BREAKAGE_BODY" | grep -qF -- '{TASK}'; then
+        echo "error: $KNOWN_BREAKAGE_FILE contains the literal {TASK}, which firstmate's placeholder replacement would corrupt; reword it" >&2
+        exit 1
+      fi
+      IFS= read -r -d '' KNOWN_BREAKAGE_SECTION <<EOF || true
+
+# Known breakage on $REPO's side - not yours to investigate
+Firstmate already knows the following about this project's stand, CI, or forge; it was proven not to be any worker's own doing.
+If a failure you hit matches an entry below, do not investigate it: append the blocked line your Definition of done prescribes for that failure, citing the entry's date and title, and stop.
+If an entry names a failure at landing, read the conclusion of the previous run on your target branch with one \`gh-axi run list\` call before you push; if it failed at the step the entry names, do not push - append that same blocked line naming the previous run and stop.
+If the stand fails in a way no entry covers, your blocked line must name the failed run and the failed step, so firstmate can record it here for the next worker.
+
+EOF
+      KNOWN_BREAKAGE_SECTION="$KNOWN_BREAKAGE_SECTION$KNOWN_BREAKAGE_BODY"
+    fi
+    ;;
+esac
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -509,7 +567,7 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
-$HERDR_SECTION
+$HERDR_SECTION$KNOWN_BREAKAGE_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
@@ -699,7 +757,7 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
-$HERDR_SECTION
+$HERDR_SECTION$KNOWN_BREAKAGE_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.

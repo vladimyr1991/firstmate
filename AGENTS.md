@@ -85,6 +85,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   captain-shared.md  main-authoritative shared captain preferences propagated read-only to secondmate homes; LOCAL, gitignored, owned by secondmate-provisioning
   notion-cards.tsv   durable card index: which Notion card each task was bound to and on which branch its work lives; append-only, written by fm-notion-link.sh, read by fm-board-truth.sh, and the record that outlives every teardown (bin/fm-notion-index-lib.sh)
   learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
+  known-breakage/<repo>.md  per-project record of a breakage on the project's own side (stand, CI, forge) that a worker proved not self-inflicted; LOCAL, gitignored; hand-written by firstmate under inspect-then-update, folded verbatim into every later ship and scout brief for that repo by bin/fm-brief.sh, and deleted when the breakage is fixed
   projects.md        thin fleet navigation registry recording each project's standing delivery posture; firstmate-private, parsed for mechanical sync and seeding by fm-project-mode.sh (section 6)
   secondmates.md      secondmate routing table; firstmate-private, maintained by fm-home-seed.sh (section 6)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
@@ -492,6 +493,8 @@ Keep additions task-specific rather than repeating lifecycle instructions, and a
 
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
+A breakage on a project's own side that a worker proves not self-inflicted is recorded once in `data/known-breakage/<repo>.md`, and `bin/fm-brief.sh` folds it into every later brief for that project so the next worker stops and cites it instead of investigating.
+Delete the entry, or the file when none remains, as soon as the breakage is fixed.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
 The generated Herdr contract must use a named non-`default` isolated lab and its guarded helper for every lifecycle action.
 
