@@ -72,7 +72,8 @@ The column list is deliberately narrower than the one that report's specificatio
 It carries card identity and nothing more: `url` is the row identity, `Name` is what lets a report name the card it is about, and `Status`, `Stream`, and `Sprint` are the whole of what the two derived sets are predicated on.
 A title arriving as a row of this read is identity, which the PM may use to name a card in a report and for nothing else; the Boundaries rule that gives a card's title and description the weight of a captain instruction governs the card content the PM acts on, which reaches it only through the `fetch` below.
 What the narrowing leaves out is card BODY text, `Description` above all, because the read-proof needs rows rather than bodies and selecting prose with no `WHERE` clause would pull every stream's card text, `Финансы` and `Лигал` included, into the PM's turn carrying the weight the Boundaries section gives the captain's writing, for cards this role has no business reading at all.
-A card's body reaches the PM one card at a time through a free `fetch`, never in bulk from this read, and the only body it may take in to act on is that of a card the eligible set holds or a rework candidate the reconciliation table produced, fetched with `include_discussions` before the dispatchability test judges that card.
+A card's body reaches the PM one card at a time through a free `fetch`, never in bulk from this read, and the only body it may take in to act on is that of a card the eligible set holds or a rework candidate the reconciliation table produced.
+An eligible `Новая` card's body is fetched without discussions, as before; only a rework candidate is fetched with `include_discussions`, before the dispatchability test judges that card.
 What this narrows is bulk ingestion, never a single targeted `fetch` the rest of this file already calls for, such as the status-sync re-read of an active card before writing to it.
 A `fetch` render can lag, so a `fetch` is never the proof that the board was read this cycle: the witnessed read alone carries that proof.
 
@@ -331,8 +332,8 @@ The script's `truth=` verdict is a fact about the work; this table is the only o
 | `in-flight` with a live linked task | `В работе` | nothing, the card is right |
 | `in-flight` with no live task | any | leave it; report as abandoned or failed work for firstmate to decide |
 | `not-started`, no live task, no open decision holder for the card | `В работе` | set `Новая` |
-| `not-started`, or `landed-on-stand` where the part the card names but the branch did not deliver is the rework ask; no live linked task; no open decision holder naming the card | a rework status | leave it; it is a rework candidate for intake |
-| any, with an open decision holder naming the card | a rework status | nothing; report it as waiting on the captain |
+| `not-started`, or `landed-on-stand` where the card names more than the branch delivered, the rework ask included; no live linked task; no open decision holder naming the card | a rework status | leave it; it is a rework candidate for intake |
+| `not-started`, or `landed-on-stand` where the card names more than the branch delivered; an open decision holder naming the card | a rework status | nothing; report it as waiting on the captain |
 | `not-started` | `На ревью` | nothing when a decision holder for the card is open in `data/backlog.md`; otherwise report |
 | `unresolved` | any | leave it; report what could not be established |
 
@@ -403,6 +404,8 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
    This one call is the cycle's whole board read: every step below works from its rows, and nothing here reads the board a second time.
    Whether the cycle came back witnessed, in the sense the witnessed-read section defines, decides whether anything in it may be believed: an unwitnessed cycle is CHECK FAILED, reported on both surfaces, and stops here with no dispatch and no divergence claim.
    Cards already taken carry a `notion_page=` link in the backlog (`bin/fm-notion-link.sh` owns that link), so drop them from the eligible set those rows produce or the same card is picked up again every hour.
+   That bare-presence rule applies to `Новая` cards only.
+   A rework candidate carries its earlier task's `notion_page=` by construction, and that link does not drop it from intake when the linked task is no longer live; only a live linked task, one the brief's `linked_cards` line names, dedupes a rework candidate.
    The sweep selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
    Only when that line is missing entirely, skip the sweep's report for this scan - the read itself still stands, because it also serves eligibility - and continue to the next step.
 2. **Reconcile the active set with truth.**
