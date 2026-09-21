@@ -57,6 +57,17 @@
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
+# The worktree return is the one step here that terminates processes:
+# `treehouse return --force <path>` terminates only processes whose current
+# directory is the returned path or a descendant of it after symlink resolution
+# (measured on treehouse 2.1.1; the 2.3.0 source keeps the same rule), never a
+# sibling pool slot. So the recorded worktree= path, not the tool's selection,
+# is the only way a return can reach another task's processes: a stale
+# spawn-time path read, or a pool slot re-issued to a newer task after this
+# task's pane died without teardown. Teardown therefore refuses, before any
+# runtime command and regardless of --force, when another live task record in
+# this home records the same canonical worktree; the refusal names both tasks
+# and clears once the other record is torn down or corrected.
 # Usage: fm-teardown.sh <task-id> [--force]
 #   --force skips ordinary-task dirty and landed-work checks, skips the
 #   lessons-learned gate, skips scout report checks, and discards secondmate
@@ -560,6 +571,38 @@ removal_target_abs_path() {
   else
     cd "$(dirname "$target")" && printf '%s/%s\n' "$(pwd -P)" "$(basename "$target")"
   fi
+}
+
+# Refuse to return a worktree another live task record in this home still
+# claims. `treehouse return --force` terminates every process whose cwd is the
+# returned path or a descendant (measured on 2.1.1; never a pool sibling), so
+# the only way this teardown can reach another task's processes is a record
+# naming a slot that is no longer this task's: a stale spawn-time path read, or
+# a pool slot re-issued to a newer task after this task's pane died without
+# teardown. A record is live while its meta exists, and this check is
+# metadata-only, so it needs no runtime probe and --force does not bypass it.
+# Comparison is exact string equality after canonicalization, never a prefix
+# test, so a pool neighbour is not a claim. Sibling records that are symlinks
+# or carry no worktree= are left to their own validators.
+refuse_if_worktree_claimed_by_another_record() {  # <state-dir> <task-id> <worktree>
+  local state_dir=$1 id=$2 wt=$3 wt_abs other other_id other_wt other_abs
+  [ -n "$wt" ] || return 0
+  wt_abs=$(removal_target_abs_path "$wt" 2>/dev/null) || wt_abs=$wt
+  [ -n "$wt_abs" ] || wt_abs=$wt
+  for other in "$state_dir"/*.meta; do
+    [ -f "$other" ] && [ ! -L "$other" ] || continue
+    other_id=$(basename "$other" .meta)
+    [ "$other_id" != "$id" ] || continue
+    other_wt=$(fm_meta_get "$other" worktree)
+    [ -n "$other_wt" ] || continue
+    other_abs=$(removal_target_abs_path "$other_wt" 2>/dev/null) || other_abs=$other_wt
+    [ -n "$other_abs" ] || other_abs=$other_wt
+    if [ "$other_abs" = "$wt_abs" ]; then
+      echo "REFUSED: task $id records worktree $wt, which live task $other_id also records; returning it would terminate that task's processes. Tear down or correct $other_id first; preserving task state." >&2
+      return 1
+    fi
+  done
+  return 0
 }
 
 worktree_registered_for_project() {
@@ -1465,6 +1508,7 @@ remove_secondmate_registry_entry() {
   mv "$tmp" "$SECONDMATE_REG"
 }
 
+refuse_if_worktree_claimed_by_another_record "$STATE" "$ID" "$WT" || exit 1
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
 
 if [ "$KIND" = secondmate ]; then

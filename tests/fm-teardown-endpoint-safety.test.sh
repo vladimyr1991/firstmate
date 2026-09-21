@@ -268,8 +268,162 @@ SH
   pass "fm-teardown: exact tmux cleanup preserves invalid and prefix-matched neighbors while removing only the recorded target"
 }
 
+
+# FR-1..FR-5, FR-7: a worktree another live record in the same home still
+# claims refuses before any runtime command, even under --force; the sibling's
+# claim is compared canonically (a symlink alias spells the same path), while a
+# record naming a different directory, including a string-prefix neighbour, is
+# not a claim and the return is invoked with exactly the recorded path.
+test_worktree_claimed_by_another_live_record_refuses_before_mutation() {
+  local dir
+  dir=$(make_case claimed)
+  ln -s "$dir/worktree" "$dir/worktree-alias"
+  fm_write_meta "$dir/home/state/victim.meta" \
+    "window=firstmate:fm-victim" "worktree=$dir/worktree" \
+    "project=$dir/project" "kind=scout" "mode=no-mistakes"
+  fm_write_meta "$dir/home/state/stale.meta" \
+    "window=firstmate:fm-stale" "worktree=$dir/worktree-alias" \
+    "project=$dir/project" "kind=scout" "mode=no-mistakes"
+  assert_refused_without_mutation "$dir" stale "claimed worktree"
+  assert_grep "REFUSED: task stale records worktree $dir/worktree-alias" "$dir/stderr" \
+    "claimed worktree refusal did not name this task and its recorded path: $(cat "$dir/stderr")"
+  assert_grep "live task victim" "$dir/stderr" \
+    "claimed worktree refusal did not name the live claimant: $(cat "$dir/stderr")"
+  assert_grep "preserving task state" "$dir/stderr" \
+    "claimed worktree refusal did not state that task state is preserved: $(cat "$dir/stderr")"
+  assert_present "$dir/home/state/victim.meta" "claimed worktree refusal changed the claimant's record"
+
+  # Positive control: the same records once stale names a directory no other
+  # record claims. A prefix neighbour (worktree-extra) and a sibling with no
+  # worktree= line must not count as claims either.
+  mkdir "$dir/other-worktree" "$dir/other-worktree-extra"
+  fm_write_meta "$dir/home/state/stale.meta" \
+    "window=firstmate:fm-stale" "worktree=$dir/other-worktree" \
+    "project=$dir/project" "kind=scout" "mode=no-mistakes"
+  fm_write_meta "$dir/home/state/prefix.meta" \
+    "window=firstmate:fm-prefix" "worktree=$dir/other-worktree-extra" \
+    "project=$dir/project" "kind=scout" "mode=no-mistakes"
+  fm_write_meta "$dir/home/state/bare.meta" \
+    "window=firstmate:fm-bare" "project=$dir/project" "kind=scout" "mode=no-mistakes"
+  run_case "$dir" stale > "$dir/control.out" 2> "$dir/control.err" \
+    || fail "unclaimed worktree teardown failed: $(cat "$dir/control.err")"
+  assert_no_grep "REFUSED:" "$dir/control.err" \
+    "unclaimed worktree teardown printed a refusal: $(cat "$dir/control.err")"
+  grep -Fqx "treehouse <return> <--force> <$dir/other-worktree>" "$dir/runtime.log" \
+    || fail "unclaimed worktree teardown did not return exactly the recorded path: $(cat "$dir/runtime.log")"
+  ! grep -F "<$dir/worktree>" "$dir/runtime.log" >/dev/null \
+    || fail "unclaimed worktree teardown touched the claimant's worktree: $(cat "$dir/runtime.log")"
+  ! grep -F "<$dir/other-worktree-extra>" "$dir/runtime.log" >/dev/null \
+    || fail "unclaimed worktree teardown touched the prefix neighbour: $(cat "$dir/runtime.log")"
+  assert_present "$dir/home/state/victim.meta" "unclaimed worktree teardown removed the claimant's record"
+  assert_present "$dir/home/state/prefix.meta" "unclaimed worktree teardown removed the prefix neighbour's record"
+  assert_present "$dir/worktree/sentinel" "unclaimed worktree teardown changed the claimant's worktree"
+  assert_absent "$dir/home/state/stale.meta" "unclaimed worktree teardown left its own record behind"
+  pass "fm-teardown: a worktree another live record claims refuses before every runtime call, while an unclaimed or prefix-neighbour path returns exactly the recorded worktree"
+}
+
+REAL_TREEHOUSE=$(command -v treehouse || true)
+REAL_TREEHOUSE_PIDS=()
+REAL_TREEHOUSE_REPO=
+REAL_TREEHOUSE_SLOTS=()
+
+kill_real_treehouse_pids() {
+  local pid
+  for pid in "${REAL_TREEHOUSE_PIDS[@]:-}"; do
+    [ -n "$pid" ] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  REAL_TREEHOUSE_PIDS=()
+}
+
+# EXIT trap for the real-tool test: kill every sleep it started and return every
+# slot it leased, on the failure path too, then run the library cleanup. Its
+# last command must succeed so the trap never rewrites the suite's exit status.
+real_treehouse_cleanup() {
+  local slot
+  kill_real_treehouse_pids
+  for slot in "${REAL_TREEHOUSE_SLOTS[@]:-}"; do
+    [ -n "$slot" ] && [ -d "$slot" ] || continue
+    ( cd "$REAL_TREEHOUSE_REPO" && "$REAL_TREEHOUSE" return --force "$slot" ) >/dev/null 2>&1 || true
+  done
+  REAL_TREEHOUSE_SLOTS=()
+  # The suite runs under set -e by the time this fires, so the library's
+  # own loop status must not become this trap's.
+  fm_test_cleanup || true
+  return 0
+}
+
+wait_pid_gone() {  # <pid> <seconds>
+  local pid=$1 deadline=$(( $(date +%s) + $2 ))
+  while kill -0 "$pid" 2>/dev/null; do
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    sleep 0.2
+  done
+  return 0
+}
+
+# FR-8: pin the contract the claim refusal rests on against the real tool.
+# Returning one pool slot terminates only processes whose cwd is that slot or a
+# descendant of it; a process in a sibling slot of the same pool survives, and
+# returning that sibling slot itself then terminates it.
+test_real_treehouse_return_terminates_only_the_returned_worktrees_processes() {
+  local dir repo a b pid pid_a_root pid_a_sub pid_b
+  [ -n "$REAL_TREEHOUSE" ] || { echo "skip - treehouse not installed"; return 0; }
+  dir="$TMP_ROOT/real-treehouse"
+  repo="$dir/repo"
+  mkdir -p "$dir/pool"
+  fm_git_init_commit "$repo"
+  printf 'max_trees = 4\nroot = "%s"\n' "$dir/pool" > "$repo/treehouse.toml"
+  git -C "$repo" add treehouse.toml
+  git -C "$repo" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm 'pool config'
+  export TREEHOUSE_NO_UPDATE_CHECK=1
+  REAL_TREEHOUSE_REPO=$repo
+  trap real_treehouse_cleanup EXIT
+  a=$(cd "$repo" && "$REAL_TREEHOUSE" get --lease --lease-holder a 2>"$dir/get-a.err") \
+    || fail "treehouse get for slot a failed: $(cat "$dir/get-a.err")"
+  REAL_TREEHOUSE_SLOTS=("$a")
+  b=$(cd "$repo" && "$REAL_TREEHOUSE" get --lease --lease-holder b 2>"$dir/get-b.err") \
+    || fail "treehouse get for slot b failed: $(cat "$dir/get-b.err")"
+  REAL_TREEHOUSE_SLOTS=("$a" "$b")
+  [ -d "$a" ] && [ -d "$b" ] && [ "$a" != "$b" ] || fail "treehouse did not hand out two distinct slots: a=$a b=$b"
+  case "$(cd "$a" && pwd -P)" in "$(cd "$dir/pool" && pwd -P)"/*) ;; *) fail "slot a is not under the hermetic pool root: $a" ;; esac
+  [ "$(dirname "$(dirname "$a")")" = "$(dirname "$(dirname "$b")")" ] \
+    || fail "slots are not siblings of one pool: a=$a b=$b"
+  mkdir "$a/sub"
+  ( cd "$a" && exec sleep 60 ) &
+  pid_a_root=$!
+  ( cd "$a/sub" && exec sleep 60 ) &
+  pid_a_sub=$!
+  ( cd "$b" && exec sleep 60 ) &
+  pid_b=$!
+  REAL_TREEHOUSE_PIDS=("$pid_a_root" "$pid_a_sub" "$pid_b")
+  sleep 1
+  for pid in "$pid_a_root" "$pid_a_sub" "$pid_b"; do
+    kill -0 "$pid" 2>/dev/null || fail "sleep $pid died before the return"
+  done
+
+  ( cd "$repo" && "$REAL_TREEHOUSE" return --force "$b" ) > "$dir/return-b.out" 2>&1 \
+    || fail "treehouse return of slot b failed: $(cat "$dir/return-b.out")"
+  wait_pid_gone "$pid_b" 3 || fail "returning slot b left its own process alive"
+  kill -0 "$pid_a_root" 2>/dev/null || fail "returning slot b terminated the sibling slot's root process"
+  kill -0 "$pid_a_sub" 2>/dev/null || fail "returning slot b terminated the sibling slot's subdirectory process"
+  grep -q "Terminated lingering processes" "$dir/return-b.out" \
+    || fail "treehouse return of slot b did not report terminating its process: $(cat "$dir/return-b.out")"
+
+  ( cd "$repo" && "$REAL_TREEHOUSE" return --force "$a" ) > "$dir/return-a.out" 2>&1 \
+    || fail "treehouse return of slot a failed: $(cat "$dir/return-a.out")"
+  wait_pid_gone "$pid_a_root" 3 || fail "returning slot a left its root process alive"
+  wait_pid_gone "$pid_a_sub" 3 || fail "returning slot a left its subdirectory process alive"
+  kill_real_treehouse_pids
+  REAL_TREEHOUSE_SLOTS=()
+  pass "treehouse return: returning one pool slot terminates only that slot's processes and leaves the sibling slot's alive"
+}
+
 test_invalid_endpoint_records_refuse_before_mutation
 test_supported_backend_endpoint_records_validate
 test_tmux_empty_target_refuses_without_invocation
 test_recorded_process_identity_cleanup_is_exact
 test_isolated_tmux_invalid_and_valid_cleanup
+test_worktree_claimed_by_another_live_record_refuses_before_mutation
+test_real_treehouse_return_terminates_only_the_returned_worktrees_processes
