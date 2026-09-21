@@ -112,7 +112,7 @@ The next cycle re-runs normally, and repeated failures are a real blocker to rai
 Eligible: `Stream=Деливери` **and** `Sprint=🏃 Текущий спринт` **and** `Status=Новая`.
 Anything outside that filter is never pulled autonomously, including the next sprint and the backlog - the captain moves a card into the current sprint when they want it worked.
 Every eligible card is fetched with `include_discussions`, so the captain's comments reach the dispatchability statement as the requirement, a rework ask included, instead of the original description alone; which comment is the captain's and which is the fleet's own is decided by the authorship rule in the Boundaries section, and nothing here restates it.
-That fetch only locates the discussions, returning a count, preview snippets, and `discussion://` URLs; `get_comments` on each of those URLs then retrieves the full text of the captain's comments, and that full text is what the PM reads.
+That fetch only locates the discussions, returning a count, preview snippets, and `discussion://` URLs; `get_comments` is page-scoped, so one call on the card page, made only when that fetch shows the card has discussions, returns the full text of every discussion on the card, and that full text is what the PM reads.
 The PM quotes a captain's rework ask verbatim from that full text, never from a preview snippet, in the scout report, and names the previous task's branch or landed commit when the reconciliation report or the durable index carries it.
 
 Eligibility is necessary, not sufficient.
