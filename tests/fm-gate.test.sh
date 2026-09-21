@@ -1929,7 +1929,10 @@ SH
     || fail "the journal must record the second release after the signal: $(cat "$journal")"
 
   # A grandchild that ignores TERM and carries the recorded worktree: an orphan
-  # the wrapper must not release the queue over, even after the grace.
+  # the wrapper must not release the queue over, even after the grace. A
+  # second TERM lands inside that grace, as a re-signalling harness or a
+  # second Ctrl-C would send it: the wrapper must still reach its verdict
+  # rather than die with the hold neither parked nor released.
   orphan="$wt/pytest-suite"
   RUN_SIGNAL_MARKER="$orphan" FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
     "$GATE" run task-a --status "$statusf" -- \
@@ -1941,6 +1944,9 @@ SH
     tries=$((tries + 1)); sleep 0.05
   done
   pgrep -f "$orphan" >/dev/null 2>&1 || fail "the orphan never started"
+  kill -TERM "$wrapper"
+  sleep 1
+  kill -0 "$wrapper" 2>/dev/null || fail "the wrapper must still be deciding inside the grace when the second signal lands"
   kill -TERM "$wrapper"
   wait "$wrapper"; rc=$?
   expect_code 143 "$rc" "the signalled run must still carry the signal status out"
@@ -2014,23 +2020,6 @@ test_a_run_does_not_displace_its_own_live_run() {
   [ -e "$trace" ] || fail "the allowed re-take must run its command"
   assert_contains "$(cat "$journal")" "retaken=1" "the journal must record the re-take"
   assert_contains "$(gate "$state" status 2>&1)" "free" "the re-taken run must release at the end"
-
-  # A park the previous holder left - the orphan park after a timeout, or a
-  # deliberate one from a shell that is gone - describes that holder, not the
-  # re-taking run: the re-take ends it, and the run releases at its end.
-  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" \
-    bash -c '"$1" park task-a --reason "left-by-the-previous-holder"' _ "$GATE" 2>&1); rc=$?
-  expect_code 0 "$rc" "the free queue must be parkable for this proof"
-  rm -f "$trace"
-  out=$(gate "$state" run task-a --status "$statusf" -- touch "$trace" 2>"$TMP_ROOT/run-retake.err"); rc=$?
-  expect_code 0 "$rc" "a re-take over a park whose holder is gone must be allowed"
-  [ -e "$trace" ] || fail "the re-take over the park must run its command"
-  assert_contains "$(gate "$state" status 2>&1)" "free" \
-    "the re-taken run must release at its end rather than inherit the park"
-  assert_contains "$(cat "$journal")" "unparked id=task-a reason=left-by-the-previous-holder" \
-    "the journal must record the park ending on the re-take"
-  assert_not_contains "$(cat "$TMP_ROOT/run-retake.err")" "hold kept parked" \
-    "the re-taking run must not report a park it never asked for"
   pass "fm-gate.sh: a run does not displace its own live run"
 }
 

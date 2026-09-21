@@ -198,10 +198,15 @@
 #   for an id whose earlier run is still alive (fresh heartbeat, recorded
 #   process alive) is refused as `your own run <pid> is still live` rather than
 #   displacing it - the re-take is allowed only from a holder that is provably
-#   gone, and it ends any park that holder left (journaled `unparked`): the
-#   park described the previous holder's state, not this run's. A signal that
-#   lands after the grant and before the command started releases the hold
-#   (`signal-before-run`).
+#   gone. A PARK SURVIVES a re-take: the re-take never touches the park, only
+#   `release <id>` ends one, and a run that finds its hold parked at its end
+#   prints `hold kept parked: <reason>` and does not release - so a hold parked
+#   `run-orphaned-after-signal` stays held until the worker has stopped the
+#   orphan and released by hand, exactly as that park asks. A signal that lands
+#   after the grant and before the command started releases the hold
+#   (`signal-before-run`); the TERM/INT traps stay installed through the
+#   post-signal grace and the release-or-park verdict, so a second signal there
+#   cannot leave the hold neither parked nor released.
 #   If the hold is taken from under a live run - which only the ceiling on an
 #   inferred signal or a hand delete can do - the heartbeat notices the token
 #   change, stops, says so on stderr, journals `run-lost-hold`, and the run is
@@ -1188,13 +1193,8 @@ take_queue() {
           return 1
         fi
         # Otherwise the run becomes its holder afresh: the recorded process,
-        # token and status file are this run's, the heartbeat starts from now,
-        # and a park the previous holder left ends here - it described that
-        # holder's state, not this run's.
-        if read_park; then
-          journal unparked "$id" "reason=$PARK_REASON"
-          rm -f "$LOCK/parked" 2>/dev/null
-        fi
+        # token and status file are this run's, and the heartbeat starts from
+        # now. A park is left exactly as found: only `release` ends one.
         write_hold_files "$id" "$owner_wt" "$holder_pid" "$status"
         : > "$LOCK/heartbeat"
         journal taken "$id" "pid=$holder_pid" "heartbeat=1" "retaken=1"
@@ -1293,11 +1293,13 @@ RUN_WAS_SIGNALLED=
 # whether its run is orphaned. Fixed like fm-test-run.sh's own kill grace, and
 # not a threshold: it bounds a wait, it does not judge a hold.
 RUN_SIGNAL_GRACE=5
-# Invoked from the TERM and INT traps that run_command installs. The signal
-# goes to the child's whole process group by its negative id: the child is a
-# `bash -c` more often than not, and a TERM that reached only that shell left
-# the suite it had started running as an orphan while the wrapper went on to
-# release the hold over it.
+# Invoked from the TERM and INT traps that run_command installs and that stay
+# in place until the wrapper has released or parked. The signal goes to the
+# child's whole process group by its negative id: the child is a `bash -c`
+# more often than not, and a TERM that reached only that shell left the suite
+# it had started running as an orphan while the wrapper went on to release the
+# hold over it. Once the child has ended the trap only records the signal, so
+# a second one during the grace cannot kill the wrapper before its verdict.
 # shellcheck disable=SC2329
 forward_signal() {
   RUN_SIGNALLED=$1
@@ -1309,7 +1311,8 @@ forward_signal() {
 # of its own process group (bash job control gives a background job its own
 # group; the toggle is scoped to the launch), reading stdin from /dev/null,
 # with TERM and INT forwarded to that group and the command's own exit status
-# returned. The group id outlives this call in RUN_PGID.
+# returned. The group id outlives this call in RUN_PGID, and so do the traps:
+# the caller clears them once the hold has been released or parked.
 run_command() {
   local rc
   trap 'forward_signal TERM' TERM
@@ -1326,7 +1329,6 @@ run_command() {
     RUN_SIGNALLED=
     kill -0 "$RUN_CHILD" 2>/dev/null || { wait "$RUN_CHILD" 2>/dev/null; rc=$?; break; }
   done
-  trap - TERM INT
   RUN_CHILD=
   return "$rc"
 }
@@ -1476,6 +1478,7 @@ case "${1:-}" in
       echo "not releasing: the hold under this run was taken by $(owner); leaving it alone" >&2
       journal run-lost-hold "$ID" "new_owner=$(owner)" "seen=at-exit"
     fi
+    trap - TERM INT
     exit "$RUN_RC"
     ;;
   park)
