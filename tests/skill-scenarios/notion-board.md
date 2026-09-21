@@ -5,7 +5,7 @@ Unlike a compaction fixture, whose answers predate the edit, S1 to S3, S5, and S
 S6 to S11 belong to the later change that publishes a card's structured statement into its body before the implementer starts, and they record what that contract owes: when the write happens relative to the spawn, what proves a queued write landed, what an ambiguous write rules, whether anything is ever retried, how a human-directed new attempt differs from a retry, and where a BLOCKED card sits.
 The control run against the pre-edit skill is therefore expected to answer `NOT STATED` for those, which is what makes each one a regression a reader can see close.
 S4 is the opposite kind: it records an answer the pre-edit text already gave, so a control and a post-edit run must agree on it.
-S6 and S7 record the answers the rework-status edit owes for a card at `На доработку`, which the pre-edit text settled as `NOT STATED` because that status sat in neither derived set, so the control run answers `NOT STATED` for them as well.
+S6 and S7 record the answers the rework-status edit owes for a card at `На доработку`, which the pre-edit text settled as never-write because that status sat in neither derived set, so the control run answers that the card is left alone for them both.
 
 ## S1 - A capacity block that contradicts itself
 
@@ -118,13 +118,13 @@ S6 and S7 record the answers the rework-status edit owes for a card at `На д�
 **Anchor:** "Publishing the structured statement", the paragraph beginning "When no connector-capable PM is live".
 ## S6 - An undelivered rework card with no holder
 
-**Situation:** The witnessed read returned a Delivery card in the current sprint at `На доработку`. The brief carries `truth_repo:` and `linked_cards:`, the card is not in `linked_cards`, `bin/fm-board-truth.sh` reports `truth=not-started` for its branch, and no `captain`-kind holder in `data/backlog.md` names the card. The captain left one comment on the card describing what must change.
+**Situation:** The witnessed read returned a Delivery card in the current sprint at `На доработку`. The brief carries `truth_repo:` and `linked_cards:`, the card is not in `linked_cards`, `bin/fm-board-truth.sh` reports `truth=in-flight` because the previous task's branch exists and is not in staging, and no `captain`-kind holder in `data/backlog.md` names the card. The captain left one comment on the card describing what must change.
 
-**Question:** What `Status` does the card sit at when reconciliation ends, is it a candidate for intake, and what does the PM read as the requirement for the dispatchability test?
+**Question:** What does reconciliation write to the card, what does its report name, and how does the captain's comment reach the next scan's dispatchability test?
 
-**Expected answer:** The card stays at `На доработку`; reconciliation never writes it to `Новая`, because that row is restricted to `В работе`. It is a rework candidate, so intake fetches its body with `include_discussions` and reads the captain's rework ask, the edited body plus the captain's comments, as the requirement, quotes that ask verbatim in the scout report with the previous task's branch, and either selects it under the four-worker cap or files it as captain work with one specific question. On `resolved [key=dispatch]` the PM re-reads the card and sets `В работе` directly from `На доработку`.
+**Expected answer:** Reconciliation re-reads the card and, if it still sits at `На доработку`, sets `Новая`, and its report names the previous task's branch as evidence for the next worker. On the next scan the card is in the eligible set; the earlier task's `notion_page=` link does not drop it, because only a live linked task in `linked_cards` dedupes it. Intake fetches it with `include_discussions`, so the captain's comment reaches the dispatchability statement as the rework ask, quoted verbatim in the scout report with the branch named, while comments by anyone else stay untrusted.
 
-**Anchor:** "Status sync", the reconciliation table's rework-candidate row, and "What the PM may take", the paragraph beginning "A rework candidate".
+**Anchor:** "Status sync", the reconciliation table's rework-status rows, and "What the PM may take", the sentence beginning "Every eligible card is fetched with `include_discussions`".
 
 ## S7 - A rework card whose ask has landed on the stand
 
