@@ -1445,6 +1445,61 @@ test_neighbourhood_read_before_handover() {
   pass "fm-brief.sh: every ship mode carries the neighbourhood-read rule before handover"
 }
 
+# Rule 13 binds the unit of the fix: a task that names one case is fixed as the
+# class the case belongs to, the found list is handed over with the key that
+# produced it after that key was tested against a wider one, and a guard is
+# mutated once per place it must cover, its own allowlist included. Ship-only:
+# a scout hands over a report, not a fix.
+test_fix_the_class_before_the_named_case() {
+  local home id mode brief id_mode phrase
+  home="$TMP_ROOT/fix-the-class-home"
+  write_registry "$home"
+
+  for id_mode in "brief-cls-d1:no-mistakes" "brief-cls-d2:direct-PR" "brief-cls-d3:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+  done
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-cls-d4 some-proj --mode local-only --staging-autonomy >/dev/null 2>&1
+  assert_present "$home/data/brief-cls-d4/brief.md" "brief-cls-d4: staging-autonomy brief was not scaffolded"
+
+  for id in brief-cls-d1 brief-cls-d2 brief-cls-d3 brief-cls-d4; do
+    brief="$home/data/$id/brief.md"
+    assert_grep "13. When the task names a case" "$brief" \
+      "$id: brief lost rule 13, the fix-the-class rule"
+    [ "$(grep -nF -- "11. Report only the deployment you ran yourself" "$brief" | cut -d: -f1)" \
+      -lt "$(grep -nF -- "12. Before you hand your change over" "$brief" | cut -d: -f1)" ] \
+      || fail "$id: rule 11 no longer precedes rule 12"
+    [ "$(grep -nF -- "12. Before you hand your change over" "$brief" | cut -d: -f1)" \
+      -lt "$(grep -nF -- "13. When the task names a case" "$brief" | cut -d: -f1)" ] \
+      || fail "$id: rule 12 no longer precedes rule 13"
+    for phrase in \
+      "fix the class it belongs to, not" \
+      "together with HOW you searched" \
+      "by path alone found 45 routes" \
+      "once at every place it must cover" \
+      "mutate THROUGH the list"; do
+      assert_grep "$phrase" "$brief" \
+        "$id: fix-the-class rule lost its sentence: $phrase"
+    done
+  done
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-cls-scout some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold for the fix-the-class check exited non-zero"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-cls-second --secondmate some-proj >/dev/null 2>&1 \
+    || fail "secondmate scaffold for the fix-the-class check exited non-zero"
+  for id in brief-cls-scout brief-cls-second; do
+    brief="$home/data/$id/brief.md"
+    assert_no_grep "When the task names a case" "$brief" \
+      "$id: non-ship scaffold gained the fix-the-class rule"
+    assert_no_grep "an allowlist inside a guard is exactly where that guard" "$brief" \
+      "$id: non-ship scaffold gained the allowlist clause"
+  done
+  pass "fm-brief.sh: every ship mode carries the fix-the-class rule"
+}
+
 # A known stand-side breakage is recorded once per project in
 # data/known-breakage/<repo>.md and folded into every ship and scout brief for
 # that repo, so the landing worker reads it instead of re-investigating it. The
@@ -2418,6 +2473,7 @@ test_brief_prose_is_not_executed_while_scaffolding
 test_gate_queue_quotes_foreign_firstmate_path
 test_own_deployment_reporting_rule
 test_neighbourhood_read_before_handover
+test_fix_the_class_before_the_named_case
 test_known_breakage_record_reaches_ship_and_scout_briefs
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

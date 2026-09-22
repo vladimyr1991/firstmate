@@ -125,6 +125,11 @@
 # the worker reads every function it inserted into in full and names what else that
 # function does of the same kind and how each is guarded, because a diff-only review
 # inherits the author's frame and once passed an unguarded second outward send.
+# Ship briefs also carry the fix-the-class rule: a named case is fixed as the class it
+# belongs to, the list found is handed over with the key that produced it after that
+# key was tested against a wider one (45 routes by path alone against 61 by path,
+# query, and body), and a guard is mutated once per place it must cover, its own
+# allowlist included, because that list is where a guard is blind by construction.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -864,6 +869,22 @@ $RULE1
     old code.
     When you order a review of your own change, hand the reviewer the whole function or file, never the
     diff alone.
+13. When the task names a case - one endpoint, one phrase, one file - fix the class it belongs to, not
+    the named case: name the property that makes the case wrong, search for every place that shares
+    it, and hand over the list of what you found together with HOW you searched, because a count
+    means nothing without the key that produced it.
+    Test the key before you trust it: the obvious key finds the smaller part of the class - a walk of
+    a route table by path alone found 45 routes, a walk by path plus query and body fields found 61,
+    and the sixteen only the wider key reached included token issuance, user creation, and bulk
+    delete. Say yourself where your key can miss. Where a guard can carry the list, make the list the
+    guard's own body, recomputed on every run, rather than an appendix that records the day it was
+    written.
+    A guard is not believed until you have mutated it, once at every place it must cover, and a place
+    the guard itself exempts is also a place: an allowlist inside a guard is exactly where that guard
+    is blind - an entry turns a silent miss into a deliberate one and adds nothing else - and a real
+    case waved through one shipped with the wrong label under 165 green tests. Say that property in a
+    comment where the list is declared, so the next reader does not take it for protection, and
+    mutate THROUGH the list - put a genuine case in it and show what happens - not only around it.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
