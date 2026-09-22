@@ -23,6 +23,9 @@
 # destructive call.
 # Provision records the running default session as a fleet-state tripwire and
 # teardown requires that record to be identical afterward.
+# Provision launches the lab server as the leader of its own process group and a
+# cancelled or refused provision signals that whole group, so a wrapper subshell
+# that bash did not collapse can never shield the server from cancellation.
 set -u
 
 fm_herdr_lab_error() {
@@ -153,23 +156,31 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
   fm_herdr_lab_raw "$name" "$@"
 }
 
-fm_herdr_lab_cancel_provision() { # <pid>
+fm_herdr_lab_cancel_provision() { # <pid>: the launch's process-group id
+  # The launch in fm_herdr_lab_provision runs under job control, so its pid is
+  # also the id of the process group holding every process it spawned; signal the
+  # group, never the bare pid, or a wrapper subshell shields the server.
   local pid=$1 attempt=0
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -TERM "$pid" 2>/dev/null || true
-    while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 10 ]; do
+  if kill -0 -- "-$pid" 2>/dev/null; then
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    while kill -0 -- "-$pid" 2>/dev/null && [ "$attempt" -lt 10 ]; do
       sleep 0.1
       attempt=$((attempt + 1))
     done
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
+    if kill -0 -- "-$pid" 2>/dev/null; then
+      kill -KILL -- "-$pid" 2>/dev/null || true
+      attempt=0
+      while kill -0 -- "-$pid" 2>/dev/null && [ "$attempt" -lt 10 ]; do
+        sleep 0.1
+        attempt=$((attempt + 1))
+      done
     fi
   fi
   wait "$pid" 2>/dev/null || true
 }
 
 fm_herdr_lab_provision() { # <session>
-  local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds
+  local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds had_monitor
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
@@ -195,8 +206,13 @@ fm_herdr_lab_provision() { # <session>
   else
     fm_herdr_lab_prepare "$name" || return 1
   fi
-  fm_herdr_lab_raw "$name" server >/dev/null 2>&1 &
+  # Job control for this one statement makes the background job the leader of a
+  # new process group, which is what fm_herdr_lab_cancel_provision signals.
+  case $- in *m*) had_monitor=1 ;; *) had_monitor=0 ;; esac
+  set -m
+  fm_herdr_lab_raw "$name" server </dev/null >/dev/null 2>&1 &
   server_pid=$!
+  [ "$had_monitor" = 1 ] || set +m
   attempt=0
   max_attempts=300
   timeout_seconds=60
