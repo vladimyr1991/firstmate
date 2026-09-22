@@ -91,12 +91,14 @@
 # Every scout brief scaffolded WITHOUT the flag carries the same requirement as a
 # conditional declaration instead, in the shape the Herdr declaration below already
 # uses and for the same reason: the scaffold cannot see the {TASK} text that arrives
-# later, so the brief tells the worker that if that text names a Notion card the
-# section is owed anyway, and to report that the brief was generated without its card
-# declaration. Three card-linked specifications in a row came back with no section
-# because the requirement lived only in firstmate's memory, and all three named the
-# card inside {TASK}, so the declaration is what closes that defect rather than the
-# flag. A scout task that names no card is told the paragraph does not apply.
+# later, so the brief tells the worker that if that text both names a Notion card and
+# asks it to follow write-implementation-spec the section is owed anyway, and to
+# report that the brief was generated without its card declaration. Three card-linked
+# specifications in a row came back with no section because the requirement lived only
+# in firstmate's memory, and all three named the card inside {TASK}, so the declaration
+# is what closes that defect rather than the flag. A scout task that names no card, or
+# that is not asked to follow write-implementation-spec, is told on either condition
+# alone that the paragraph does not apply.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
