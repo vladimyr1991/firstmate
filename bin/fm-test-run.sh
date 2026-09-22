@@ -938,7 +938,7 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       printf '%s\n' real-herdr-gated
       ;;
-    bin/fm-watch*|bin/fm-wake*|bin/fm-watcher-outside-guard*|bin/fm-wedge-alarm-lib.sh|\
+    bin/fm-watch*|bin/fm-wake*|bin/fm-wedge-alarm-lib.sh|\
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
       printf '%s\n' watcher-wake-lock
       ;;
