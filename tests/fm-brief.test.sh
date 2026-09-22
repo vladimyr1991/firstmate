@@ -1060,6 +1060,32 @@ test_no_mistakes_dod_requires_verified_gate_claims() {
   pass "fm-brief.sh: no-mistakes DOD requires live gate claims to be verified or relayed unverified"
 }
 
+# A subset `axi respond --action fix --findings` silently drops every
+# unselected finding; the brief must make the worker hold the gate instead.
+test_no_mistakes_dod_holds_gate_for_unanswered_ask_user() {
+  local home brief pair id mode
+  home="$TMP_ROOT/subset-hold-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-subset-hold-a1 some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "no-mistakes scaffold for the subset-hold rule exited non-zero"
+  brief="$home/data/brief-subset-hold-a1/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  assert_grep "Three firstmate-specific rules" "$brief" "no-mistakes DOD must count the hold-the-gate rule"
+  assert_grep "Hold the whole gate while any ask-user finding at it is unanswered" "$brief" "no-mistakes DOD must forbid responding while an ask-user finding is open"
+  assert_grep "is dropped for good and the next review does not raise it again" "$brief" "no-mistakes DOD must say an omitted finding is lost"
+  assert_grep "naming the still-unanswered finding IDs" "$brief" "no-mistakes DOD must bounce a partial decision back as needs-decision"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 're-add each dropped finding with `--add-finding`' "$brief" "no-mistakes DOD must name the --add-finding recovery"
+  for pair in brief-subset-hold-a2:direct-PR brief-subset-hold-a3:local-only; do
+    id=${pair%%:*}; mode=${pair#*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$mode scaffold exited non-zero"
+    assert_no_grep "Hold the whole gate" "$home/data/$id/brief.md" "$mode brief must not carry the pipeline gate rule"
+    assert_no_grep "--add-finding" "$home/data/$id/brief.md" "$mode brief must not carry --add-finding"
+  done
+  pass "fm-brief.sh: no-mistakes DOD holds the whole gate for unanswered ask-user findings"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -2599,6 +2625,7 @@ test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_dod_states_what_done_requires
 test_no_mistakes_dod_requires_verified_gate_claims
+test_no_mistakes_dod_holds_gate_for_unanswered_ask_user
 test_ship_project_memory_wording
 test_ship_baseline_and_no_placeholder_contract
 test_gate_queue_contract_reaches_ship_and_scout
