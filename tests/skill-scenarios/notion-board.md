@@ -11,7 +11,10 @@ Their situations and expected answers now name `notion-create-comment` with `pag
 A control run against the pre-comment skill therefore answers those five with the body form rather than `NOT STATED`, and that difference is what a reader can see close.
 S11 was not re-aimed, because who may write the card never depended on the form.
 S14 to S16 belong to that same change and record three answers only the comment form owes: what intake makes of a card whose comments are all the fleet's own, what a recycled card does with a statement comment from its previous life, and which page-content command the statement may use.
-The control answers `NOT STATED` for all three.
+S14 the control answers substantively and in agreement with the post-change answer, because the pre-comment skill's Boundaries section already settles authorship by shape and already makes the fleet's own writes untrusted input.
+S16 the control answers substantively and oppositely, giving the body form with `command: insert_content` and `position: {"type":"start"}` and `replace_content` exclusive to recycle step 4, with only the `update_properties` half left unstated in that paragraph.
+S15 is the only one of the three the control answers `NOT STATED`, because the statement was never a comment before this change and nothing said what a recycled card keeps of its previous life.
+A scenario the control already answers still earns its place: it is a regression guard, showing the change did not alter an answer the skill already gave, while S15 alone is the evidence that the new text added something.
 
 ## S1 - A capacity block that contradicts itself
 
