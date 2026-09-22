@@ -10,7 +10,7 @@ case "$HOME_ARG" in /*) ;; *) printf 'outside guard: --home must be an absolute 
 FM_HOME=$(cd "$HOME_ARG" && pwd -P) || exit 2
 [ "$FM_HOME" = "$HOME_ARG" ] || { printf 'outside guard: symlinked home\n' >&2; exit 2; }
 STATE="$FM_HOME/state"; [ -d "$STATE" ] && [ ! -L "$STATE" ] || { printf 'outside guard: unsafe state\n' >&2; exit 2; }
-log() { :; }
+log() { printf 'watcher outside guard: %s\n' "$*" >&2; }
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$DIR/fm-supervision-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -31,7 +31,8 @@ if [ ! -e "$EP" ]; then
   if ! printf 'version=fm-watcher-outside-guard-v1\nepisode=%s\ndetected_at_utc=%s\nnotified=0\nevent_log=%s\n' "$episode" "$now" "$EVENTS" > "$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$EP"; then rm -f "$tmp"; exit 1; fi
 fi
 wpid=$(cat "$STATE/.watch.lock/pid" 2>/dev/null || printf unavailable); wid=unavailable; fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$wpid" "$FM_HOME" && wid=matched || true
-fm_session_lock_read "$STATE" || true; alive=unavailable; [ -n "${FM_LOCK_PID:-}" ] && fm_harness_pid_alive "$FM_LOCK_PID" && alive=true || [ -n "${FM_LOCK_PID:-}" ] && alive=false
+fm_session_lock_read "$STATE" || true
+if [ -z "${FM_LOCK_PID:-}" ]; then alive=unavailable; elif fm_harness_pid_alive "$FM_LOCK_PID"; then alive=true; else alive=false; fi
 up=$(uptime 2>/dev/null | tr '\t\n' ' ' || printf unavailable); pm=$(pmset -g log 2>/dev/null | grep -E 'Wake|Sleep|DarkWake' | tail -5 | tr '\t\n' ' ' || printf unavailable)
 line=$(printf '%s\thome=%s\tin_flight=%s\tsources=%s\tquota_frozen=%s\tx=%s\tsprint=%s\tbeacon=%s\twatcher_pid=%s\twatcher_identity=%s\tsession_form=%s\tsession_pid=%s\tsession_harness=%s\tsession=%s\tsession_alive=%s\tuptime=%s\tpmset=%s' "$now" "$FM_HOME" "$FM_SUP_IN_FLIGHT" "$FM_SUP_SOURCES" "$FM_SUP_QUOTA_FROZEN" "$([ -f "$STATE/x-watch.check.sh" ] && echo present || echo absent)" "$([ -f "$STATE/sprint-watch.check.sh" ] && echo present || echo absent)" "$FM_SUP_BEACON_DESC" "$wpid" "$wid" "$FM_LOCK_FORM" "${FM_LOCK_PID:-unavailable}" "${FM_LOCK_HARNESS:-unavailable}" "${FM_LOCK_SESSION:-unavailable}" "$alive" "$up" "$pm")
 if ! { [ -f "$EVENTS" ] && tail -n 999 "$EVENTS"; printf '%s\n' "$line"; } > "$EVENTS.tmp" || ! chmod 600 "$EVENTS.tmp" || ! mv -f "$EVENTS.tmp" "$EVENTS"; then exit 1; fi

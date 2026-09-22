@@ -66,8 +66,42 @@ test_steady_state_runs_print_nothing() {
   [ -z "$out" ] || fail "post-recovery idle run printed: $out"
   pass "the guard prints only on loss and recovery transitions, never on steady-state runs"
 }
+session_alive_field() { awk -F'\t' '{ for (i = 1; i <= NF; i++) if (index($i, "session_alive=") == 1) v = substr($i, 15) } END { print v }' "$1/state/.watcher-outside-guard-events.log"; }
+test_session_alive_diagnostic_reports_lock_state() {
+  local home fakebin pid dead
+  home=$(make_home alive-live); fakebin="$TMP_ROOT/harness-bin"; mkdir -p "$fakebin"; ln -sf /bin/bash "$fakebin/claude"
+  "$fakebin/claude" -c 'sleep 30; :' >/dev/null 2>&1 & pid=$!
+  FM_GUARD_TEST_HARNESS_PID=$pid; trap 'kill "${FM_GUARD_TEST_HARNESS_PID:-}" 2>/dev/null; fm_test_cleanup' EXIT
+  : > "$home/state/task.meta"; printf '%s\n' "$pid" > "$home/state/.lock"
+  FM_WEDGE_ALARM_EXEC=discard "$GUARD" --home "$home" >/dev/null || fail "live-lock guard failed"
+  [ "$(session_alive_field "$home")" = true ] || fail "live harness lock reported session_alive=$(session_alive_field "$home")"
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+  home=$(make_home alive-dead); : > "$home/state/task.meta"
+  dead=$(bash -c 'exit 0' & echo $!); wait "$dead" 2>/dev/null || true
+  printf '%s\n' "$dead" > "$home/state/.lock"
+  FM_WEDGE_ALARM_EXEC=discard "$GUARD" --home "$home" >/dev/null || fail "dead-lock guard failed"
+  [ "$(session_alive_field "$home")" = false ] || fail "dead lock pid reported session_alive=$(session_alive_field "$home")"
+  home=$(make_home alive-none); : > "$home/state/task.meta"
+  FM_WEDGE_ALARM_EXEC=discard "$GUARD" --home "$home" >/dev/null || fail "no-lock guard failed"
+  [ "$(session_alive_field "$home")" = unavailable ] || fail "absent lock reported session_alive=$(session_alive_field "$home")"
+  pass "session_alive diagnostic reports true for a live harness lock, false for a dead one, unavailable without a lock"
+}
+test_notifier_diagnostics_reach_stderr_redacted() {
+  local home err secret; home=$(make_home notifier-err); err="$home/guard.err"; : > "$home/state/task.meta"
+  secret="https://alerts.example.invalid/hook?token=private-guard-token"
+  FM_WEDGE_ALARM_EXEC='' FM_WEDGE_ALARM_CHANNEL="webhook:$secret" "$GUARD" --home "$home" >/dev/null 2> "$err" || fail "unknown-channel guard failed"
+  grep -F 'unrecognized active-alert channel directive (redacted)' "$err" >/dev/null || fail "notifier diagnostic never reached stderr: $(cat "$err")"
+  grep -F "$secret" "$err" >/dev/null && fail "notifier diagnostic leaked the configured directive"
+  home=$(make_home notifier-exit); err="$home/guard.err"; : > "$home/state/task.meta"
+  FM_WEDGE_ALARM_EXEC='' FM_WEDGE_ALARM_CHANNEL="command:exit 73 # $secret" "$GUARD" --home "$home" >/dev/null 2> "$err" || fail "failing-command guard failed"
+  grep -F 'command channel exited 73 (command redacted)' "$err" >/dev/null || fail "command failure was not reported on stderr: $(cat "$err")"
+  grep -F "$secret" "$err" >/dev/null && fail "command failure leaked the configured command"
+  pass "notifier failures surface on the guard's stderr with configured directives redacted"
+}
 test_idle_home_stays_silent
 test_dead_required_home_alerts_once
+test_session_alive_diagnostic_reports_lock_state
+test_notifier_diagnostics_reach_stderr_redacted
 test_quota_freeze_requires_supervision
 test_unnotified_episode_marker_retries_alert
 test_steady_state_runs_print_nothing
