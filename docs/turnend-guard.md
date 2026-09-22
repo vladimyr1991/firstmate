@@ -13,7 +13,7 @@ Do not infer this guard's scope, loop safety, or compatibility tradeoffs for tho
 
 `bin/fm-guard.sh` is a pull-based warning that runs only when another supervision command invokes it.
 The turn-end guard closes the remaining gap at the primary's own turn boundary.
-When work, a process-event source, or X-mode relay polling needs supervision and no identity-matched watcher has a fresh beacon, the harness integration must either block the turn end or force one bounded follow-up that uses the recovery instruction from the emitted session-start protocol.
+When the shared predicate below reports supervision need and no identity-matched watcher has a fresh beacon, the harness integration must either block the turn end or force one bounded follow-up that uses the recovery instruction from the emitted session-start protocol.
 Both guards require the same live lock, process identity, home/path binding, and fresh-beacon predicate.
 The guard remains a backstop; [`watcher-continuity.md`](watcher-continuity.md) owns normal continuity.
 
@@ -29,7 +29,9 @@ It also requires `AGENTS.md`, `bin/`, and the effective state directory.
 For an in-scope primary, the guard counts in-flight work from `state/*.meta`.
 Registered `state/procevent/*.source` records also require supervision even though they have no task metadata.
 The default cross-harness mode exits silently with no supervision need.
-Every mode treats `state/x-watch.check.sh` as supervision need, so X-mode relay polling remains guarded without an in-flight task.
+Every mode treats `state/x-watch.check.sh` and `state/sprint-watch.check.sh` as supervision need, so X-mode relay polling and sprint-board polling remain guarded without an in-flight task.
+A valid quota-freeze obligation, one regular file directly in `state/quota-frozen/`, also requires supervision, so frozen work is guarded until its confirmed resume discharges it.
+`bin/fm-supervision-lib.sh` owns this predicate, and every guard, the Claude auto-arm, and the outside-session watcher guard call it rather than restating it.
 Otherwise it calls `fm_watcher_healthy <state-dir> <watch-path> [grace-seconds] [home]` from `bin/fm-wake-lib.sh`, the same identity-matched lock and fresh-beacon check used by `bin/fm-watch-arm.sh`.
 `bin/fm-guard.sh` uses that same check rather than treating the status helper's fresh-beacon field as sufficient.
 A stale beacon blocks even when a watcher pid is live.

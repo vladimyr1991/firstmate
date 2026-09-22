@@ -82,8 +82,12 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight across a held arm with the owning firing proven to be the arm's parent and to still be running while that arm blocks, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset.
+`tests/fm-watcher-outside-guard.test.sh` covers the outside-session guard's idle silence, once-per-episode alert, quota-freeze need, unnotified-episode retry, quiet steady-state runs, session-lock liveness diagnostics, and redacted notifier diagnostics.
 
 ## Active limits and verification
+
+Session-owned continuity cannot report a session that has already disappeared, so the outside-session guard alerts but does not restart supervision.
+`bin/fm-watcher-outside-guard-install.sh` installs `bin/fm-watcher-outside-guard.sh` as a per-home macOS LaunchAgent for one explicit absolute home; it runs without sudo, reuses the shared supervision-need predicate and identity-matched watcher health, alerts once per unhealthy episode through the channels in [`wedge-alarm.md`](wedge-alarm.md), and never signals, restarts, or inspects another home.
 
 The goal is continuity without a Pi or OpenCode model-memory re-arm step.
 No zero-latency guarantee is claimed because lock verification, watcher startup, and bounded retry delays remain deliberate safety work.

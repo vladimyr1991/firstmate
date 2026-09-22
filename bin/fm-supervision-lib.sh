@@ -25,6 +25,9 @@ fm_sup_stat_mtime() {
 # Populates, for the state dir at $1:
 #   FM_SUP_IN_FLIGHT      count of state/*.meta (in-flight tasks)
 #   FM_SUP_SOURCES        count of registered process-to-event sources
+#   FM_SUP_QUOTA_FROZEN   count of valid quota-resume obligations directly in
+#                         state/quota-frozen (hidden entries, directories, and
+#                         symlinks are deliberately excluded)
 #   FM_SUP_NEEDED         true/false - in-flight work, an X-mode relay poll, a
 #                         sprint-board poll, or a registered event source (a
 #                         source is a wait on an external process, not a task,
@@ -35,8 +38,9 @@ fm_sup_stat_mtime() {
 # grace-seconds defaults to $FM_GUARD_GRACE, then 300, matching fm-guard.sh.
 # Always returns 0; callers read the vars, or use fm_supervision_unhealthy below.
 fm_supervision_status() {
-  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} meta source beat m age
+  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} meta source frozen beat m age
   FM_SUP_IN_FLIGHT=0
+  FM_SUP_QUOTA_FROZEN=0
   FM_SUP_NEEDED=false
   FM_SUP_WATCHER_FRESH=false
   FM_SUP_BEACON_DESC=never
@@ -51,10 +55,15 @@ fm_supervision_status() {
     [ -e "$source" ] || continue
     FM_SUP_SOURCES=$((FM_SUP_SOURCES + 1))
   done
+  for frozen in "$state"/quota-frozen/*; do
+    [ -f "$frozen" ] && [ ! -L "$frozen" ] || continue
+    FM_SUP_QUOTA_FROZEN=$((FM_SUP_QUOTA_FROZEN + 1))
+  done
   if [ "$FM_SUP_IN_FLIGHT" -gt 0 ] \
     || [ -f "$state/x-watch.check.sh" ] \
     || [ -f "$state/sprint-watch.check.sh" ] \
-    || [ "$FM_SUP_SOURCES" -gt 0 ]; then
+    || [ "$FM_SUP_SOURCES" -gt 0 ] \
+    || [ "$FM_SUP_QUOTA_FROZEN" -gt 0 ]; then
     FM_SUP_NEEDED=true
   fi
 
