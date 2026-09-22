@@ -621,8 +621,7 @@ EOF
 else
   IFS= read -r -d '' STATEMENT_SECTION <<EOF || true
 **Card statement:** this scaffold cannot inspect the task text that replaces \`{TASK}\` later.
-If that text names a Notion card and asks you to follow \`write-implementation-spec\`, your report must end with a section titled exactly \`## Постановка для карточки\`, built to the field list and the bounds in \`$FM_ROOT/.agents/skills/notion-board/SKILL.md\`, because that section is the only thing the card's author sees of how the request was read.
-Say in your report that this brief was generated without its card declaration, so the next one is scaffolded with \`--spec-card <card-url>\`.
+If that text names a Notion card and asks you to follow \`write-implementation-spec\`, your report must end with a section titled exactly \`## Постановка для карточки\`, built to the field list and the bounds in \`$FM_ROOT/.agents/skills/notion-board/SKILL.md\`, because that section is the only thing the card's author sees of how the request was read, and it must also say that this brief was generated without its card declaration, so the next one is scaffolded with \`--spec-card <card-url>\`.
 If your task names no Notion card, this paragraph does not apply and you write no such section.
 EOF
 fi

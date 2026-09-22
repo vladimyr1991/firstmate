@@ -232,7 +232,7 @@ This publication adds no `query_data_sources` call to any cycle.
 The connector result is the only authority on whether the comment landed.
 A clean synchronous success is a completed publication.
 `notion-create-comment` takes no `allow_async` parameter and returns no `async_task`, so no poll exists on this path and no polling tool is called: `async-success`, `async-failed`, and `poll-timeout` are unreachable here, and they stay recorded values below only so every consumer of that line and the status-sync row matching anything but a success remain valid unchanged.
-No `fetch`, `get_comments`, or comment count ever follows the write, on success or failure alike: a read never confirms, denies, deduplicates, bounds, or authorizes a publication.
+No confirming read of the publication ever follows the write - no `fetch`, no `get_comments`, no comment count, on success or failure alike: a read never confirms, denies, deduplicates, bounds, or authorizes a publication.
 A `fetch` render can lag, so a re-read after an ambiguous write proves nothing and is never made for that purpose, and a comment read on the failure path is the same unreliable proof wearing worse clothes, since it would turn a write the connector already accepted into a false `did not publish`.
 
 ### The outcome

@@ -71,7 +71,7 @@ The control answers `NOT STATED` for all three.
 
 **Expected answer:** Exactly one `notion-create-comment` call carrying `page_id` and `markdown` and nothing else, so the statement lands as a new page-level discussion; it comes first, then firstmate spawns the implementation worker, then links it, and the card becomes `В работе` only after that durable link. After the success the PM makes no `fetch`, no `get_comments`, and no comment count, and it writes no card body at all; the connector result alone is the proof.
 
-**Anchor:** "Publishing the structured statement", "The write" and the outcome table's READY-success row, plus "No `fetch`, `get_comments`, or comment count ever follows the write, on success or failure alike."
+**Anchor:** "Publishing the structured statement", "The write" and the outcome table's READY-success row, plus "No confirming read of the publication ever follows the write - no `fetch`, no `get_comments`, no comment count, on success or failure alike."
 
 ## S7 - Whether a queued write can happen at all
 
@@ -169,6 +169,6 @@ The control answers `NOT STATED` for all three.
 
 **Question:** Which page-content command may the statement be written with, and what are `replace_content` and `update_properties` still for?
 
-**Expected answer:** None may: `insert_content`, `update_content`, and `replace_content` are all forbidden for the statement, which is published only as one `notion-create-comment` call. `replace_content` stays exclusive to recycle step 4 and to rewriting the rolling status page, and `update_properties` stays the status-sync tool. `discussion_id` and `selection_with_ellipsis` are forbidden on the comment too, the latter because anchoring to a body block would require matching card body text, which the section forbids.
+**Expected answer:** None may: `insert_content`, `update_content`, and `replace_content` are all forbidden for the statement, which is published only as one `notion-create-comment` call. `replace_content` stays exclusive to recycle step 4, and `update_properties` stays the status-sync tool. `discussion_id` and `selection_with_ellipsis` are forbidden on the comment too, the latter because anchoring to a body block would require matching card body text, which the section forbids.
 
 **Anchor:** "Publishing the structured statement", "The write".

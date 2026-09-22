@@ -95,15 +95,20 @@ padding() {
 # accepting it: the guard reaches 3 only for a retirement a RETIRED.md declares,
 # while an undeclared drop of the same boundary is exit 1 and still fails below.
 test_real_repository_passes() {
-  local out rc
+  local out rc retired
   set +e
   out=$("$CHECK" 2>&1)
   rc=$?
   set -e
   case "$rc" in
     0) ;;
-    3) assert_contains "$out" "CAPTAIN MERGE REQUIRED" \
-         "exit 3 did not name the retired boundary it is routing to the captain" ;;
+    3)
+      retired=$(printf '%s\n' "$out" | sed -n 's/.*retired_boundaries=\([0-9][0-9]*\).*/\1/p' | tail -n 1)
+      [ -n "$retired" ] && [ "$retired" -gt 0 ] \
+        || fail "exit 3 counted no retired boundary in its summary: $out"
+      printf '%s\n' "$out" | grep -Eq '^  [^:]+: .+' \
+        || fail "exit 3 named no retired boundary under the captain-merge banner: $out"
+      ;;
     *) fail "the repository's own skills failed the compaction check (exit $rc): $out" ;;
   esac
   assert_contains "$out" "fm-skill-compact-check: ok checked=" \

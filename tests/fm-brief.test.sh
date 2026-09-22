@@ -2500,8 +2500,8 @@ test_spec_card_generates_the_statement_contract() {
     "the conditional declaration did not state that the task text is unseen at scaffold time"
   assert_grep "If your task names no Notion card, this paragraph does not apply" "$dod" \
     "the conditional declaration never cancels itself for a scout that names no card"
-  assert_grep "generated without its card declaration" "$dod" \
-    "the conditional declaration did not have the worker report the missing flag"
+  grep -q "If that text names a Notion card.*generated without its card declaration" "$dod" \
+    || fail "the missing-flag report is not scoped to a task that names a card"
   assert_no_grep "notion.so" "$dod" \
     "a scout brief scaffolded with no card named a card URL anyway"
   pass "fm-brief.sh: the card-statement contract is generated, bound by --spec-card and conditional without it"
