@@ -792,10 +792,14 @@ An active run commits into the pipeline's own worktree while your checkout stays
 Verify such a claim from supported gate evidence; if it cannot be checked from that evidence, relay it as unverified instead of endorsing it, and do not make a scope decision that depends on it.
 Do not run \`axi sync\` while a validation run is active and owns the branch - its guarded custody recovery belongs only to the documented post-abort path, never to checking a finding.
 
-Two firstmate-specific rules layer on top of that guidance:
+Three firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
   Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
+- Hold the whole gate while any ask-user finding at it is unanswered: do not respond to that gate at all, not even with a \`--findings\` subset for the findings already decided.
+  A finding left out of an \`--action fix\` response is dropped for good and the next review does not raise it again, so a fix response lists every finding to keep and omits only the ones firstmate decided to drop.
+  If firstmate's decision covers only some of the ask-user findings at the gate, append a \`needs-decision\` line naming the still-unanswered finding IDs and stop instead of responding.
+  If a subset response has already gone out, re-add each dropped finding with \`--add-finding\` in the next fix response and say so in your status line; never assume the re-review will find it again.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
