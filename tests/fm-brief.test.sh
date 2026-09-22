@@ -1394,6 +1394,57 @@ test_own_deployment_reporting_rule() {
   pass "fm-brief.sh: every ship mode reports only its own deployment"
 }
 
+# Rule 12 binds the unit of reading before handover: a diff shows the neighbour
+# as context, not change, so the worker reads the whole function it inserted
+# into and hands reviewers the function or file. Ship-only: a scout hands over a
+# report, not a code change.
+test_neighbourhood_read_before_handover() {
+  local home id mode brief id_mode phrase
+  home="$TMP_ROOT/neighbourhood-read-home"
+  write_registry "$home"
+
+  for id_mode in "brief-nbr-d1:no-mistakes" "brief-nbr-d2:direct-PR" "brief-nbr-d3:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+  done
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-nbr-d4 some-proj --mode local-only --staging-autonomy >/dev/null 2>&1
+  assert_present "$home/data/brief-nbr-d4/brief.md" "brief-nbr-d4: staging-autonomy brief was not scaffolded"
+
+  for id in brief-nbr-d1 brief-nbr-d2 brief-nbr-d3 brief-nbr-d4; do
+    brief="$home/data/$id/brief.md"
+    assert_grep "12. Before you hand your change over" "$brief" \
+      "$id: brief lost rule 12, the neighbourhood-read rule"
+    [ "$(grep -nF -- "11. Report only the deployment you ran yourself" "$brief" | cut -d: -f1)" \
+      -lt "$(grep -nF -- "12. Before you hand your change over" "$brief" | cut -d: -f1)" ] \
+      || fail "$id: rule 11 no longer precedes rule 12"
+    for phrase in \
+      "every function you inserted into in full, as if someone else had written it" \
+      "what guards each of those" \
+      "the neighbour sits in it as context, not as change" \
+      "What a file says about itself binds your insertion" \
+      "hand the reviewer the whole function or file, never the"; do
+      assert_grep "$phrase" "$brief" \
+        "$id: neighbourhood-read rule lost its sentence: $phrase"
+    done
+  done
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-nbr-scout some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold for the neighbourhood-read check exited non-zero"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-nbr-second --secondmate some-proj >/dev/null 2>&1 \
+    || fail "secondmate scaffold for the neighbourhood-read check exited non-zero"
+  for id in brief-nbr-scout brief-nbr-second; do
+    brief="$home/data/$id/brief.md"
+    assert_no_grep "Before you hand your change over" "$brief" \
+      "$id: non-ship scaffold gained the neighbourhood-read rule"
+    assert_no_grep "binds your insertion" "$brief" \
+      "$id: non-ship scaffold gained the file-self-description clause"
+  done
+  pass "fm-brief.sh: every ship mode carries the neighbourhood-read rule before handover"
+}
+
 # A known stand-side breakage is recorded once per project in
 # data/known-breakage/<repo>.md and folded into every ship and scout brief for
 # that repo, so the landing worker reads it instead of re-investigating it. The
@@ -2366,6 +2417,7 @@ test_gate_queue_contract_reaches_ship_and_scout
 test_brief_prose_is_not_executed_while_scaffolding
 test_gate_queue_quotes_foreign_firstmate_path
 test_own_deployment_reporting_rule
+test_neighbourhood_read_before_handover
 test_known_breakage_record_reaches_ship_and_scout_briefs
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
