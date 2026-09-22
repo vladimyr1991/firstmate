@@ -986,9 +986,144 @@ test_a_resource_refusal_is_given_up_rather_than_waited_out_forever() {
   refusals=$(grep -c "QUEUE NOT GRANTED" "$outf" | tr -d " ")
   [ "$refusals" -le 1 ] \
     || fail "the resource refusal was re-printed $refusals times while waiting"
+  assert_contains "$out" "QUEUE WAITING - test work is live in task-a" \
+    "the wait must name the live task while it waits"
+  refusals=$(grep -c "QUEUE WAITING" "$outf" | tr -d " ")
+  [ "$refusals" -le 1 ] \
+    || fail "the wait line was re-printed $refusals times while waiting"
   assert_contains "$(gate "$state" status 2>&1)" "free" \
     "a refused acquire must not leave a hold behind"
   pass "fm-gate.sh: a resource refusal is given up rather than waited out forever"
+}
+
+# A --wait resource refusal that CLEARS is a wait, not a refusal: on 2026-09-22
+# a worker read "QUEUE NOT GRANTED" followed silently by "queue held by you" and
+# its gate's output as "refused, then ran anyway". The wait must say it is one,
+# the grant must say it waited, and the command must start only after the
+# neighbour's run ended.
+test_a_cleared_run_wait_says_it_waited_and_starts_only_after_the_neighbour() {
+  local state wt pid outf errf rcf waiter tries=0 out journal
+  state=$(new_state resource-clears)
+  GATE_LOCK=$(new_lock resource-clears)
+  wt="$TMP_ROOT/resource-clears-wt"
+  register_task "$state" task-a "$wt"
+  register_task "$state" task-b "$TMP_ROOT/resource-clears-wt-b"
+  pid=$(start_fixture_process "$wt/pytest-suite")
+
+  outf="$TMP_ROOT/resource-clears.out"; errf="$TMP_ROOT/resource-clears.err"
+  rcf="$TMP_ROOT/resource-clears.rc"
+  ( FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_POLL_SECONDS=1 \
+    "$GATE" run task-b --wait -- \
+    bash -c "kill -0 $pid 2>/dev/null && echo STARTED_WHILE_LIVE || echo STARTED_AFTER_END" \
+    >"$outf" 2>"$errf"; printf '%s\n' "$?" > "$rcf" ) &
+  waiter=$!
+  FIXTURE_PIDS+=("$waiter")
+  while ! grep -q "QUEUE WAITING" "$outf" 2>/dev/null && kill -0 "$waiter" 2>/dev/null \
+    && [ "$tries" -lt 100 ]; do
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  kill "$pid" 2>/dev/null
+  tries=0
+  while kill -0 "$waiter" 2>/dev/null && [ "$tries" -lt 200 ]; do
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  if kill -0 "$waiter" 2>/dev/null; then
+    kill "$waiter" 2>/dev/null
+    fail "run --wait never took the queue after the neighbour's run ended"
+  fi
+  wait "$waiter" 2>/dev/null
+
+  out=$(cat "$outf")
+  assert_not_contains "$out" "QUEUE NOT GRANTED" \
+    "a wait that is still going must not print the terminal refusal"
+  assert_not_contains "$out" "STARTED_WHILE_LIVE" \
+    "the command must never start while the neighbour's run is live"
+  expect_code 0 "$(cat "$rcf")" "a cleared resource wait must end in the command's own success"
+  printf '%s\n' "$out" | awk '
+    /QUEUE WAITING - test work is live in task-a/ && s == 0 { s = 1 }
+    /QUEUE GRANTED AFTER WAITING [0-9]+s - test work in task-a is no longer seen/ && s == 1 { s = 2 }
+    /queue held by you: task-b/ && s == 2 { s = 3 }
+    /STARTED_AFTER_END/ && s == 3 { s = 4 }
+    END { exit (s == 4 ? 0 : 1) }' \
+    || fail "stdout must say waiting, then granted after waiting, then held, then run; got: $out"
+  assert_contains "$(cat "$errf")" "waiting: test work is live outside the hold, in task-a" \
+    "the wait must reach stderr in its waiting form"
+  journal=$(cat "$GATE_LOCK.journal")
+  assert_contains "$journal" "resource-wait id=task-b live_in=task-a" \
+    "the journal must record the resource wait"
+  printf '%s\n' "$journal" | grep "taken id=task-b" | grep -q "waited=[0-9]*s waited_for=task-a" \
+    || fail "the taken event must record how long it waited and for whom; journal: $journal"
+  pass "fm-gate.sh: a cleared run --wait says it waited and starts only after the neighbour ended"
+}
+
+# Guard: without --wait a resource refusal of `run` never starts the command.
+test_run_without_wait_never_starts_under_a_resource_refusal() {
+  local state wt out rc
+  state=$(new_state resource-run-nowait)
+  GATE_LOCK=$(new_lock resource-run-nowait)
+  wt="$TMP_ROOT/resource-run-nowait-wt"
+  register_task "$state" task-a "$wt"
+  register_task "$state" task-b "$TMP_ROOT/resource-run-nowait-wt-b"
+  start_fixture_process "$wt/pytest-suite" >/dev/null
+
+  out=$(gate "$state" run task-b -- touch "$TMP_ROOT/resource-run-nowait.trace" 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "run must exit 1 on a resource refusal"
+  [ ! -e "$TMP_ROOT/resource-run-nowait.trace" ] || fail "run started its command despite the refusal"
+  assert_contains "$out" "QUEUE NOT GRANTED - a full run is already live in task-a" \
+    "the no-wait refusal keeps its terminal wording"
+  assert_contains "$(gate "$state" status 2>&1)" "free" "a refused run must not leave a hold behind"
+  pass "fm-gate.sh: run without --wait never starts its command under a resource refusal"
+}
+
+# Guard: a run --wait that gives up never starts the command.
+test_run_wait_that_gives_up_never_starts() {
+  local state wt out rc
+  state=$(new_state resource-run-giveup)
+  GATE_LOCK=$(new_lock resource-run-giveup)
+  wt="$TMP_ROOT/resource-run-giveup-wt"
+  register_task "$state" task-a "$wt"
+  register_task "$state" task-b "$TMP_ROOT/resource-run-giveup-wt-b"
+  start_fixture_process "$wt/pytest-suite" >/dev/null
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_GATE_LOCK_DIR="$GATE_LOCK" FM_GATE_POLL_SECONDS=1 \
+    FM_GATE_RESOURCE_WAIT_SECONDS=3 "$GATE" run task-b --wait -- \
+    touch "$TMP_ROOT/resource-run-giveup.trace" 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "a given-up run --wait must exit 1"
+  [ ! -e "$TMP_ROOT/resource-run-giveup.trace" ] || fail "run started its command after giving up"
+  assert_contains "$out" "QUEUE GIVEN UP" "the give-up must be on stdout"
+  assert_not_contains "$out" "queue held by you" "giving up must never grant the queue"
+  assert_contains "$(gate "$state" status 2>&1)" "free" "a given-up run must not leave a hold behind"
+  pass "fm-gate.sh: run --wait that gives up never starts its command"
+}
+
+# A grant that followed no resource wait says nothing about waiting.
+test_a_grant_without_a_resource_wait_is_unchanged() {
+  local state out
+  state=$(new_state resource-none)
+  GATE_LOCK=$(new_lock resource-none)
+  register_task "$state" task-b "$TMP_ROOT/resource-none-wt-b"
+
+  out=$(gate "$state" run task-b --wait -- true 2>/dev/null) \
+    || fail "run --wait on a free queue must succeed"
+  assert_contains "$out" "queue held by you: task-b" "a free queue is granted as before"
+  assert_not_contains "$out" "QUEUE GRANTED AFTER WAITING" "no wait happened, so none is reported"
+  if grep "taken id=task-b" "$GATE_LOCK.journal" | grep -q "waited="; then
+    fail "a grant with no resource wait must not record one"
+  fi
+  pass "fm-gate.sh: a grant with no resource wait is unchanged"
+}
+
+# The header owns what each queue line means.
+test_help_explains_the_resource_wait_lines() {
+  local out line
+  out=$("$GATE" --help 2>&1)
+  for line in "QUEUE WAITING" "QUEUE GRANTED AFTER WAITING" "QUEUE NOT GRANTED" "QUEUE GIVEN UP" \
+    "only after \`queue held by you\`"; do
+    assert_contains "$out" "$line" "--help must explain $line"
+  done
+  pass "fm-gate.sh: --help explains the resource wait lines"
 }
 
 test_waiting_workers_do_not_block_each_other() {
@@ -2184,6 +2319,11 @@ test_a_foreign_break_marker_is_refused_visibly
 test_an_active_break_marker_survives_a_low_stale_age
 test_a_live_run_outside_the_hold_refuses_a_free_queue
 test_a_resource_refusal_is_given_up_rather_than_waited_out_forever
+test_a_cleared_run_wait_says_it_waited_and_starts_only_after_the_neighbour
+test_run_without_wait_never_starts_under_a_resource_refusal
+test_run_wait_that_gives_up_never_starts
+test_a_grant_without_a_resource_wait_is_unchanged
+test_help_explains_the_resource_wait_lines
 test_waiting_workers_do_not_block_each_other
 test_a_waiting_worker_holding_the_gate_command_does_not_block_issuance
 test_a_dev_server_does_not_block_issuance

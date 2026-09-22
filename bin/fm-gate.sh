@@ -87,6 +87,14 @@
 #   granting: the queue is never handed over on that path, because that would put
 #   the second full run on the machine. The worker re-reads state and escalates,
 #   which is what the end of any wait obliges it to do.
+#   The lines of a resource refusal say which of those it is. Without --wait it
+#   is QUEUE NOT GRANTED, terminal: exit 1, and `run` never starts its command.
+#   Under --wait it is QUEUE WAITING, printed once per newly named task: nothing
+#   has started yet. When the probe then comes back empty and the hold is taken,
+#   QUEUE GRANTED AFTER WAITING <S>s names the wait that ended, and the journal's
+#   `taken` event carries waited= and waited_for=; a wait that outlasts
+#   FM_GATE_RESOURCE_WAIT_SECONDS ends in QUEUE GIVEN UP, exit 1, no command.
+#   On every path `run` starts its command only after `queue held by you`.
 #   What it does count is CHECK WORK (pytest, playwright, make, vitest, jest),
 #   never "any process in the worktree", never a bare `node`, and never a process
 #   whose argv carries this script's own name. A worker WAITING for the queue
@@ -1126,9 +1134,12 @@ take_queue() {
           fi
           now=$(now_epoch)
           [ -n "$resource_since" ] || resource_since=$now
+          # Under --wait this is a wait, not a refusal: it says so, and names
+          # the probe's finding as test work, which may be a targeted run.
           if [ "$resource_named" != "$other" ]; then
-            echo "QUEUE NOT GRANTED - a full run is already live in $other, although the hold was free"
-            echo "a full run is live outside the hold, in $other" >&2
+            echo "QUEUE WAITING - test work is live in $other although the hold was free; your command has not started and starts only once that work ends, or never if it outlasts ${RESOURCE_WAIT}s (FM_GATE_RESOURCE_WAIT_SECONDS)"
+            echo "waiting: test work is live outside the hold, in $other" >&2
+            journal resource-wait "$id" "live_in=$other"
             resource_named=$other
           fi
           waited=$(( now - resource_since ))
@@ -1153,7 +1164,14 @@ take_queue() {
           rm -f "$MY_TICKET" 2>/dev/null
           MY_TICKET=
         fi
-        journal taken "$id" "pid=$holder_pid" "heartbeat=$heartbeat"
+        if [ -n "$resource_since" ]; then
+          waited=$(( $(now_epoch) - resource_since ))
+          journal taken "$id" "pid=$holder_pid" "heartbeat=$heartbeat" \
+            "waited=${waited}s" "waited_for=$resource_named"
+          echo "QUEUE GRANTED AFTER WAITING ${waited}s - test work in $resource_named is no longer seen"
+        else
+          journal taken "$id" "pid=$holder_pid" "heartbeat=$heartbeat"
+        fi
         echo "queue held by you: $id"
         return 0
       fi
