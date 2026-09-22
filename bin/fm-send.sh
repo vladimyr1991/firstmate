@@ -18,6 +18,14 @@
 # Submission dispatches through the target's recorded backend; the tmux adapter
 # shares its composer/submit core with the away-mode daemon via bin/fm-tmux-lib.sh.
 # Tune with FM_SEND_RETRIES (default 3) / FM_SEND_SLEEP (0.4).
+#
+# Length limit: a text message whose final bytes (after any from-firstmate
+# carrier and correlation id) exceed FM_SEND_MAX_BYTES (default 1000; a
+# non-numeric or zero value falls back to 1000) is refused with exit 1 before
+# any backend call. The Claude Code composer keeps only the bytes after the last
+# full 1022-byte chunk of typed text, so a longer steer would silently lose its
+# head. Put long instructions in a file and send its path instead.
+# A steer of 1001-1022 bytes, which used to arrive whole, is refused too.
 # Slash commands, and codex `$...` skill invocations resolved through harness
 # meta, get a longer pre-Enter settle so completion popups do not swallow Enter.
 #
@@ -271,6 +279,20 @@ else
       echo "error: failed to durably prepare pending-reply delivery for $TARGET_TASK_ID" >&2
       exit 1
     fi
+  fi
+  # Refuse before any backend call: the Claude Code composer silently drops
+  # everything before the last full 1022-byte chunk (see header).
+  max_bytes=${FM_SEND_MAX_BYTES:-1000}
+  case "$max_bytes" in ''|*[!0-9]*) max_bytes=1000 ;; esac
+  max_bytes=$((10#$max_bytes))
+  [ "$max_bytes" -gt 0 ] || max_bytes=1000
+  message_bytes=$(LC_ALL=C; printf '%s' "${#MESSAGE}")
+  if [ "$message_bytes" -gt "$max_bytes" ]; then
+    if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
+      fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+    fi
+    echo "error: message is $message_bytes bytes, over fm-send's $max_bytes-byte limit (the Claude Code composer silently drops everything before the last 1022-byte chunk); write the text to a file and send its path instead. Nothing was sent to $T." >&2
+    exit 1
   fi
   # Slash commands open a completion popup in some TUIs (verified on codex);
   # submitting too fast selects nothing, so give the popup time to settle before
