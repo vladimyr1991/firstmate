@@ -123,3 +123,6 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 - A maintainer-verification record under `docs/verification/` records active empirical facts, not assumptions or task chronology.
 - Include the date, version, exact commands run, and exact output needed to support the current guarantee.
 - Keep incident chronology and delivery evidence in private task reports or PR evidence unless a concise rationale is required to maintain a current safety boundary.
+- Never signal `$!` of a backgrounded function or compound command as if it were the program it launched: bash on Linux keeps a wrapper subshell around it, so the program is a grandchild that a single-pid kill never reaches, while bash on macOS collapses the wrapper and hides the defect from every local run.
+  Launch such a job with job control scoped to the statement and signal its process group, as `bin/fm-gate.sh`, `bin/fm-test-run.sh`, and `bin/fm-herdr-lab.sh` do.
+  A cancellation test must make the launched process a grandchild on purpose, so it is red on the developer's platform and not only on the CI runner.
