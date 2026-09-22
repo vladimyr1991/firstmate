@@ -15,6 +15,13 @@ mkdir -p "$FAKE_STATE"
 printf '%s\n' '/home/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
 : > "$FAKE_LOG"
 
+cleanup() {
+  : > "$TMP_ROOT/late-launch-gate" 2>/dev/null || true
+  fm_test_cleanup
+  :
+}
+trap cleanup EXIT
+
 cat > "$FAKEBIN/herdr" <<'SH'
 #!/usr/bin/env bash
 set -eu
