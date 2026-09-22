@@ -14,7 +14,9 @@ S14 to S16 belong to that same change and record three answers only the comment 
 S14 the control answers substantively and in agreement with the post-change answer, because the pre-comment skill's Boundaries section already settles authorship by shape and already makes the fleet's own writes untrusted input.
 S16 the control answers substantively and oppositely, giving the body form with `command: insert_content` and `position: {"type":"start"}` and `replace_content` exclusive to recycle step 4, with only the `update_properties` half left unstated in that paragraph.
 S15 is the only one of the three the control answers `NOT STATED`, because the statement was never a comment before this change and nothing said what a recycled card keeps of its previous life.
-A scenario the control already answers still earns its place: it is a regression guard, showing the change did not alter an answer the skill already gave, while S15 alone is the evidence that the new text added something.
+S14 earns its place as an agreement guard: the control answering it the same way is what shows this change did not alter an answer the skill already gave.
+S16's control answer disagrees with the post-change answer on purpose, and that disagreement is itself the visible regression close rather than a guard that the answer is unchanged.
+S15's `NOT STATED` is the evidence that the new text added something the skill did not say before.
 
 ## S1 - A capacity block that contradicts itself
 

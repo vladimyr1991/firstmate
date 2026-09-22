@@ -2498,8 +2498,8 @@ test_spec_card_generates_the_statement_contract() {
     "the conditional declaration did not give notion-board's SKILL.md by absolute path"
   assert_grep "this scaffold cannot inspect the task text" "$dod" \
     "the conditional declaration did not state that the task text is unseen at scaffold time"
-  assert_grep "If your task names no Notion card, this paragraph does not apply" "$dod" \
-    "the conditional declaration never cancels itself for a scout that names no card"
+  grep -q "If your task names no Notion card, or does not ask you to follow .*this paragraph does not apply" "$dod" \
+    || fail "the conditional declaration does not cancel on both the card and the spec-worker condition"
   grep -q "If that text names a Notion card.*generated without its card declaration" "$dod" \
     || fail "the missing-flag report is not scoped to a task that names a card"
   assert_no_grep "notion.so" "$dod" \

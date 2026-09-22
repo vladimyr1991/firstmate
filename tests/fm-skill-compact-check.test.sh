@@ -91,9 +91,16 @@ padding() {
 # boundary is the captain's merge. Reading any non-zero as a defect made the
 # escape hatch unusable, because a branch that deliberately retires a boundary
 # and records it in RETIRED.md turned the repository's own gate red and stayed
-# red until it landed, which is exactly backwards. Nothing is loosened by
-# accepting it: the guard reaches 3 only for a retirement a RETIRED.md declares,
-# while an undeclared drop of the same boundary is exit 1 and still fails below.
+# red until it landed, which is exactly backwards. An undeclared drop of the
+# same boundary is exit 1 and still fails below, which is what the cases below
+# prove. The acceptance is wider than a single retiring change, though: the
+# guard reports every subject a RETIRED.md declares for any skill whose state
+# is changed or compacted and exits 3 whenever that list is non-empty, so once
+# a skill carries a retired-boundary entry, every later branch that merely edits
+# that skill exits 3 on the already-honoured declaration, and this case takes it
+# without checking that the retirement is new. The follow-up
+# fm-skill-compact-check-exit3-acceptance-is-sticky owns that fix, in the guard
+# rather than here.
 test_real_repository_passes() {
   local out rc retired
   set +e
