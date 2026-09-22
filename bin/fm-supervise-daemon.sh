@@ -110,7 +110,8 @@
 #                                   (off|auto|osascript|herdr|command:<cmd>). An
 #                                   absent file/var means auto: on macOS that is
 #                                   an OS-level notification, so the alarm is
-#                                   never silent. See wedge_alarm_notify below
+#                                   never silent. See wedge_alarm_notify in
+#                                   bin/fm-wedge-alarm-lib.sh
 #                                   and docs/configuration.md.
 #          FM_WEDGE_ALARM_EXEC      notifier seam: when set, every notifier
 #                                   channel routes through this command as
@@ -119,7 +120,8 @@
 #                                   nothing. Unset in production. When SOURCED the
 #                                   daemon defaults this to "discard" so no test
 #                                   can post a real notification (wedge_alarm_emit
-#                                   and the library-mode guard at the foot).
+#                                   in bin/fm-wedge-alarm-lib.sh and the
+#                                   library-mode guard at the foot).
 #          FM_WEDGE_ALARM_TIMEOUT_SECS seconds allowed for each notifier before
 #                                   its watchdog terminates it and continues to the
 #                                   next channel (default 10; invalid/zero uses the

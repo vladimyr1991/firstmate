@@ -76,7 +76,7 @@ config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inhe
 config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored, materialized as 7,500 estimated tokens by locked primary bootstrap and inherited into secondmate homes; see docs/configuration.md "Startup memory budget"
 config/herdr-presentation-spaces  optional presence flag for Herdr's default-off disposable single-task visual projection; LOCAL, gitignored; inherited by secondmate homes; see docs/herdr-backend.md "Optional presentation spaces"
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
-config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
+config/wedge-alarm  optional active-alert channel directives shared by the away-mode wedge alarm and the outside-session watcher guard; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/voice    optional hold-to-talk voice input; LOCAL, gitignored, not inherited; absent = inert; bin/fm-voice.sh --help owns keys and mechanics
 config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
@@ -123,6 +123,7 @@ state/               volatile runtime signals; gitignored
   (no .gate-lock here)  the full-test-gate queue hold is MACHINE-wide, not per-home, so every home of this user on the machine contends for one hold; workers take and release it themselves through `bin/fm-gate.sh` and firstmate is never in that loop (path and tunables: `FM_GATE_*` in docs/configuration.md)
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
   .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch
+  .watcher-outside-guard.lock .watcher-outside-guard-episode .watcher-outside-guard-events.log .watcher-outside-guard.out .watcher-outside-guard.err   outside-session watcher guard single-flight lock, once-per-episode alert marker, bounded diagnostics ledger, and LaunchAgent stdio; written only by bin/fm-watcher-outside-guard.sh; never touch (docs/watcher-continuity.md)
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it

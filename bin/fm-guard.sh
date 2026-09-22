@@ -161,8 +161,8 @@ if [ -n "$tangle_branch" ]; then
 fi
 
 # Compute supervision need and watcher-beacon freshness via the shared
-# grace-based predicate (bin/fm-supervision-lib.sh). Act when work, an event
-# source, or an X-mode relay poll needs supervision.
+# grace-based predicate (bin/fm-supervision-lib.sh), which owns what counts as
+# supervision need.
 fm_supervision_status "$STATE" "$GRACE"
 in_flight=$FM_SUP_IN_FLIGHT
 sources=$FM_SUP_SOURCES
