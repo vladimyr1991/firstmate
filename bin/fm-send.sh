@@ -282,11 +282,10 @@ else
   fi
   # Refuse before any backend call: the Claude Code composer silently drops
   # everything before the last full 1022-byte chunk (see header).
-  max_bytes=${FM_SEND_MAX_BYTES:-1000}
-  case "$max_bytes" in ''|*[!0-9]*) max_bytes=1000 ;; esac
-  max_bytes=$((10#$max_bytes))
-  [ "$max_bytes" -gt 0 ] || max_bytes=1000
-  message_bytes=$(LC_ALL=C; printf '%s' "${#MESSAGE}")
+  # fm_backend_send_text_submit enforces the same limit; checking here first
+  # lets fm-send discard its pending-reply record and name the target.
+  max_bytes=$(fm_backend_send_max_bytes)
+  message_bytes=$(fm_backend_text_bytes "$MESSAGE")
   if [ "$message_bytes" -gt "$max_bytes" ]; then
     if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
       fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true

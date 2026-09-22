@@ -891,7 +891,7 @@ window_for_task() {  # <task-key> [state]
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
 inject_msg() {  # <message> [state]
-  local msg=$1 state target backend retries sleep_s verdict composer encoded
+  local msg=$1 state target backend retries sleep_s verdict composer encoded raw_msg
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
@@ -903,6 +903,7 @@ inject_msg() {  # <message> [state]
   # the exact away-supervisor kind without interpreting this payload's prose.
   msg=$(_collapse_newlines "$msg")
   fm_operational_input_encode away-supervisor "$msg" encoded || return 1
+  raw_msg=$msg
   msg=$encoded
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
   # BACKEND-AWARE (previously a raw `tmux display-message` pane-exists probe):
@@ -938,6 +939,23 @@ inject_msg() {  # <message> [state]
   # Dispatches through fm_backend_send_text_submit (bin/fm-backend.sh): for
   # backend=tmux this calls fm_backend_tmux_send_text_submit, a verbatim
   # re-export of fm_tmux_submit_core - byte-identical to calling it directly.
+  # A batched digest can outgrow the composer limit, and the submit primitive
+  # refuses such text rather than let the composer drop its head. The daemon
+  # owns this text, so deliver it through a file pointer instead, the way long
+  # steers already go. The file lives in state/ with the other .subsuper-*
+  # internals; a failed write keeps the buffer for the next cycle. This runs
+  # after the guards so a deferred cycle writes no file.
+  if [ "$(fm_backend_text_bytes "$msg")" -gt "$(fm_backend_send_max_bytes)" ]; then
+    local digest_file
+    digest_file="$state/.subsuper-digest-$(date +%s)-$$-$RANDOM.txt"
+    if ! printf '%s\n' "$raw_msg" > "$digest_file"; then
+      log "inject deferred: could not write long digest to $digest_file"
+      return 1
+    fi
+    fm_operational_input_encode away-supervisor \
+      "away-mode digest too long for the composer; read it in full at $digest_file" msg || return 1
+    log "inject: digest over composer limit, sending file pointer $digest_file"
+  fi
   retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
   sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
   verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")
