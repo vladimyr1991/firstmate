@@ -71,7 +71,7 @@ The control answers `NOT STATED` for all three.
 
 **Expected answer:** Exactly one `notion-create-comment` call carrying `page_id` and `markdown` and nothing else, so the statement lands as a new page-level discussion; it comes first, then firstmate spawns the implementation worker, then links it, and the card becomes `В работе` only after that durable link. After the success the PM makes no `fetch`, no `get_comments`, and no comment count, and it writes no card body at all; the connector result alone is the proof.
 
-**Anchor:** "Publishing the structured statement", "The write" and the outcome table's READY-success row, plus "No `fetch`, `get_comments`, or comment count follows a success either."
+**Anchor:** "Publishing the structured statement", "The write" and the outcome table's READY-success row, plus "No `fetch`, `get_comments`, or comment count ever follows the write, on success or failure alike."
 
 ## S7 - Whether a queued write can happen at all
 

@@ -232,8 +232,8 @@ This publication adds no `query_data_sources` call to any cycle.
 The connector result is the only authority on whether the comment landed.
 A clean synchronous success is a completed publication.
 `notion-create-comment` takes no `allow_async` parameter and returns no `async_task`, so no poll exists on this path and no polling tool is called: `async-success`, `async-failed`, and `poll-timeout` are unreachable here, and they stay recorded values below only so every consumer of that line and the status-sync row matching anything but a success remain valid unchanged.
-A fetch never confirms, denies, deduplicates, bounds, or authorizes a publication: a `fetch` render can lag, so a re-read after an ambiguous write proves nothing and is never made for that purpose.
-No `fetch`, `get_comments`, or comment count follows a success either.
+No `fetch`, `get_comments`, or comment count ever follows the write, on success or failure alike: a read never confirms, denies, deduplicates, bounds, or authorizes a publication.
+A `fetch` render can lag, so a re-read after an ambiguous write proves nothing and is never made for that purpose, and a comment read on the failure path is the same unreliable proof wearing worse clothes, since it would turn a write the connector already accepted into a false `did not publish`.
 
 ### The outcome
 
@@ -250,7 +250,7 @@ The PM reports one machine-readable outcome, as one line in its report and one l
 |---|---|
 | READY, success | Continue the existing spawn-then-link order: publication precedes the implementation spawn, the link still follows the spawn, and the card becomes `В работе` only after the durable implementation link, through the status table below. |
 | BLOCKED, success | The questions are on the card with `статус=нужен ответ`; register each captain question as a hold through `decision-hold-lifecycle`, spawn no implementation worker, and the status table below sets `На ревью`. An answer routes through that same owner, and a revised gate outcome makes a new envelope and a new publication attempt. |
-| Either, any non-success | The automatic attempt ends permanently: no retry, no second comment, no fetch to infer whether it landed, and no implementation worker. Firstmate opens one durable decision holder on the spec task, `tasks-axi hold <spec-task-id> --kind captain --reason "<card-url> statement publish <publish-id> <connector-outcome>"`, so the reconciliation table finds it and the status table below sets or retains `На ревью`. |
+| Either, any non-success | The automatic attempt ends permanently: no retry, no second comment, no confirming read of any kind to infer whether it landed under the rule above, and no implementation worker. Firstmate opens one durable decision holder on the spec task, `tasks-axi hold <spec-task-id> --kind captain --reason "<card-url> statement publish <publish-id> <connector-outcome>"`, so the reconciliation table finds it and the status table below sets or retains `На ревью`. |
 
 A failed BLOCKED publication may leave the questions absent from the card; `На ревью` still makes the unresolved state visible, and firstmate never claims the questions were published.
 That failure holder has exactly three exits: the card's author confirms the comment is visible and firstmate resolves the hold, after which a READY task dispatches as in the success row; the author withdraws or redirects the task and firstmate resolves it through ordinary backlog and status handling; or the author explicitly directs a new attempt, which is a new deliberate publication with a new publish id and never an automatic retry.
@@ -275,7 +275,7 @@ Event sync is the fast path, never the guarantee: the event dies with the task t
 A bare `done:` with staging prose in it is not that signal: firstmate does not recover a terminal outward effect from a sentence, so treat a missing key as an unfinished contract and fix the brief rather than guessing the card is ready to test.
 
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
-The publication PM writes the `statement_publish:` row's status in the same turn as the failed write, under the same re-read rule as every other write here; that re-read serves the divergence check alone and never says anything about whether the block landed.
+The publication PM writes the `statement_publish:` row's status in the same turn as the failed write, under the same re-read rule as every other write here; that re-read serves the divergence check alone and never says anything about whether the comment landed.
 For `pm-unavailable` there was no publication PM, so that row's status write is owed by the next live PM on its first turn, still under this table and the same re-read rule, and firstmate never writes it itself; firstmate names the owed write (card URL, publish id, `pm-unavailable`) from the hold reason in that PM's brief or one-line steer, so the hold reason is the durable input the PM's first-turn status write acts on.
 Never move a card the captain moved by hand in the meantime; re-read the card before writing and, if it has moved somewhere this table did not put it, leave it and report the divergence.
 Reporting a divergence means leaving the card exactly as it is, writing it into the PM's scout report, and listing it on the rolling status page - never a silent correction, because only firstmate decides what to do about one.
