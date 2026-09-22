@@ -121,6 +121,10 @@
 # Ship briefs also carry the own-deployment reporting rule: a worker reports only
 # the deployment it ran itself and names a neighbour's task and build when a
 # neighbour carried the change out instead.
+# Ship briefs also carry the neighbourhood-read rule: before handing a change over
+# the worker reads every function it inserted into in full and names what else that
+# function does of the same kind and how each is guarded, because a diff-only review
+# inherits the author's frame and once passed an unguarded second outward send.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -846,6 +850,20 @@ $RULE1
     sees the same green landing and concludes the job is done - eight tasks once closed that way on
     top of a red deployment. If a neighbour carried your work out, write exactly that, naming their
     task and their build number, and do not borrow their result as your own.
+12. Before you hand your change over - to the pipeline, to a reviewer you order, or to firstmate - read
+    every function you inserted into in full, as if someone else had written it, and write down what
+    else that function already does of the same kind as your addition and what guards each of those
+    against repetition, failure, or misuse; then give your addition the same guard, or state why it
+    needs none.
+    A diff cannot show you this: the neighbour sits in it as context, not as change, so a review that
+    reads only your diff inherits your blind spot - four reviewers fed the diff passed a second outward
+    send that lacked the repeat guard its neighbour three lines away carried, and a reader who opened
+    the whole function found it in a minute.
+    What a file says about itself binds your insertion: a docstring stating that the file's writes are
+    idempotent so retries are safe is a requirement your new code inherits, not a description of the
+    old code.
+    When you order a review of your own change, hand the reviewer the whole function or file, never the
+    diff alone.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
