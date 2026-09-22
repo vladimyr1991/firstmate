@@ -7,7 +7,7 @@
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--staging-autonomy] [--sync-base <branch>] [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--sync-base <branch>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--sync-base <branch>] [--herdr-lab] [--spec-card <card-url>]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects} [--standing-duty]
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -79,6 +79,24 @@
 # variant is never branched from: whether it is behind `origin/<branch>` or already
 # contains it, the step routes it to the same remedy, and the branch step's
 # alternative is conditioned on that routing rather than on the drift check.
+# --spec-card <card-url> applies to --scout briefs only and names the Notion card a
+# specification worker is writing for. It makes the generated Definition of done
+# require the report to end with a "## Постановка для карточки" section, pointing at
+# .agents/skills/notion-board/SKILL.md by absolute path for that section's field list
+# and bounds; that skill stays the one owner of them and this script restates neither.
+# The value must be an https:// notion.so or notion.com URL with no whitespace or
+# shell characters, the one acceptance rule fm_notion_index_url_safe owns in
+# bin/fm-notion-index-lib.sh; anything else, an empty value, a ship brief, or a
+# --secondmate charter is refused and no brief is written.
+# Every scout brief scaffolded WITHOUT the flag carries the same requirement as a
+# conditional declaration instead, in the shape the Herdr declaration below already
+# uses and for the same reason: the scaffold cannot see the {TASK} text that arrives
+# later, so the brief tells the worker that if that text names a Notion card the
+# section is owed anyway, and to report that the brief was generated without its card
+# declaration. Three card-linked specifications in a row came back with no section
+# because the requirement lived only in firstmate's memory, and all three named the
+# card inside {TASK}, so the declaration is what closes that defect rather than the
+# flag. A scout task that names no card is told the paragraph does not apply.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -177,6 +195,11 @@ esac
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# fm_notion_index_url_safe is the repo's single rule for a card URL that is safe to
+# write into a line-oriented file and echo into a later prompt; --spec-card reuses it
+# rather than growing a second acceptance rule here.
+# shellcheck source=bin/fm-notion-index-lib.sh
+. "$SCRIPT_DIR/fm-notion-index-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 RESOLVE_VERB=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
 
@@ -213,6 +236,8 @@ MODE=
 MODE_SET=0
 SYNC_BASE=
 SYNC_BASE_SET=0
+SPEC_CARD=
+SPEC_CARD_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -223,6 +248,7 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       sync-base) SYNC_BASE=$a; SYNC_BASE_SET=1 ;;
+      spec-card) SPEC_CARD=$a; SPEC_CARD_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -239,6 +265,8 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --sync-base) want_value=sync-base ;;
     --sync-base=*) SYNC_BASE=${a#--sync-base=}; SYNC_BASE_SET=1 ;;
+    --spec-card) want_value=spec-card ;;
+    --spec-card=*) SPEC_CARD=${a#--spec-card=}; SPEC_CARD_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -278,6 +306,24 @@ if [ "$SYNC_BASE_SET" -eq 1 ]; then
        exit 1 ;;
   esac
   [ -n "$SYNC_BASE" ] || { echo "error: --sync-base requires a branch name (e.g. --sync-base develop)" >&2; exit 1; }
+fi
+
+# The card statement is a scout deliverable: a ship brief delivers a change and a
+# charter is not one task's report, so neither can carry the section this flag
+# requires. An empty value is refused rather than dropped, because a brief that names
+# no card while claiming one is exactly the silent gap this flag exists to close, and
+# the URL is validated by the index lib's one rule because it is echoed into the
+# brief a later agent reads.
+if [ "$SPEC_CARD_SET" -eq 1 ]; then
+  if [ "$KIND" != scout ]; then
+    echo "error: --spec-card applies only to --scout briefs; a ship brief delivers a change and a secondmate charter is not one task's report" >&2
+    exit 1
+  fi
+  [ -n "$SPEC_CARD" ] || { echo "error: --spec-card requires a Notion card URL (e.g. --spec-card https://www.notion.so/<card>)" >&2; exit 1; }
+  if ! fm_notion_index_url_safe "$SPEC_CARD"; then
+    echo "error: --spec-card must be an https:// notion.so or notion.com link with no whitespace or shell characters - got: $SPEC_CARD" >&2
+    exit 1
+  fi
 fi
 
 # Staging-inclusive landing autonomy is a shape of local-only delivery, never a
@@ -558,6 +604,30 @@ EOF
 GATE_SECTION=${GATE_SECTION%$'\n'}
 
 if [ "$KIND" = scout ]; then
+# Card-statement contract, in one of two forms, always present. The binding form
+# names the card; without the flag the conditional form carries the same requirement
+# against the {TASK} text the scaffold cannot see, which is the form that actually
+# closes the defect - all three specifications that came back with no section named
+# their card inside {TASK}. Both point at notion-board's SKILL.md by absolute path
+# and restate none of the field list or the bounds it owns.
+if [ "$SPEC_CARD_SET" -eq 1 ]; then
+  IFS= read -r -d '' STATEMENT_SECTION <<EOF || true
+This task is the specification worker for the Notion card $SPEC_CARD.
+Your report must end with a section titled exactly \`## Постановка для карточки\`, holding the payload fields that \`$FM_ROOT/.agents/skills/notion-board/SKILL.md\` defines for it, verbatim and ready to publish, from \`**Задача:**\` through \`**Вопросы:**\`.
+Read that file for the field list and the bounds before you write the section, and stay inside them: a section outside those bounds is sent back for revision instead of published.
+Nobody re-authors that text - it is published to the card exactly as you wrote it, and it is the only thing the card's author sees of how the request was read.
+A report without that section is incomplete, whatever else it contains.
+EOF
+else
+  IFS= read -r -d '' STATEMENT_SECTION <<EOF || true
+**Card statement:** this scaffold cannot inspect the task text that replaces \`{TASK}\` later.
+If that text names a Notion card and asks you to follow \`write-implementation-spec\`, your report must end with a section titled exactly \`## Постановка для карточки\`, built to the field list and the bounds in \`$FM_ROOT/.agents/skills/notion-board/SKILL.md\`, because that section is the only thing the card's author sees of how the request was read.
+Say in your report that this brief was generated without its card declaration, so the next one is scaffolded with \`--spec-card <card-url>\`.
+If your task names no Notion card, this paragraph does not apply and you write no such section.
+EOF
+fi
+STATEMENT_SECTION=${STATEMENT_SECTION%$'\n'}
+
 # A scout cuts no branch, so its sync step guards the base it investigates on
 # instead: a diagnosis drawn on a stale pooled base reports a fix as missing when
 # it is already live. Without the flag the Setup keeps its original prose exactly.
@@ -635,6 +705,7 @@ $GATE_SECTION
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+$STATEMENT_SECTION
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
