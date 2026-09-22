@@ -29,7 +29,8 @@ Firstmate never reads project code to write one: that split is what keeps hard r
 
 1. Scaffold a scout brief with `bin/fm-brief.sh <task-id> <repo> --scout`, and fill `{TASK}` with the captain's own request, the resolved project, and the instruction to follow `write-implementation-spec` and deliver its specification as the scout report.
    A crewmate in a project worktree cannot load a firstmate skill by name, so give the brief the absolute path of that skill's `SKILL.md` in firstmate's own checkout rather than its name alone.
-   When the task is linked to a Notion card and is not mechanical, the brief also requires the report to end with the `## Постановка для карточки` section that `notion-board` owns, and gives that skill's `SKILL.md` by absolute path for the same reason.
+   When the task is linked to a Notion card and is not mechanical, scaffold it as `bin/fm-brief.sh <task-id> <repo> --scout --spec-card <card-url>` instead: that flag generates the requirement that the report end with the `## Постановка для карточки` section `notion-board` owns, naming the card and giving that skill's `SKILL.md` by absolute path for the same reason, so the requirement is never left to be remembered and hand-written.
+   A brief scaffolded without the flag still carries that requirement as a declaration conditional on the `{TASK}` text naming a card, and the returned report says the flag was missing; scaffold the next one with it.
 2. Spawn it with `bin/fm-spawn.sh` and supervise it as an ordinary direct report under `AGENTS.md` section 8.
 3. Read the returned `data/<id>/report.md` when it lands; it is a draft, and marking it READY is firstmate's act, never the spec worker's.
 4. Run the interview below, then mark the specification READY or BLOCKED.

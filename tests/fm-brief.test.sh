@@ -2448,6 +2448,139 @@ test_standing_duty_charter() {
   pass "AC-11/AC-12: standing-duty charter replaces idle clauses and is refused off secondmate"
 }
 
+# The reworked statement never reached three card-linked specifications in a row
+# because the requirement lived only in firstmate's memory while it hand-filled
+# {TASK}: `grep -c 'Постановка' bin/fm-brief.sh` was 0. --spec-card generates the
+# binding form, and every scout brief without it carries the same requirement as a
+# declaration against the {TASK} text the scaffold cannot see - the form that
+# actually closes the defect, because all three of those briefs named their card
+# inside {TASK}. Both forms must land inside the Definition of done, where the
+# report's own completeness is decided.
+test_spec_card_generates_the_statement_contract() {
+  local home brief dod card
+  home="$TMP_ROOT/spec-card-home"
+  card="https://www.notion.so/demo-3c1eeda6c928801dba25fbd45076b5db"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" spec-demo demo-repo --scout --spec-card "$card" >/dev/null 2>&1 \
+    || fail "--scout --spec-card brief should scaffold"
+  brief="$home/data/spec-demo/brief.md"
+  dod="$TMP_ROOT/spec-card-dod.md"
+  sed -n '/^# Definition of done$/,$p' "$brief" > "$dod"
+  assert_grep '## Постановка для карточки' "$dod" \
+    "the binding form did not name the card-statement section inside the Definition of done"
+  assert_grep "$card" "$dod" \
+    "the binding form did not name the card it was scaffolded for"
+  assert_grep "$ROOT/.agents/skills/notion-board/SKILL.md" "$dod" \
+    "the binding form did not give notion-board's SKILL.md by absolute path"
+  assert_grep "A report without that section is incomplete" "$dod" \
+    "the binding form did not make a missing section incomplete"
+  assert_no_grep "this scaffold cannot inspect the task text" "$dod" \
+    "a brief given its card still carried the conditional declaration"
+
+  # The =value form of the flag reaches the same contract.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" spec-demo-eq demo-repo --scout --spec-card="$card" >/dev/null 2>&1 \
+    || fail "--spec-card=<url> brief should scaffold"
+  assert_grep "$card" "$home/data/spec-demo-eq/brief.md" \
+    "the --spec-card=<url> form did not reach the generated contract"
+
+  # No flag: the same section is owed conditionally, with no card named.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" plain-scout demo-repo --scout >/dev/null 2>&1 \
+    || fail "plain scout brief should scaffold"
+  brief="$home/data/plain-scout/brief.md"
+  sed -n '/^# Definition of done$/,$p' "$brief" > "$dod"
+  assert_grep '## Постановка для карточки' "$dod" \
+    "a scout brief without --spec-card lost the conditional card-statement declaration"
+  assert_grep "$ROOT/.agents/skills/notion-board/SKILL.md" "$dod" \
+    "the conditional declaration did not give notion-board's SKILL.md by absolute path"
+  assert_grep "this scaffold cannot inspect the task text" "$dod" \
+    "the conditional declaration did not state that the task text is unseen at scaffold time"
+  grep -q "If your task names no Notion card, or does not ask you to follow .*this paragraph does not apply" "$dod" \
+    || fail "the conditional declaration does not cancel on both the card and the spec-worker condition"
+  grep -q "If that text names a Notion card.*generated without its card declaration" "$dod" \
+    || fail "the missing-flag report is not scoped to a task that names a card"
+  assert_no_grep "notion.so" "$dod" \
+    "a scout brief scaffolded with no card named a card URL anyway"
+  pass "fm-brief.sh: the card-statement contract is generated, bound by --spec-card and conditional without it"
+}
+
+# --spec-card applies to one deliverable only, and a value that cannot be written
+# into a brief a later agent reads is refused rather than echoed. Every refusal must
+# leave no brief behind, because a half-written brief is worse than none.
+test_spec_card_is_refused_where_it_does_not_apply() {
+  local home out status label args expect value card id
+  home="$TMP_ROOT/spec-card-refused-home"
+  card="https://www.notion.so/demo-3c1eeda6c928801dba25fbd45076b5db"
+  mkdir -p "$home/data"
+  while IFS='|' read -r label args expect; do
+    [ -n "$label" ] || continue
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" $args 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "$expect" "$label: refusal did not explain why"
+  done <<ROWS
+spec-card on a ship brief|brief-card-s1 some-proj --mode direct-PR --spec-card $card|--spec-card applies only to --scout briefs
+spec-card on a secondmate charter|brief-card-s2 --secondmate --no-projects --spec-card $card|--spec-card applies only to --scout briefs
+missing spec-card value|brief-card-s3 some-proj --scout --spec-card|--spec-card requires a value
+empty spec-card value|brief-card-s4 some-proj --scout --spec-card=|--spec-card requires a Notion card URL
+ROWS
+
+  # A URL the index lib's one acceptance rule rejects never reaches the brief.
+  while IFS='|' read -r label value; do
+    [ -n "$label" ] || continue
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-card-u1 some-proj --scout --spec-card "$value" 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "https:// notion.so or notion.com link" \
+      "$label: refusal did not name the acceptable URL form"
+    assert_absent "$home/data/brief-card-u1/brief.md" "$label: refused scaffold still wrote a brief"
+  done <<'ROWS'
+plain-http card url|http://evil.example/x
+non-notion host|https://evil.example/3c1eeda6c928801dba25fbd45076b5db
+card url carrying a backtick|https://www.notion.so/x`whoami`
+card url carrying whitespace|https://www.notion.so/x y
+ROWS
+
+  for id in brief-card-s1 brief-card-s2 brief-card-s3 brief-card-s4; do
+    assert_absent "$home/data/$id/brief.md" "refused --spec-card scaffold still wrote a brief"
+  done
+  pass "fm-brief.sh: --spec-card is refused off scout briefs and on an unacceptable card URL"
+}
+
+# The card statement is a scout deliverable, so a ship brief and a charter must be
+# untouched by it: a ship worker told to end its report with a card section has been
+# handed a contract it cannot satisfy, and bin/fm-spawn.sh's Delivery contract check
+# reads the same generated text.
+test_spec_card_leaves_ship_and_charter_untouched() {
+  local home brief
+  home="$TMP_ROOT/spec-card-untouched-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" card-ship demo-repo --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship brief should scaffold"
+  brief="$home/data/card-ship/brief.md"
+  assert_no_grep '## Постановка для карточки' "$brief" \
+    "a ship brief carried the scout-only card-statement contract"
+  assert_no_grep "notion-board/SKILL.md" "$brief" \
+    "a ship brief pointed at the card-statement owner it can never satisfy"
+  grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
+    || fail "the ship brief's machine-readable delivery contract line changed"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='Operate demo.' \
+    "$ROOT/bin/fm-brief.sh" card-mate --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate charter should scaffold"
+  brief="$home/data/card-mate/brief.md"
+  assert_no_grep '## Постановка для карточки' "$brief" \
+    "a secondmate charter carried the scout-only card-statement contract"
+  assert_no_grep "notion-board/SKILL.md" "$brief" \
+    "a secondmate charter pointed at the card-statement owner"
+  pass "fm-brief.sh: the card-statement contract reaches scout briefs only"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -2494,3 +2627,6 @@ test_staging_autonomy_generates_the_landing_contract
 test_staging_autonomy_is_refused_where_it_does_not_apply
 test_standing_duty_charter
 test_scout_and_secondmate_scaffold
+test_spec_card_generates_the_statement_contract
+test_spec_card_is_refused_where_it_does_not_apply
+test_spec_card_leaves_ship_and_charter_untouched
