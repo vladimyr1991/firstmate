@@ -1361,7 +1361,7 @@ $TEARDOWN_HERDR_LOCK_RECORDS
 FMEOF
   fi
   attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  while [ "$attempt" -lt "$FM_BACKEND_HERDR_PRESENTATION_LOCK_ATTEMPTS" ]; do
     if fm_lock_try_acquire "$lock_path"; then
       if ! verified_lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") \
         || [ "$verified_lock_path" != "$lock_path" ]; then

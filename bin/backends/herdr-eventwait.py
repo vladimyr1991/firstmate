@@ -36,6 +36,7 @@ A non-zero exit tells the bash caller to fall back to plain polling for this
 cycle (the permanent fail-closed backstop), never to go silent.
 """
 import json
+import os
 import socket
 import sys
 import time
@@ -43,6 +44,34 @@ import time
 CONNECT_TIMEOUT = 5.0
 ACK_TIMEOUT = 5.0
 RECV_CHUNK = 65536
+
+
+# macOS caps sockaddr_un.sun_path at 104 bytes including the terminating NUL,
+# so an absolute path longer than 103 bytes cannot be connected directly. Herdr
+# reports session sockets under the resolved config root, which a symlinked
+# config directory plus a long session name pushes past that limit, while the
+# socket itself is reachable. Such a path is connected relative to its own
+# directory, and the caller's working directory is restored afterwards.
+# Keep this helper identical in herdr-workspace-move.py and herdr-eventwait.py.
+SUN_PATH_MAX_BYTES = 103
+
+
+def _connect_unix(sock, path):
+    """Connect sock to the Unix socket at path, whatever the path's length.
+    Raises OSError on any failure, with the working directory restored."""
+    if len(os.fsencode(path)) <= SUN_PATH_MAX_BYTES:
+        sock.connect(path)
+        return
+    directory, name = os.path.split(path)
+    saved_cwd = os.open(".", os.O_RDONLY)
+    try:
+        os.chdir(directory or "/")
+        sock.connect(name)
+    finally:
+        try:
+            os.fchdir(saved_cwd)
+        finally:
+            os.close(saved_cwd)
 
 
 def _read_line(sock, buf, deadline):
@@ -86,7 +115,7 @@ def main(argv):
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(CONNECT_TIMEOUT)
-        sock.connect(sock_path)
+        _connect_unix(sock, sock_path)
     except OSError:
         return 2
 
