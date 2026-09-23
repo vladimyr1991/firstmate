@@ -182,6 +182,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
 - **Single-line digest** - embedded newlines are collapsed to a literal
   separator before injection, so submission is unambiguous regardless of
   harness.
+- **Composer length limit** - a digest over `FM_SEND_MAX_BYTES` (default 1000) is written to `state/.subsuper-digest-*.txt` and only a short pointer to that file is injected, because the composer would silently drop the head of longer text.
+  The file is written only after the busy and composer guards pass, so a deferred cycle writes none.
 - **Busy and composer guards on the supervisor pane** - before injecting, the daemon runs the detected-primary-harness rendered busy guard and reads `fm_backend_composer_state` directly.
   Only `empty` permits injection; `pending` protects half-typed or swallowed input, and `unknown` protects unreadable panes and bare dead-shell prompts.
   Every other result preserves the buffer for retry, so the daemon never merges its digest into the captain's half-typed line or types it into a shell.
@@ -230,7 +232,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
 
 ## Stale-artifact lifecycle
 
-Treat `state/.subsuper-escalations`, its `.since` sidecar, and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record.
+Treat `state/.subsuper-escalations`, its `.since` sidecar, `state/.subsuper-inject-wedged`, and `state/.subsuper-digest-*.txt` long-digest files as session-scoped delivery artifacts, not as the durable work record.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry and preserves the current session's buffer on refresh.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.
 `docs/herdr-backend.md` "Away-mode supervisor support" owns the current mechanism, and `docs/verification/runtime-backends.md` "Away-mode transport" owns active evidence.
