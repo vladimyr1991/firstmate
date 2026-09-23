@@ -66,6 +66,56 @@ test_inject_msg_long_digest_deferred_writes_no_file() {
   pass "inject_msg: a deferred long digest writes no pointer file"
 }
 
+test_inject_msg_long_digest_unconfirmed_removes_file() {
+  local dir state sent_log
+  dir=$(make_supercase inject-long-unconfirmed)
+  state="$dir/state"
+  sent_log="$dir/sent.log"
+  afk_enter "$state"
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_tmux_send_text_submit() { printf '%s\n' "$2" >> "$sent_log"; printf 'send-failed'; }
+    fm_backend_source() { return 0; }
+    for _ in 1 2 3; do
+      FM_SEND_MAX_BYTES=400 FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=s:w \
+        FM_INJECT_CONFIRM_SLEEP=0 inject_msg "$(printf 'z%.0s' $(seq 1 600))" "$state" \
+        && fail "inject_msg should fail when the pointer submit is unconfirmed"
+    done
+    true
+  ) || fail "long-digest unconfirmed subshell failed"
+  [ "$(grep -c 'too long for the composer' "$sent_log")" -eq 3 ] || fail "each retry should have sent a pointer: $(cat "$sent_log")"
+  ls "$state"/.subsuper-digest-* >/dev/null 2>&1 && fail "unconfirmed pointer submits left orphan digest files: $(ls "$state"/.subsuper-digest-*)"
+  pass "inject_msg: an unconfirmed pointer submit removes its digest file so retries leave no orphans"
+}
+
+test_inject_msg_long_digest_pointer_over_limit_refuses() {
+  local dir state log_file called_file
+  dir=$(make_supercase inject-long-pointer-over)
+  state="$dir/state"
+  log_file="$dir/daemon.log"
+  called_file="$dir/called"
+  afk_enter "$state"
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_tmux_send_text_submit() { : > "$called_file"; printf 'empty'; }
+    fm_backend_source() { return 0; }
+    LOG="$log_file" FM_SEND_MAX_BYTES=60 FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=s:w \
+      inject_msg "$(printf 'w%.0s' $(seq 1 200))" "$state" \
+      && fail "inject_msg should refuse when the pointer itself is over the limit"
+    true
+  ) || fail "pointer-over-limit subshell failed"
+  [ ! -e "$called_file" ] || fail "an over-limit pointer reached the backend"
+  ls "$state"/.subsuper-digest-* >/dev/null 2>&1 && fail "a refused pointer left its digest file behind"
+  grep -q 'inject refused: digest file pointer is itself over the 60-byte composer limit' "$log_file" \
+    || fail "missing clear refusal log line: $(cat "$log_file" 2>/dev/null)"
+  grep -q 'submit unconfirmed' "$log_file" && fail "refusal was logged as an unconfirmed submit: $(cat "$log_file")"
+  pass "inject_msg: a pointer over FM_SEND_MAX_BYTES is refused with a clear log line and no leftover file"
+}
+
 test_send_text_submit_refuses_over_limit() {
   local called=0 rc=0 err
   err=$( {
@@ -1987,6 +2037,8 @@ test_inject_msg_herdr_pane_gone_defers
 test_inject_msg_herdr_submits_through_backend_dispatch
 test_inject_msg_long_digest_goes_through_file_pointer
 test_inject_msg_long_digest_deferred_writes_no_file
+test_inject_msg_long_digest_unconfirmed_removes_file
+test_inject_msg_long_digest_pointer_over_limit_refuses
 test_send_text_submit_refuses_over_limit
 test_inject_msg_defers_on_dead_shell_unknown
 test_inject_msg_defers_on_unrecognized_composer_state
