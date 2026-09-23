@@ -22,6 +22,9 @@ if [ -z "${FM_TEST_DAEMON_SOURCED:-}" ]; then
 fi
 
 TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
+# Housekeeping asks the machine-wide test-gate queue before a stale or pause
+# escalation; point every real bin/fm-gate.sh call at a hold of this suite's own.
+export FM_GATE_LOCK_DIR="$TMP_ROOT/gate-lock"
 FM_DAEMON_PRIMARY_HARNESS=claude
 export FM_DAEMON_PRIMARY_HARNESS
 
@@ -331,6 +334,54 @@ test_stale_diagnostic_wedge_survives_busy_housekeeping() {
       || fail "$case_name enriched wedge interrupted or killed the busy worker"
   done
   pass "enriched stale wedges bypass status absorption without disturbing busy workers"
+}
+
+# A crew the test-gate queue lists as its live holder or waiter is in a declared
+# external wait: housekeeping restarts its stale and pause clocks instead of
+# escalating, and escalates as before once the queue stops vouching for it.
+test_housekeeping_gate_wait_restarts_stale_and_pause_clocks() {
+  local kind answer dir state fakebin win pane key marker age
+  for kind in stale paused; do
+    for answer in waiter holder none fail; do
+      dir=$(make_supercase "gate-wait-$kind-$answer")
+      state="$dir/state"; fakebin="$dir/fakebin"
+      make_fake_gate "$fakebin" >/dev/null
+      win="sess:fm-gq-$kind"; pane="$dir/pane.txt"
+      fm_write_meta "$state/gq-$kind.meta" "window=$win" "backend=tmux"
+      if [ "$kind" = stale ]; then
+        printf 'working: queue taken, gate running\n' > "$state/gq-$kind.status"
+      else
+        printf 'paused: waiting for the test-gate queue\n' > "$state/gq-$kind.status"
+      fi
+      printf 'idle prompt $\n' > "$pane"
+      key=$(printf '%s' "gq-$kind" | tr ':/.' '___')
+      marker="$state/.subsuper-$kind-$key"
+      echo $(( $(date +%s) - 5000 )) > "$marker"
+      PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+        FM_GATE_BIN="$fakebin/fm-gate.sh" FM_FAKE_GATE_STATE="$answer" FM_FAKE_GATE_LOG="$dir/gate.log" \
+        FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 FM_PAUSE_RESURFACE_SECS=240 \
+        FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+      grep -Fx "task-state gq-$kind" "$dir/gate.log" >/dev/null \
+        || fail "$kind/$answer: housekeeping did not ask the gate: $(cat "$dir/gate.log" 2>/dev/null)"
+      case "$answer" in
+        waiter|holder)
+          [ ! -s "$state/.subsuper-escalations" ] \
+            || fail "$kind/$answer: a live gate wait was escalated: $(cat "$state/.subsuper-escalations")"
+          age=$(( $(date +%s) - $(cat "$marker" 2>/dev/null || echo 0) ))
+          [ "$age" -lt 60 ] || fail "$kind/$answer: the clock was not restarted (age ${age}s)"
+          ;;
+        *)
+          case "$kind" in
+            stale) grep -F "possible wedge" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+              || fail "$kind/$answer: a stale with no live gate wait did not escalate as a wedge" ;;
+            paused) grep -F "awaiting external" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+              || fail "$kind/$answer: a pause with no live gate wait did not re-surface" ;;
+          esac
+          ;;
+      esac
+    done
+  done
+  pass "housekeeping restarts stale and pause clocks for a live gate wait and escalates without one"
 }
 
 test_stale_terminal_escalates() {
@@ -1977,6 +2028,7 @@ test_classify_routine_signal_self
 test_classify_terminal_signal_escalates
 test_classify_check_and_unknown_escalate
 test_stale_transient_self_records_marker
+test_housekeeping_gate_wait_restarts_stale_and_pause_clocks
 test_stale_diagnostic_wedge_survives_busy_housekeeping
 test_stale_terminal_escalates
 test_stale_paused_classifies_pause

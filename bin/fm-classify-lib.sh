@@ -31,6 +31,10 @@ _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)"
 # or no-mistakes install; absent, it points at the real sibling script.
 FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 
+# The machine-wide test-gate queue (bin/fm-gate.sh), asked by crew_in_gate_wait.
+# Overridable so tests can stub the queue's answer.
+FM_GATE_BIN="${FM_GATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-gate.sh}"
+
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. Lines without these verbs are no-verb signals: the watcher
 # absorbs them only with positive provably-working evidence, while the daemon uses
@@ -363,6 +367,26 @@ crew_absorb_class() {  # <id>
 # run. See crew_absorb_class for the exact working/paused/none decision.
 crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
+}
+
+# 0 if crew <id> is sitting in a live test-gate wait, as bin/fm-gate.sh's own
+# `task-state` reports it: the live holder whose run is heartbeating, or a live
+# waiter in the queue. Such an idle or long-busy pane is in a declared external
+# wait - the brief mandates that one blocking command - so every stale escalation
+# point (wedge timer, first-sight surface, pause re-surface, and the away-mode
+# daemon's persistence recheck) absorbs it for as long as this holds and re-asks
+# on its next escalation. 1 on `none`, and also whenever the queue cannot answer
+# (script missing, unreadable hold, any other output), so those cases keep
+# today's escalation: a dead holder or waiter reads `none` in fm-gate itself.
+# Ids are matched as recorded in the machine-wide queue, which spans homes.
+crew_in_gate_wait() {  # <id>
+  local out
+  [ -n "${1:-}" ] || return 1
+  out=$("$FM_GATE_BIN" task-state "$1" 2>/dev/null) || return 1
+  case "$out" in
+    holder|waiter) return 0 ;;
+  esac
+  return 1
 }
 
 # 0 if crew <id>'s authoritative current state is a declared external-wait pause.

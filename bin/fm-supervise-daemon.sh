@@ -789,6 +789,14 @@ housekeeping() {  # <state>
     fi
     age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
     [ "$age" -ge "${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}" ] || continue
+    # A live test-gate holder or waiter (crew_in_gate_wait) is in a declared
+    # external wait, not wedged: restart its persistence clock and ask again at
+    # the next threshold, so one that dies still escalates.
+    if crew_in_gate_wait "$task"; then
+      _now > "$marker"
+      log "stale absorbed (live test-gate wait): $win"
+      continue
+    fi
     stale_window_is_busy "$win" "$state"
     case "$?" in
       0) rm -f "$marker" ;;
@@ -820,6 +828,11 @@ housekeeping() {  # <state>
     fi
     age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
     [ "$age" -ge "$pause_secs" ] || continue
+    if crew_in_gate_wait "$task"; then
+      _now > "$marker"
+      log "pause recheck absorbed (live test-gate wait): $win"
+      continue
+    fi
     stale_window_is_busy "$win" "$state"
     case "$?" in
       0) rm -f "$marker" ;;

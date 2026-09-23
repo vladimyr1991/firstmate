@@ -60,6 +60,12 @@
 #        fm-gate.sh status [--line] [--journal [N]]
 #                                          print the holder, its liveness and the waiters;
 #                                          --line joins that on one line, --journal tails the journal
+#        fm-gate.sh task-state <id>          print one word for a supervisor: `holder` (the hold
+#                                          is <id>'s, not parked, heartbeat fresh, holder process
+#                                          alive), `waiter` (<id> has a live ticket), or `none`;
+#                                          exit 1 when the hold or queue cannot be read, so the
+#                                          caller falls back to its own judgement rather than
+#                                          reading `none` into an unreadable queue
 #        fm-gate.sh limits                  print the thresholds in force, by variable name
 #   acquire is atomic (mkdir), so two workers racing it cannot both win; a real
 #   race of twenty contenders produced exactly one winner.
@@ -1420,6 +1426,43 @@ $tickets
 EOF
 }
 
+# task_state <id>: `holder`, `waiter` or `none`, for supervisors deciding whether
+# an idle pane is sitting in a live gate wait (bin/fm-classify-lib.sh's
+# crew_in_gate_wait). A holder counts only while its run is provably alive: a
+# fresh heartbeat AND the recorded holder process alive, so a wrapper killed
+# around an orphaned run reads `none` at once instead of after the abandonment
+# threshold. A parked hold is `none`: a park holds the queue with nothing
+# running, and run-orphaned-after-signal demands the worker's action. A waiter
+# counts only while live_tickets keeps its ticket, which already drops a ticket
+# whose process is gone. Returns 1 when the hold or queue directory cannot be
+# read, never `none`, because an unanswered question must not read as an answer.
+task_state() {
+  local id=$1 now kind tickets since pid tid name
+  now=$(now_epoch)
+  if [ -d "$LOCK" ] && [ "$(owner)" = "$id" ] && ! read_park \
+    && heartbeat_fresh "$now" && owner_process_alive; then
+    echo holder
+    return 0
+  fi
+  kind=$(path_kind "$QUEUE_DIR" dir)
+  case "$kind" in
+    absent) echo none; return 0 ;;
+    directory-own) ;;
+    *) return 1 ;;
+  esac
+  tickets=$(live_tickets)
+  while read -r since pid tid name; do
+    [ -n "$since" ] || continue
+    if [ "$tid" = "$id" ]; then
+      echo waiter
+      return 0
+    fi
+  done <<EOF
+$tickets
+EOF
+  echo none
+}
+
 # --- dispatch ---------------------------------------------------------------------
 
 case "${1:-}" in
@@ -1617,6 +1660,17 @@ case "${1:-}" in
     fi
     exit 0
     ;;
+  task-state)
+    require_hold_path
+    ID=${2:-}
+    [ -n "$ID" ] || { echo "error: task-state needs a task id" >&2; exit 2; }
+    if hold_is_foreign; then
+      refuse_foreign_hold
+      exit 1
+    fi
+    task_state "$ID" || { echo "cannot read the queue at $QUEUE_DIR" >&2; exit 1; }
+    exit 0
+    ;;
   limits)
     printf 'FM_GATE_STALE_SECONDS=%s (abandoned after, when nothing proves the holder alive)\n' "$STALE"
     printf 'FM_GATE_MAX_HOLD_SECONDS=%s (ceiling on a hold without a live heartbeat)\n' "$MAX_HOLD"
@@ -1627,7 +1681,7 @@ case "${1:-}" in
     exit 0
     ;;
   *)
-    echo "usage: fm-gate.sh acquire <id> [--wait] | run <id> [--wait] [--status <file>] -- <command...> | park <id> --reason <text> [--for <seconds>] | release <id> | status [--line] [--journal [N]] | limits" >&2
+    echo "usage: fm-gate.sh acquire <id> [--wait] | run <id> [--wait] [--status <file>] -- <command...> | park <id> --reason <text> [--for <seconds>] | release <id> | status [--line] [--journal [N]] | task-state <id> | limits" >&2
     exit 2
     ;;
 esac

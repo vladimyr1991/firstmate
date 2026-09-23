@@ -117,6 +117,27 @@ SH
   printf '%s\n' "$fakebin/fm-crew-state.sh"
 }
 
+# Install a fake bin/fm-gate.sh into <fakebin> and echo its path, for the
+# supervisors' crew_in_gate_wait (via FM_GATE_BIN). It appends its argv to
+# FM_FAKE_GATE_LOG when set, so a test proves it was asked, and answers
+# `task-state <id>` with FM_FAKE_GATE_STATE (default none); the value `fail`
+# exits 1 with no output, the shape of a queue that cannot be read.
+make_fake_gate() {  # <fakebin>
+  local fakebin=$1
+  cat > "$fakebin/fm-gate.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ -z "${FM_FAKE_GATE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_GATE_LOG"
+[ "${1:-}" = task-state ] || exit 2
+case "${FM_FAKE_GATE_STATE:-none}" in
+  fail) exit 1 ;;
+  *) printf '%s\n' "${FM_FAKE_GATE_STATE:-none}" ;;
+esac
+SH
+  chmod +x "$fakebin/fm-gate.sh"
+  printf '%s\n' "$fakebin/fm-gate.sh"
+}
+
 make_supercase() {
   local name=$1 dir fakebin
   dir="$TMP_ROOT/$name"
