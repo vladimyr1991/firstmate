@@ -1178,12 +1178,12 @@ test_ship_baseline_and_no_placeholder_contract() {
 # re-state twelve times in one day, so each rule is asserted together with the
 # reason that makes a worker keep it: a rule whose reason is invisible is talked
 # around by the first inconvenient case, which is how the spoken version died.
-test_gate_queue_contract_reaches_ship_and_scout() {
+test_gate_queue_contract_reaches_ship() {
   local home id brief kind id_kind
   home="$TMP_ROOT/gate-queue-home"
   write_registry "$home"
 
-  for id_kind in "brief-gate-d1:no-mistakes" "brief-gate-d2:direct-PR" "brief-gate-d3:local-only" "brief-gate-d4:scout"; do
+  for id_kind in "brief-gate-d1:no-mistakes" "brief-gate-d2:direct-PR" "brief-gate-d3:local-only"; do
     id=${id_kind%%:*}
     kind=${id_kind##*:}
     if [ "$kind" = scout ]; then
@@ -1314,20 +1314,54 @@ test_gate_queue_contract_reaches_ship_and_scout() {
       "$id ($kind): rule 2 stopped naming the queue hold, or the tool that takes it"
     assert_grep "the status file below" "$brief" \
       "$id ($kind): rule 2 stopped naming the status file it prescribes"
-    if [ "$kind" = scout ]; then
-      assert_grep "for example the report, the status file below" "$brief" \
-        "$id ($kind): scout rule 2 stopped naming the report it exists to produce"
-    else
-      assert_no_grep "modify nothing outside it" "$brief" \
-        "$id ($kind): ship rule 2 kept the categorical wording its own queue command breaks"
-      assert_grep "the scratch file or scratch directory of a base-revision measurement" "$brief" \
-        "$id ($kind): ship rule 2 stopped naming the measurement scratch write"
-      # The measurement it names is still prescribed above it.
-      assert_grep "git show <base-sha>:<path> > /tmp/<scratch-file>" "$brief" \
-        "$id ($kind): rule 2 names a scratch write the brief no longer prescribes"
-    fi
+    # A task that lands on targeted tests must not also be told to queue.
+    assert_grep "When this brief's own task section declares the full gate unrunnable, or tells you to land on targeted tests, that is this task's decision about the gate: do not take the queue" "$brief" \
+      "$id ($kind): the queue contract no longer yields to a task that lands on targeted tests"
+    assert_no_grep "modify nothing outside it" "$brief" \
+      "$id ($kind): ship rule 2 kept the categorical wording its own queue command breaks"
+    assert_grep "the scratch file or scratch directory of a base-revision measurement" "$brief" \
+      "$id ($kind): ship rule 2 stopped naming the measurement scratch write"
+    # The measurement it names is still prescribed above it.
+    assert_grep "git show <base-sha>:<path> > /tmp/<scratch-file>" "$brief" \
+      "$id ($kind): rule 2 names a scratch write the brief no longer prescribes"
   done
-  pass "fm-brief.sh: ship and scout briefs carry the self-service test-gate queue contract"
+  pass "fm-brief.sh: ship briefs carry the self-service test-gate queue contract"
+}
+
+# Scout briefs once carried the ship queue contract, and read-only spec scouts
+# and browser evaluators read it as an order: they queued for and ran the
+# 30-45 minute machine-wide gate, holding ship workers behind them. A scout
+# brief must forbid the full gate and carry no queue-taking instruction.
+test_scout_brief_never_takes_the_gate() {
+  local home id brief
+  home="$TMP_ROOT/gate-scout-home"
+  write_registry "$home"
+  for id in brief-gate-scout-plain brief-gate-scout-card; do
+    if [ "$id" = brief-gate-scout-card ]; then
+      FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+        "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout --spec-card https://www.notion.so/abc123 >/dev/null 2>&1
+    else
+      FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+        "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+    assert_grep "A scout never runs the project's full test gate and never takes the test-gate queue." "$brief" \
+      "$id: scout brief does not forbid the full gate"
+    assert_grep "use targeted tests only" "$brief" \
+      "$id: scout brief does not point at targeted tests"
+    assert_no_grep "fm-gate.sh" "$brief" \
+      "$id: scout brief still names the gate queue tool"
+    assert_no_grep "you take the queue yourself" "$brief" \
+      "$id: scout brief still orders taking the queue"
+    assert_no_grep "waiting for the test-gate queue" "$brief" \
+      "$id: scout brief still prescribes a queue-waiting status line"
+    assert_no_grep "Take the queue, run the gate" "$brief" \
+      "$id: scout brief still carries the run-the-gate command"
+    assert_grep "for example the report and the status file below" "$brief" \
+      "$id: scout rule 2 stopped naming the report it exists to produce"
+  done
+  pass "fm-brief.sh: scout briefs forbid the full gate and carry no queue procedure"
 }
 
 # The scaffold builds both worker briefs in UNQUOTED heredocs, so an unescaped
@@ -1357,8 +1391,13 @@ test_brief_prose_is_not_executed_while_scaffolding() {
     assert_present "$brief" "$id: brief was not scaffolded from the firstmate root"
     [ ! -s "$err" ] \
       || fail "$id ($kind): scaffolding ran something: $(cat "$err")"
-    assert_grep "the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you" "$brief" \
-      "$id ($kind): rule 2 lost the tool it names to a command substitution"
+    if [ "$kind" = scout ]; then
+      assert_grep "\`$ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\`" "$brief" \
+        "$id ($kind): scout prose lost a backticked path to a command substitution"
+    else
+      assert_grep "the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you" "$brief" \
+        "$id ($kind): rule 2 lost the tool it names to a command substitution"
+    fi
   done
   pass "fm-brief.sh: worker-brief prose is emitted literally, never executed while scaffolding"
 }
@@ -2087,8 +2126,13 @@ test_pause_examples_name_pipeline_and_ci_waits() {
     # leaves `working:` last and reads as a wedge - but it is now named as the
     # wait held open INSIDE the queue contract's single command, because the old
     # wording read as permission to start a gate and end the turn.
-    assert_grep "the test-gate queue and the gate run you are holding open inside the one command" "$brief" \
-      "$label: pause examples omitted the queue-and-gate wait"
+    if [ "$label" = brief-pause-s1 ]; then
+      assert_grep "the test-gate queue and the gate run you are holding open inside the one command" "$brief" \
+        "$label: pause examples omitted the queue-and-gate wait"
+    else
+      assert_grep "The test-gate queue is never one of your waits: a scout does not take it." "$brief" \
+        "$label: scout pause examples do not rule out the queue wait"
+    fi
     assert_no_grep "a long test gate you started in this worktree to finish" "$brief" \
       "$label: pause examples still license pausing on a gate left running across turns"
     # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
@@ -2628,7 +2672,8 @@ test_no_mistakes_dod_requires_verified_gate_claims
 test_no_mistakes_dod_holds_gate_for_unanswered_ask_user
 test_ship_project_memory_wording
 test_ship_baseline_and_no_placeholder_contract
-test_gate_queue_contract_reaches_ship_and_scout
+test_gate_queue_contract_reaches_ship
+test_scout_brief_never_takes_the_gate
 test_brief_prose_is_not_executed_while_scaffolding
 test_gate_queue_quotes_foreign_firstmate_path
 test_own_deployment_reporting_rule
