@@ -240,7 +240,8 @@ family_for_basename() {
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
-    fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
+    fm-backend-herdr.test.sh|fm-backend-herdr-python-clients.test.sh|\
+    fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|fm-spawn-meta-write.test.sh|fm-spawn-worktree-settle.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
@@ -891,7 +892,8 @@ families_for_changed_path() {
     tests/fm-test-run.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
-    tests/fm-backend-herdr-eventwait.test.py)
+    tests/fm-backend-herdr-*.test.py|tests/herdr_socket_stub.py)
+      # tests/fm-backend-herdr-python-clients.test.sh is the runner for these.
       printf '%s\n' real-herdr-gated
       printf '%s\n' backend-dispatch
       ;;

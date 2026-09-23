@@ -451,6 +451,14 @@ fm_backend_herdr_projection_workspace_label() {  # <task-id> <projection-id>
   printf '└ %s · p:%s' "$(fm_backend_herdr_projection_concise_task_label "$1")" "$2"
 }
 
+# Every waiter on the session presentation lock below tries this many times,
+# 0.1 s apart (30 s), before it gives up with its own bounded fallback or refusal.
+# The wait must outlast one full spawn's hold, because bin/fm-spawn.sh keeps the
+# lock through worktree entry and launch: holds measured 4.5-8.8 s on 2026-09-23.
+# 30 s is over 3x that and still under the 60 s worktree-entry timeout that
+# bounds a single spawn.
+FM_BACKEND_HERDR_PRESENTATION_LOCK_ATTEMPTS=300
+
 # fm_backend_herdr_presentation_session_lock_path: one machine-private lock
 # path per live named Herdr session/socket, shared across every Firstmate home
 # that uses that session.
@@ -2849,7 +2857,7 @@ fm_backend_herdr_kill() {  # <target>
     . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
   fi
   if lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session"); then
-    while [ "$attempt" -lt 50 ]; do
+    while [ "$attempt" -lt "$FM_BACKEND_HERDR_PRESENTATION_LOCK_ATTEMPTS" ]; do
       if fm_lock_try_acquire "$lock_path"; then
         lock_held=1
         break

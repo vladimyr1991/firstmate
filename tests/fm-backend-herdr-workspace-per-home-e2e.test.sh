@@ -98,7 +98,10 @@ printf 'trivial e2e secondmate-owned crewmate brief: nothing to do.\n' > "$SM_HO
 make_scratch_project() {  # <dir>
   local dir=$1
   mkdir -p "$dir"
-  git -C "$dir" init -q
+  # Ship teardown accepts only origin/HEAD, main, or master as the default branch
+  # (bin/fm-teardown.sh default_branch), so pin main rather than inherit the
+  # operator's init.defaultBranch (e.g. develop), which fails closed.
+  git -C "$dir" init -q -b main
   printf '# scratch\n' > "$dir/README.md"
   git -C "$dir" add README.md
   git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial

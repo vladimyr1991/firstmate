@@ -1804,8 +1804,11 @@ test_kill_focused_workspace_stays_plain_close() {
 }
 
 test_kill_refuses_when_presentation_lock_is_unavailable() {
-  local dir mode out status attempts
+  local dir mode out status attempts expected_attempts
   dir="$TMP_ROOT/kill-lock-refusal"; mkdir -p "$dir"
+  expected_attempts=$(bash -c '. "$0/bin/backends/herdr.sh"; printf "%s" "$FM_BACKEND_HERDR_PRESENTATION_LOCK_ATTEMPTS"' "$ROOT")
+  [ "$expected_attempts" -gt 50 ] 2>/dev/null \
+    || fail "the presentation lock wait budget is not longer than the original 5 s: $expected_attempts"
   for mode in unresolved contended; do
     : > "$dir/cli.log"
     : > "$dir/attempts"
@@ -1834,7 +1837,8 @@ test_kill_refuses_when_presentation_lock_is_unavailable() {
       "$mode presentation lock refusal did not report the deferred close"
     attempts=$(wc -l < "$dir/attempts" | tr -d ' ')
     if [ "$mode" = contended ]; then
-      [ "$attempts" = 50 ] || fail "contended presentation lock did not use the bounded wait: $attempts attempts"
+      [ "$attempts" = "$expected_attempts" ] \
+        || fail "contended presentation lock did not use the bounded wait: $attempts of $expected_attempts attempts"
     else
       [ "$attempts" = 0 ] || fail "unresolved presentation lock path attempted acquisition: $attempts"
     fi
