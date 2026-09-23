@@ -119,8 +119,8 @@
 # colon, so a second escalation cannot evict the first under the shared
 # "default" key (bin/fm-classify-lib.sh owns that fold); firstmate's answer must
 # close each one with the same key it was opened with.
-# Ship and scout briefs both carry the test-gate queue contract, because a full
-# gate run costs the same on the machine whichever kind started it. It names
+# Ship briefs carry the test-gate queue contract; scout briefs instead state that
+# a scout never takes the queue and uses targeted tests only. The contract names
 # bin/fm-gate.sh by absolute path, has the worker take and release the queue
 # itself with no firstmate in the loop, prescribes the single `run` command
 # that queues, takes, runs and releases as one wrapper (the wait dies with the
@@ -571,8 +571,8 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
-# Test-gate queue contract, shared by ship and scout briefs. Both kinds run full
-# gates on the same machine, and the measured hazard is two FULL runs at once
+# Test-gate queue contract, carried by ship briefs only (scouts get
+# SCOUT_GATE_SECTION below). The measured hazard is two FULL runs at once
 # (data/learnings.md, 2026-09-08). Each rule carries its one-phrase reason: a
 # rule whose reason the worker cannot see is talked around by the first
 # inconvenient case, which is exactly how the spoken version of this contract
@@ -584,6 +584,9 @@ This machine sustains one full gate run; two at once starve each other for memor
 Do not ask firstmate for the queue and do not wait to be given it - taking it is your job, not a request.
 The queue covers FULL runs, the whole suite and its browser half, and deliberately not a single targeted test or a look at the app in a browser; those were measured to be far lighter, and widening the queue to cover them would halve the fleet's parallelism against a hazard that is not there.
 The hold covers the gate runs you launch yourself: a validation pipeline you drive runs its own test step outside this queue and takes no hold, so a green pipeline is never evidence that the machine was serialised while it ran.
+
+When this brief's own task section declares the full gate unrunnable, or tells you to land on targeted tests, that is this task's decision about the gate: do not take the queue and do not run the full gate at all; run the targeted tests it names, and name them in your report as the evidence you used.
+The rest of this section applies whenever you do run the full gate.
 
 Take the queue, run the gate, and release it in ONE command, and do not end your turn before that command returns:
    \`$GATE_CMD run $ID --wait --status $STATUS_FILE -- {the project's full gate command}\`
@@ -604,6 +607,20 @@ Whenever a wait of yours ends, for any reason at all, check \`$GATE_CMD status\`
 A status reading \`parked: run-orphaned-after-signal\` is an instruction, not a state to wait out: your gate outlived the wrapper that was killed around it, so stop your orphaned run, then \`$GATE_CMD release $ID\`; never re-run the gate beside it.
 EOF
 GATE_SECTION=${GATE_SECTION%$'\n'}
+
+# Scouts never take the full-gate queue. The shared section above read as an
+# order in scout briefs: read-only spec scouts and browser evaluators queued for
+# and ran the 30-45 minute machine-wide gate they did not need (2026-09-21 and
+# 2026-09-23), holding ship workers behind them. A scout measures with targeted
+# tests, which the queue deliberately does not cover, so the scout variant states
+# that and carries none of the queue procedure.
+IFS= read -r -d '' SCOUT_GATE_SECTION <<EOF || true
+**A scout never runs the project's full test gate and never takes the test-gate queue.**
+A report, a specification, a code reading, or a browser evaluation needs no full suite run: use targeted tests only - a single test file, one spec, or a look at the app in a browser - which the machine-wide queue deliberately does not cover and which need no hold.
+The queue exists for ship workers' full runs, and a scout that joined it held ship workers behind a 30-45 minute run nobody needed.
+If your conclusion seems to depend on the whole suite, say so in the report as a recommendation instead of running it.
+EOF
+SCOUT_GATE_SECTION=${SCOUT_GATE_SECTION%$'\n'}
 
 if [ "$KIND" = scout ]; then
 # Card-statement contract, in one of two forms, always present. The binding form
@@ -656,11 +673,11 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 $SCOUT_SYNC
-$GATE_SECTION
+$SCOUT_GATE_SECTION
 
 # Rules
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; the only writes you may make outside it are the ones this brief itself prescribes - for example the report, the status file below, and the test-gate queue hold that \`bin/fm-gate.sh\` creates and removes for you when you take and release the queue above. Those are examples and not the whole list: a step this brief mandates carries its own permission, so this rule is never a reason to skip one, and a write this brief does not mandate has no permission at all.
+2. Stay inside this worktree; the only writes you may make outside it are the ones this brief itself prescribes - for example the report and the status file below. Those are examples and not the whole list: a step this brief mandates carries its own permission, so this rule is never a reason to skip one, and a write this brief does not mandate has no permission at all.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -671,13 +688,9 @@ $GATE_SECTION
    FYI progress lines; firstmate reads your pane for that.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (waiting for a pipeline gate to return, a CI
-   run to finish, the test-gate queue and the gate run you are holding open inside the one command
-   the test-gate queue contract above prescribes,
-   an upstream release, a rate-limit reset): firstmate then leaves your idle pane alone and rechecks
-   it on a long cadence instead of treating it as a possible wedge.
-   That queue-and-gate wait is one you are still sitting in, never one you left running: the queue
-   contract above owns that rule, and a \`$PAUSED_VERB:\` line is never a reason to end your turn while
-   that command has not returned.
+   run to finish, an upstream release, a rate-limit reset): firstmate then leaves your idle pane alone
+   and rechecks it on a long cadence instead of treating it as a possible wedge.
+   The test-gate queue is never one of your waits: a scout does not take it.
    Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked [key=repeat-obstacle]: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
@@ -746,7 +759,7 @@ EOF
 Delivery contract: mode=local-only
 Delivery autonomy: staging-inclusive
 This task ships **local-only with standing staging autonomy**: no PR and no pipeline, but you land your own work along this project's git-flow without waiting for a go-ahead.
-Run the project's own test gate first and land only genuinely clean work; never land red or failing work.
+Run the project's own test gate first - or, where the task section lands on targeted tests, exactly those tests, taking no queue - and land only genuinely clean work; never land red or failing work.
 If this task touched the UI, stop before merging anything and append \`blocked [key=evaluation]: test gate green, UI touched, awaiting browser evaluation before merge\`, then wait.
 Only firstmate can spawn the independent browser evaluator, so that key stays open until firstmate answers \`$RESOLVE_VERB [key=evaluation]:\` and releases you to land.
 To land: merge \`fm/$ID\` -> \`develop\` -> \`staging\`, push both branches, and watch CI to a final result.
@@ -855,7 +868,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 $SETUP_STEPS
 
 **A baseline gate run before your first edit is NOT required.** The captain withdrew that requirement: five workers in one evening stumbled over it before writing a line of the work they were sent to do, and one of them took the test-gate queue for a measurement nobody had asked for and held three other workers behind it.
-Run the project's own test gate, the way its \`AGENTS.md\` or \`README.md\` documents it, when you have something to measure - after your change, or when you need to know whether a failure is yours - and take the queue for it as the section below prescribes.
+Run the project's own test gate, the way its \`AGENTS.md\` or \`README.md\` documents it, when you have something to measure - after your change, or when you need to know whether a failure is yours - and take the queue for it as the section below prescribes, unless the task section lands on targeted tests.
 A gate run that selects zero tests is a no-op rather than evidence, as is a check that has never executed a single run; when the gate you chose selects nothing, or the check you would cite has no run history at all, run the project's documented nonempty gate instead, and never call a zero-selection or never-executed result green evidence.
 A gate that is green before your change and green after it proves that the change did not break what is still asserted, never that what it was asserting is still there, so when your change removes or rewrites tests, say which coverage went with them.
 If a gate run fails in a way your own change cannot explain, treat that as inherited breakage: append \`blocked [key=red-baseline]: {the failing gate and what it printed}\` and stop, rather than folding the repair into this task or building on top of it.
