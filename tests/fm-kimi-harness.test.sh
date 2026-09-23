@@ -488,6 +488,21 @@ test_kimi_unconfirmed_delivery_fails_loudly() {
   pass "fm-spawn: kimi treats a silent pointer drop as a failed spawn"
 }
 
+test_kimi_over_limit_pointer_fails_loudly() {
+  local id rec out rc
+  id=kimi-long-z3
+  rec=$(make_spawn_case long "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_SEND_MAX_BYTES=20 run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  [ "$rc" -ne 0 ] || fail "an over-limit kimi brief pointer should fail the spawn"
+  assert_contains "$out" "over the 20-byte composer limit" "over-limit pointer lacked the refusal diagnostic"
+  assert_contains "$out" "kimi brief pointer could not be submitted" "over-limit pointer did not fail the spawn loudly"
+  [ ! -s "$CASE_DIR/pointer.log" ] || fail "a truncatable pointer reached the composer: $(cat "$CASE_DIR/pointer.log")"
+  pass "fm-spawn: a kimi brief pointer over FM_SEND_MAX_BYTES is refused, never sent truncated"
+}
+
 test_kimi_readiness_gate_precedes_pointer() {
   local id rec out rc
   id=kimi-not-ready-z3
@@ -668,6 +683,7 @@ test_kimi_teardown_removes_pointer_and_registry_token
 test_kimi_falls_back_to_expanded_home_binary
 test_kimi_missing_binary_refuses_before_pane_creation
 test_kimi_unconfirmed_delivery_fails_loudly
+test_kimi_over_limit_pointer_fails_loudly
 test_kimi_readiness_gate_precedes_pointer
 test_kimi_detection_uses_ancestry_after_markers
 test_kimi_session_lock_identity

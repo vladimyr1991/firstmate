@@ -25,6 +25,148 @@ TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 FM_DAEMON_PRIMARY_HARNESS=claude
 export FM_DAEMON_PRIMARY_HARNESS
 
+test_inject_msg_long_digest_goes_through_file_pointer() {
+  local dir state sent_log digest_file
+  dir=$(make_supercase inject-long-digest)
+  state="$dir/state"
+  sent_log="$dir/sent.log"
+  afk_enter "$state"
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_tmux_send_text_submit() { printf '%s' "$2" > "$sent_log"; printf 'empty'; }
+    fm_backend_source() { return 0; }
+    FM_SEND_MAX_BYTES=400 FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=s:w \
+      inject_msg "HEAD-MARKER $(printf 'x%.0s' $(seq 1 600)) TAIL-MARKER" "$state" \
+      || fail "inject_msg should deliver a long digest through a file pointer"
+  ) || fail "long-digest inject_msg subshell failed"
+  [ -s "$sent_log" ] || fail "no text reached the composer"
+  [ "$(LC_ALL=C; s=$(cat "$sent_log"); printf '%s' "${#s}")" -le 400 ] || fail "sent text exceeds the limit: $(cat "$sent_log")"
+  grep -q 'too long for the composer' "$sent_log" || fail "sent text is not a file pointer: $(cat "$sent_log")"
+  digest_file=$(sed -n 's/.*read it in full at //p' "$sent_log")
+  grep -q 'HEAD-MARKER.*TAIL-MARKER' "$digest_file" \
+    || fail "pointed-to digest file does not hold the whole digest: $digest_file"
+  pass "inject_msg: a digest over FM_SEND_MAX_BYTES is written to a file and only its pointer is sent"
+}
+
+test_inject_msg_long_digest_deferred_writes_no_file() {
+  local dir state
+  dir=$(make_supercase inject-long-deferred)
+  state="$dir/state"
+  afk_enter "$state"
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 0; }
+    FM_SEND_MAX_BYTES=50 FM_SUPERVISOR_TARGET=s:w inject_msg "$(printf 'y%.0s' $(seq 1 100))" "$state" \
+      && fail "inject_msg should defer on a busy pane"
+    true
+  ) || fail "long-digest deferred subshell failed"
+  ls "$state"/.subsuper-digest-* >/dev/null 2>&1 && fail "a deferred inject left a digest file"
+  pass "inject_msg: a deferred long digest writes no pointer file"
+}
+
+test_inject_msg_long_digest_unconfirmed_removes_file() {
+  local dir state sent_log stub_verdict
+  for stub_verdict in send-failed none; do
+    dir=$(make_supercase "inject-long-unconfirmed-$stub_verdict")
+    state="$dir/state"
+    sent_log="$dir/sent.log"
+    afk_enter "$state"
+    (
+      fm_backend_target_exists() { return 0; }
+      pane_is_busy() { return 1; }
+      fm_backend_composer_state() { printf 'empty'; }
+      fm_backend_tmux_send_text_submit() {
+        printf '%s\n' "$2" >> "$sent_log"
+        [ "$stub_verdict" = none ] || printf '%s' "$stub_verdict"
+      }
+      fm_backend_source() { return 0; }
+      for _ in 1 2 3; do
+        FM_SEND_MAX_BYTES=400 FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=s:w \
+          FM_INJECT_CONFIRM_SLEEP=0 inject_msg "$(printf 'z%.0s' $(seq 1 600))" "$state" \
+          && fail "inject_msg should fail when the pointer submit is unconfirmed ($stub_verdict)"
+      done
+      true
+    ) || fail "long-digest unconfirmed ($stub_verdict) subshell failed"
+    [ "$(grep -c 'too long for the composer' "$sent_log")" -eq 3 ] || fail "each retry should have sent a pointer ($stub_verdict): $(cat "$sent_log")"
+    ls "$state"/.subsuper-digest-* >/dev/null 2>&1 && fail "untyped pointer submits ($stub_verdict) left orphan digest files: $(ls "$state"/.subsuper-digest-*)"
+  done
+  pass "inject_msg: a send-failed or empty-verdict pointer submit removes its digest file so retries leave no orphans"
+}
+
+test_inject_msg_long_digest_pending_keeps_file() {
+  local dir state sent_log stub_verdict digest_file
+  for stub_verdict in pending unknown; do
+    dir=$(make_supercase "inject-long-$stub_verdict")
+    state="$dir/state"
+    sent_log="$dir/sent.log"
+    afk_enter "$state"
+    (
+      fm_backend_target_exists() { return 0; }
+      pane_is_busy() { return 1; }
+      fm_backend_composer_state() { printf 'empty'; }
+      fm_backend_tmux_send_text_submit() { printf '%s' "$2" > "$sent_log"; printf '%s' "$stub_verdict"; }
+      fm_backend_source() { return 0; }
+      FM_SEND_MAX_BYTES=400 FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=s:w \
+        FM_INJECT_CONFIRM_SLEEP=0 inject_msg "KEEP-MARKER $(printf 'k%.0s' $(seq 1 600))" "$state" \
+        && fail "inject_msg should report a $stub_verdict pointer submit as undelivered"
+      true
+    ) || fail "long-digest $stub_verdict subshell failed"
+    digest_file=$(sed -n 's/.*read it in full at //p' "$sent_log")
+    [ -n "$digest_file" ] || fail "no pointer was typed for the $stub_verdict case: $(cat "$sent_log")"
+    grep -q 'KEEP-MARKER' "$digest_file" 2>/dev/null \
+      || fail "a $stub_verdict pointer submit deleted the digest file the typed pointer names: $digest_file"
+  done
+  pass "inject_msg: a pending/unknown pointer submit keeps the digest file the pointer names"
+}
+
+test_inject_msg_long_digest_pointer_over_limit_refuses() {
+  local dir state log_file called_file
+  dir=$(make_supercase inject-long-pointer-over)
+  state="$dir/state"
+  log_file="$dir/daemon.log"
+  called_file="$dir/called"
+  afk_enter "$state"
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_tmux_send_text_submit() { : > "$called_file"; printf 'empty'; }
+    fm_backend_source() { return 0; }
+    LOG="$log_file" FM_SEND_MAX_BYTES=60 FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=s:w \
+      inject_msg "$(printf 'w%.0s' $(seq 1 200))" "$state" \
+      && fail "inject_msg should refuse when the pointer itself is over the limit"
+    true
+  ) || fail "pointer-over-limit subshell failed"
+  [ ! -e "$called_file" ] || fail "an over-limit pointer reached the backend"
+  ls "$state"/.subsuper-digest-* >/dev/null 2>&1 && fail "a refused pointer left its digest file behind"
+  grep -q 'inject refused: digest file pointer is itself over the 60-byte composer limit' "$log_file" \
+    || fail "missing clear refusal log line: $(cat "$log_file" 2>/dev/null)"
+  grep -q 'submit unconfirmed' "$log_file" && fail "refusal was logged as an unconfirmed submit: $(cat "$log_file")"
+  pass "inject_msg: a pointer over FM_SEND_MAX_BYTES is refused with a clear log line and no leftover file"
+}
+
+test_send_text_submit_refuses_over_limit() {
+  local called=0 rc=0 err
+  err=$( {
+    fm_backend_source() { return 0; }
+    fm_backend_tmux_send_text_submit() { called=1; printf 'empty'; }
+    FM_SEND_MAX_BYTES=10 fm_backend_send_text_submit tmux s:w "hello worl!" 3 0 0 >/dev/null || rc=$?
+    printf 'rc=%s called=%s\n' "$rc" "$called"
+  } 2>&1 )
+  case "$err" in *"11 bytes, over the 10-byte composer limit"*) : ;; *) fail "missing refusal diagnostic: $err" ;; esac
+  case "$err" in *"rc=1 called=0"*) : ;; *) fail "over-limit text reached the backend or did not fail: $err" ;; esac
+  err=$( {
+    fm_backend_source() { return 0; }
+    fm_backend_tmux_send_text_submit() { called=1; printf 'empty'; }
+    FM_SEND_MAX_BYTES=10 fm_backend_send_text_submit tmux s:w "hello worl" 3 0 0 >/dev/null || rc=$?
+    printf 'rc=%s called=%s\n' "$rc" "$called"
+  } 2>&1 )
+  case "$err" in *"rc=0 called=1"*) : ;; *) fail "at-limit text should reach the backend: $err" ;; esac
+  pass "fm_backend_send_text_submit: refuses text over FM_SEND_MAX_BYTES before any backend call"
+}
+
 test_afk_start_refuses_when_flag_cannot_be_written() {
   local dir state out status
   dir=$(make_supercase afk-start-flag-unwritable)
@@ -1924,5 +2066,11 @@ test_inject_msg_herdr_busy_guard_defers
 test_inject_msg_herdr_composer_guard_defers
 test_inject_msg_herdr_pane_gone_defers
 test_inject_msg_herdr_submits_through_backend_dispatch
+test_inject_msg_long_digest_goes_through_file_pointer
+test_inject_msg_long_digest_deferred_writes_no_file
+test_inject_msg_long_digest_unconfirmed_removes_file
+test_inject_msg_long_digest_pending_keeps_file
+test_inject_msg_long_digest_pointer_over_limit_refuses
+test_send_text_submit_refuses_over_limit
 test_inject_msg_defers_on_dead_shell_unknown
 test_inject_msg_defers_on_unrecognized_composer_state

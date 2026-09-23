@@ -757,11 +757,40 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
   esac
 }
 
+# fm_backend_send_max_bytes: echo the composer text limit, FM_SEND_MAX_BYTES
+# (default 1000; a non-numeric or zero value falls back to 1000). The Claude
+# Code composer keeps only the bytes after the last full 1022-byte chunk of
+# typed text, so anything longer silently loses its head.
+fm_backend_send_max_bytes() {
+  local max_bytes=${FM_SEND_MAX_BYTES:-1000}
+  case "$max_bytes" in ''|*[!0-9]*) max_bytes=1000 ;; esac
+  max_bytes=$((10#$max_bytes))
+  [ "$max_bytes" -gt 0 ] || max_bytes=1000
+  printf '%s' "$max_bytes"
+}
+
+# fm_backend_text_bytes: echo the byte length of <text>.
+fm_backend_text_bytes() {  # <text>
+  local LC_ALL=C
+  printf '%s' "${#1}"
+}
+
 # fm_backend_send_text_submit: type text once, then submit and verify,
 # retrying only the submission (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty for confirmed delivery.
+# Every composer submission goes through here, so this is the single guard
+# against a truncated send: text over fm_backend_send_max_bytes is refused
+# with return 1, no output, and a stderr diagnostic before any backend call.
+# Callers that own long text (the away-mode daemon) route it through a file
+# pointer first; the rest refuse.
 fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label]
-  local backend=$1
+  local backend=$1 max_bytes text_bytes
+  max_bytes=$(fm_backend_send_max_bytes)
+  text_bytes=$(fm_backend_text_bytes "${3-}")
+  if [ "$text_bytes" -gt "$max_bytes" ]; then
+    echo "error: text is $text_bytes bytes, over the $max_bytes-byte composer limit (the Claude Code composer silently drops everything before the last 1022-byte chunk); refusing to send it to ${2-} - write it to a file and send its path instead" >&2
+    return 1
+  fi
   shift
   fm_backend_source "$backend" || return 1
   case "$backend" in
