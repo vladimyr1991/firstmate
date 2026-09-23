@@ -17,8 +17,8 @@ S15 is the only one of the three the control answers `NOT STATED`, because the s
 S14 earns its place as an agreement guard: the control answering it the same way is what shows this change did not alter an answer the skill already gave.
 S16's control answer disagrees with the post-change answer on purpose, and that disagreement is itself the visible regression close rather than a guard that the answer is unchanged.
 S15's `NOT STATED` is the evidence that the new text added something the skill did not say before.
-S17 to S21 belong to the all-streams change of 2026-09-23 and record the answers it owes: which streams are eligible, where a legal text goes, whether a routed card uses a capacity slot, what a never-taken `Новая` card whose work landed becomes, and what a rework-reset `Новая` card with landed work does not become.
-The control run against the pre-change skill answers S17 and S18 oppositely - only `Деливери` was eligible, so a `Лигал` card was never selected - answers S19 and S21 `NOT STATED`, and answers S20 oppositely, because the pre-change text reported a landed `Новая` card instead of moving it.
+S17 to S23 belong to the all-streams change of 2026-09-23 and record the answers it owes: which streams are eligible, where a legal text goes, whether a routed card uses a capacity slot, what a never-taken `Новая` card whose work landed becomes, what a rework-reset `Новая` card with landed work does not become, what a card bound only in a second mate's index or an unreadable one does not become, and what a routed card whose second mate has not replied yet does to the dispatch answer.
+The control run against the pre-change skill answers S17 and S18 oppositely - only `Деливери` was eligible, so a `Лигал` card was never selected - answers S19, S21, S22, and S23 `NOT STATED`, and answers S20 oppositely, because the pre-change text reported a landed `Новая` card instead of moving it.
 
 ## S1 - A capacity block that contradicts itself
 
@@ -196,9 +196,9 @@ The control run against the pre-change skill answers S17 and S18 oppositely - on
 
 **Question:** Which dispatchability bucket does the card land in, who does the work, and how is the card bound?
 
-**Expected answer:** Second-mate work: the PM names the `legal` second mate in its report, and firstmate routes the card to it through the marked request channel, skipping the project, delivery-posture, and specification steps, asking for a draft for the captain that the fleet never sends, signs, or publishes. The second mate spawns its own worker and binds it with `bin/fm-notion-link.sh <task-id> <card-url>` in its own home immediately after the spawn, then replies naming the task; only then does firstmate's `resolved [key=dispatch]` line map the card as `<card-url>=<second-mate>/<task-id>`, and the PM moves the card to `В работе`.
+**Expected answer:** Second-mate work: the PM names the `legal` second mate in its report, and firstmate routes the card to it through the marked request channel, skipping the project, delivery-posture, and specification steps, asking for a draft for the captain that the fleet never sends, signs, or publishes. The second mate spawns its own worker and binds it with `bin/fm-notion-link.sh <task-id> <card-url>` in its own home immediately after the spawn, then replies naming the task. Firstmate's `resolved [key=dispatch]` line never waits on that reply: it maps the card as `<card-url>=<second-mate>/<task-id>` when the reply has arrived, and the PM moves the card to `В работе`, or as `<card-url>=<second-mate>/pending` when it has not, and the card stays at `Новая`.
 
-**Anchor:** "What the PM may take", the three dispatchability buckets; "Turning a card into a task", the second-mate paragraph and the `resolved [key=dispatch]` sentence.
+**Anchor:** "What the PM may take", the three dispatchability buckets; "Turning a card into a task", the second-mate paragraph and the `resolved [key=dispatch]` sentences.
 
 ## S19 - Capacity when second-mate cards are selected
 
@@ -212,7 +212,7 @@ The control run against the pre-change skill answers S17 and S18 oppositely - on
 
 ## S20 - A never-taken `Новая` card whose work landed without a card
 
-**Situation:** A current-sprint `Новая` card's 32-hex page id appears on no line of `data/notion-cards.tsv`. Its body names a booking-engine module and route. `bin/fm-board-truth.sh --card <url> --branch <inferred>` reports `truth=landed-on-stand basis=branch`, and `git grep` against the staging ref finds every thing the card names.
+**Situation:** A current-sprint `Новая` card's 32-hex page id appears on no line of `data/notion-cards.tsv`, and on no line of the one second mate index the brief's `secondmate_card_indexes:` line names, which the PM reads. The brief's `routed_cards` line does not name the card. Its body names a booking-engine module and route. `bin/fm-board-truth.sh --card <url> --branch <inferred>` reports `truth=landed-on-stand basis=branch`, and `git grep` against the staging ref finds every thing the card names.
 
 **Question:** What does the PM do with the card, and when in the cycle?
 
@@ -229,3 +229,23 @@ The control run against the pre-change skill answers S17 and S18 oppositely - on
 **Expected answer:** No. A `Новая` card the index has ever bound to a task is left to intake untouched, because it is `Новая` through the captain's rework verdict or this table's own reset, and landed work is exactly what was found wanting; if it is reported at all it is as a divergence, never a write.
 
 **Anchor:** "Reconciling the board with truth", the sentence beginning "A `Новая` card the index has ever bound to a task" and the sentence on what every other `Status` means.
+
+## S22 - A `Новая` card bound only in a second mate's index
+
+**Situation:** The same as S20, except this home's `data/notion-cards.tsv` holds no line for the card while the `legal` second mate's own index, named on the brief's `secondmate_card_indexes:` line, holds an archived link line for its page id, because a routed task drafted the card's document and the captain's rework verdict later sent the card back to `Новая`. In a second variant that index is unreadable, or the brief carries `secondmate_card_indexes: unknown`.
+
+**Question:** Does reconciliation move the card to `Тестирование` in either variant?
+
+**Expected answer:** No. In the first variant the card is not never-taken, because never-taken means no line in this home's index and no line in any second mate's index the brief names, so it is left to intake exactly as S21 rules. In the second variant every `Новая` card counts as taken for that scan, so reconciliation makes no `Новая` to `Тестирование` write at all.
+
+**Anchor:** "What the PM may take", the `secondmate_card_indexes:` sentence; "Reconciling the board with truth", the paragraph defining a never-taken card.
+
+## S23 - A routed card whose second mate has not replied yet
+
+**Situation:** A scan selected one repo-work card and one second-mate card. The implementation worker spawned and was linked; the second mate queued the request and has not yet replied naming a linked task.
+
+**Question:** When does firstmate answer the dispatch hold, what happens to each card, and what does the next brief say about the routed card?
+
+**Expected answer:** Firstmate answers `resolved [key=dispatch]` as soon as the implementation worker is linked, without waiting on the second mate, mapping the repo-work card to its task and the routed card as `<card-url>=<second-mate>/pending`. The PM moves the repo-work card to `В работе` and leaves the routed card at `Новая`. Every later brief writes the routed card as `<card-url>=pending` on its `routed_cards` line until the second mate replies, so no scan re-routes it, calls it orphaned, or treats it as never-taken; once the line names it without the `pending` mark, a scan that still sees it at `Новая` re-reads it and moves it to `В работе`.
+
+**Anchor:** "What the PM may take", the `routed_cards` sentence; "Turning a card into a task", the `resolved [key=dispatch]` and pending sentences; "Reconciling the board with truth", the sentence on a card `routed_cards` names.
