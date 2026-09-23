@@ -216,7 +216,8 @@ family_for_basename() {
       printf '%s\n' watcher-wake-lock
       ;;
     fm-afk-inject-herdr-e2e.test.sh|fm-afk-launch.test.sh|fm-backend-autodetect-smoke.test.sh|\
-    fm-backend-herdr-eventwait-smoke.test.sh|fm-backend-herdr-presentation-e2e.test.sh|\
+    fm-backend-herdr-eventwait-smoke.test.sh|fm-backend-herdr-focus-flash-e2e.test.sh|\
+    fm-backend-herdr-presentation-e2e.test.sh|\
     fm-backend-herdr-launcher-workspace-e2e.test.sh|\
     fm-backend-herdr-prune-safety-e2e.test.sh|fm-backend-herdr-respawn-idem-e2e.test.sh|\
     fm-herdr-session-cleanup-e2e.test.sh|\
@@ -427,7 +428,6 @@ tests/fm-afk-return.test.sh 1105
 tests/fm-ask-user-authority.test.sh 68
 tests/fm-backend-cmux-smoke.test.sh 29
 tests/fm-backend-cmux.test.sh 2349
-tests/fm-backend-herdr-focus-flash-e2e.test.sh 21
 tests/fm-backend-orca.test.sh 12041
 tests/fm-backend-tmux-smoke.test.sh 314
 tests/fm-backend-zellij-smoke.test.sh 21
@@ -733,6 +733,31 @@ run_coverage_guard() {
       rm -rf "$tmp"
       return 1
     fi
+  fi
+
+  # A real-Herdr e2e left outside every Herdr family lands in the portable
+  # serial lane, where Herdr is absent, so it skips green and guards nothing.
+  # Key: a tests/*-e2e.test.sh whose text names bin/fm-herdr-lab.sh. It misses
+  # a Herdr test that is not named *-e2e or that reaches the lab helper under
+  # another name. The accepted families below are an allowlist and therefore
+  # blind spots: live-harness-optin is accepted only because its opt-in Herdr
+  # tests are deliberately outside the required lane; a script wrongly filed
+  # there passes this check silently.
+  : >"$tmp/herdr_unfamilied"
+  while IFS= read -r a; do
+    case "$a" in *-e2e.test.sh) ;; *) continue ;; esac
+    grep -Fq 'fm-herdr-lab.sh' "$a" || continue
+    case "$(family_for_basename "${a##*/}")" in
+      real-herdr-gated|live-harness-optin) ;;
+      *) printf '%s
+' "$a" >>"$tmp/herdr_unfamilied" ;;
+    esac
+  done <"$tmp/all"
+  if [ -s "$tmp/herdr_unfamilied" ]; then
+    log "coverage guard: e2e scripts use the Herdr lab helper but belong to no Herdr family (add them to real-herdr-gated in family_for_basename):"
+    cat "$tmp/herdr_unfamilied" >&2
+    rm -rf "$tmp"
+    return 1
   fi
 
   printf 'FM_TEST_COVERAGE ok total=%s parallel=%s serial=%s serial_shards=%s herdr=%s\n' \
