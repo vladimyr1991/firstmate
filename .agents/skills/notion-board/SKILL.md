@@ -1,9 +1,9 @@
 ---
 name: notion-board
 description: >-
-  Agent-only playbook for the captain's Notion Delivery board and the durable PM worker firstmate dispatches to operate it.
+  Agent-only playbook for the captain's Notion task board and the durable PM worker firstmate dispatches to operate it.
   Use when the captain names the board, Notion, a sprint, or asks firstmate to take the next task itself.
-  Use on a heartbeat or post-teardown re-evaluation when the local queue holds no dispatchable work, to decide whether to pull the next Delivery card.
+  Use on a heartbeat or post-teardown re-evaluation when the local queue holds no dispatchable work, to decide whether to pull the next current-sprint card.
   Use on every sprint-check cycle to reconcile the board against the truth in git and the deploy run, so a card whose task ended without a status event is still brought to its right state.
   Use when a task carrying `notion_page=` in its meta reaches a terminal status, before syncing that card.
   Use before recycling a finished card back into the free pool.
@@ -19,8 +19,8 @@ This skill is the single owner of the Notion board contract: which cards the PM 
 
 The PM is a durable ordinary fleet worker, not a harness-native subagent and not a role firstmate performs itself.
 Firstmate creates a PM scout brief with `bin/fm-brief.sh`, launches it through `bin/fm-spawn.sh`, and supervises it like any other direct report.
-The PM keeps the board honest and owns intake until every eligible card it selects has the worker firstmate dispatched for it durably running and linked, whether the gate below made that a spec worker or an implementation worker.
-Notion-board implementation work is capped at four concurrent workers across the whole home, not four new workers per scan.
+The PM keeps the board honest and owns intake until every eligible card it selects has the worker firstmate dispatched for it durably running and linked, whether the gate below made that a spec worker, an implementation worker, or a second mate's worker.
+Notion-board implementation work is capped at four concurrent workers across the whole home, not four new workers per scan, and a card routed to a second mate does not count toward that cap.
 The board is not an authority over delivery posture - `data/projects.md` and `AGENTS.md` section 7 own mode and yolo, and a card never overrides them.
 
 ## Access and budget
@@ -28,7 +28,7 @@ The board is not an authority over delivery posture - `data/projects.md` and `AG
 Notion is reached only through the account-level MCP connector, from inside the Claude PM worker's turn.
 There is no poller and no shell client: MCP tools do not exist outside an agent turn, so nothing in `bin/` or the watcher can read this board.
 Only a `claude`-harness agent can reach the connector at all; never route the PM role to a `codex` worker.
-The firstmate primary and implementation workers never scan the board or substitute for a PM whose spawn failed.
+The firstmate primary, implementation workers, and second mates never scan the board, write a card, or substitute for a PM whose spawn failed.
 
 `query_data_sources` and `query_database_view` are rate-limited on the captain's plan; `search`, `fetch`, and `get_comments` are not.
 A healthy cycle spends exactly ONE `query_data_sources` call - the witnessed read below, from which both sweeps and the reconciliation are derived - and TWO per cycle remains the hard ceiling, the second reserved for that read's single retry, deliberately covering a zero-row result as well as an error, and for nothing else.
@@ -72,15 +72,17 @@ Diagnosis and probes: `data/fm-notion-orphan-sweep-diagnose-and-spec/report.md`.
 The column list is deliberately narrower than the one that report's specification asked for, and this is the one place this skill overrides it.
 It carries card identity and nothing more: `url` is the row identity, `Name` is what lets a report name the card it is about, and `Status`, `Stream`, and `Sprint` are the whole of what the two derived sets are predicated on.
 A title arriving as a row of this read is identity, which the PM may use to name a card in a report and for nothing else; the Boundaries rule that gives a card's title and description the weight of a captain instruction governs the card content the PM acts on, which reaches it only through the `fetch` below.
-What the narrowing leaves out is card BODY text, `Description` above all, because the read-proof needs rows rather than bodies and selecting prose with no `WHERE` clause would pull every stream's card text, `Финансы` and `Лигал` included, into the PM's turn carrying the weight the Boundaries section gives the captain's writing, for cards this role has no business reading at all.
+What the narrowing leaves out is card BODY text, `Description` above all, because the read-proof needs rows rather than bodies and selecting prose with no `WHERE` clause would pull the text of every card on the board, the next sprint, the backlog, and the recycle pool included, into the PM's turn carrying the weight the Boundaries section gives the captain's writing, for cards outside the eligible set that this role has no reason to act on.
 A card's body reaches the PM one card at a time through a free `fetch`, never in bulk from this read, and the only body it may take in to act on is that of a card the eligible set holds, fetched with `include_discussions` before the dispatchability test judges that card.
 What this narrows is bulk ingestion, never a single targeted `fetch` the rest of this file already calls for, such as the status-sync re-read of an active card before writing to it.
 A `fetch` render can lag, so a `fetch` is never the proof that the board was read this cycle: the witnessed read alone carries that proof.
 
 Derive both sets from the returned rows by byte-exact string comparison against the option strings in the table above:
 
-- the eligible set, which is the eligibility sweep: `Stream=Деливери` **and** `Sprint=🏃 Текущий спринт` **and** `Status=Новая`.
-- the active set, which is the orphaned-status sweep: the same `Stream` and `Sprint`, with `Status` one of `В работе`, `На ревью`, or a rework status.
+- the eligible set, which is the eligibility sweep: `Sprint=🏃 Текущий спринт` **and** `Status=Новая`, whatever the row's `Stream` holds - any of the five options, or none at all.
+- the active set, which is the orphaned-status sweep: the same `Sprint` and the same indifference to `Stream`, with `Status` one of `В работе`, `На ревью`, or a rework status.
+
+`Stream` is never a filter: it names whose area a card belongs to, never whether the fleet may take it, and the dispatchability test below decides who does the work.
 
 That sweep selects nothing and only detects divergence; the status-sync section below owns what its results mean and how they are reported.
 
@@ -109,28 +111,34 @@ The next cycle re-runs normally, and repeated failures are a real blocker to rai
 
 ## What the PM may take
 
-Eligible: `Stream=Деливери` **and** `Sprint=🏃 Текущий спринт` **and** `Status=Новая`.
+Eligible: `Sprint=🏃 Текущий спринт` **and** `Status=Новая`, in every `Stream` - `Деливери`, `Лигал`, `Маркетинг`, `Продажи`, `Финансы` - and on a card with no `Stream` at all.
 Anything outside that filter is never pulled autonomously, including the next sprint and the backlog - the captain moves a card into the current sprint when they want it worked.
 Every eligible card is fetched with `include_discussions`, so the captain's comments reach the dispatchability statement as the requirement, a rework ask included, instead of the original description alone; which comment is the captain's and which is the fleet's own is decided by the authorship rule in the Boundaries section, and nothing here restates it.
 That fetch only locates the discussions, returning a count, preview snippets, and `discussion://` URLs; `get_comments` is page-scoped, so one call on the card page with `include_all_blocks` true, made only when that fetch shows the card has discussions, returns the full text of every discussion on the card, block-anchored ones alongside page-level ones, so a captain's comment on a specific description line is not missed, and that full text is what the PM reads.
 The PM quotes a captain's rework ask verbatim from that full text, never from a preview snippet, in the scout report, and names the previous task's branch or landed commit when the reconciliation report or the durable index carries it.
 
 Eligibility is necessary, not sufficient.
-Apply the dispatchability test to every candidate: can a crewmate finish this inside a git worktree, with no physical-world action, no live human conversation, and no credential the fleet does not already hold?
+Apply the dispatchability test to every candidate: can the fleet finish this with no physical-world action, no live human conversation, no outward-facing publication or contact, and no credential the fleet does not already hold?
+Then route it by the nature of the work, never by its `Stream`:
 
-- Yes - a code, config, content, or test change in a registered project. Dispatch it.
-- No - field research, interviews, a baseline measurement week, a commercial document, a decision that is the captain's to make. Never dispatch it. Sharpen the card instead: tighten its description, name the concrete blocker, and surface it to the captain as work only they can start.
+- Repo work - a code, config, content, or test change in a registered project. Dispatch it to an implementation worker, through the specification gate below exactly as before.
+- Second-mate work - a document or text a registered second mate's scope in `data/secondmates.md` covers, such as a legal text, marketing material, a financial calculation, or product research, drafted for the captain and never sent, signed, or published by the fleet. Route it to that second mate as described below.
+- Captain work - field research, interviews, a baseline measurement week, a live negotiation, anything that must leave the fleet, a decision that is the captain's to make, or a document no registered second mate's scope covers. Never dispatch it. Sharpen the card instead: tighten its description, name the concrete blocker or the missing scope, and surface it to the captain as work only they can start.
 
-The real board mixes both freely, so make this call per card and state which bucket each candidate landed in.
+The real board mixes all three freely, in every stream, so make this call per card and state which bucket each candidate landed in, naming the second mate for a second-mate card.
 When a card is ambiguous, treat it as captain work and ask one concise question rather than dispatching a guess.
 
 Fill available implementation capacity up to four concurrent Notion-linked workers on every scan.
 Firstmate calculates capacity from reconciled live task state immediately before each spawn, counting every non-terminal task carrying an active `notion_page=` link, including blocked or paused workers whose endpoint and work remain live.
-Firstmate records that scan's `active_count` and remaining capacity in the PM brief before launch so the PM knows the maximum number of cards it may select.
+Firstmate records that scan's `active_count` and remaining capacity in the PM brief before launch so the PM knows the maximum number of repo-work cards it may select.
+A second-mate card uses no implementation worker, so it never counts toward `active_count` and the cap never limits how many of them the PM selects; each second mate's own queue paces that work.
 That same step records `linked_cards`, the card URL of every task it counted, so the brief carries the live linked-card list the orphaned-status sweep tests against and the PM never has to infer a task's terminality from the backlog.
 Write that line on every brief, using `linked_cards: none` when `active_count` is 0, because an explicit empty list means zero live links while a missing line means the list was never supplied.
 Only a brief with no `linked_cards` line at all leaves the sweep unarmed; `linked_cards: none` arms it exactly like a populated list, and on an idle fleet every card that sweep returns is then a divergence.
 Firstmate also writes a `truth_repo: <path>` line on every PM brief, naming the repository the reconciliation section reads, because a PM without it cannot establish any card's truth.
+Firstmate also writes a `routed_cards:` line on every PM brief: the card URL of every card a non-terminal task in a registered second mate's home carries an active `notion_page=` link to, read from that home's `bin/fm-fleet-snapshot.sh --home-summary <home>` (`endpoints[].links.notion_page`, counting only an `endpoints[].state` that is neither `done` nor `failed`), or `routed_cards: none` when no second mate holds one.
+It stands apart from `active_count` and `linked_cards`, so it never enters their correspondence check, and a card it names is live exactly as a card `linked_cards` names is, for the eligibility dedupe and for the orphaned-status sweep alike.
+When any registered second mate's summary was unavailable or names `endpoints` in its `omitted[]`, firstmate writes `routed_cards: unknown`, and a brief with no `routed_cards` line at all means the same: the PM then reports every card it would have called orphaned or reset for want of a live task as unknown, and makes neither judgment on that scan, because a card a second mate is working carries its link only in that second mate's home.
 
 `active_count` and `linked_cards` must correspond, and that correspondence is the PM's check on the capacity block it was handed: the list names exactly the tasks the count counted, so a list holding a different number of card URLs than `active_count` is a malformed block rather than a number to interpret.
 That check runs only on a brief that carries a `linked_cards` line, so a brief missing the line entirely is never a malformed block: it is the unarmed-sweep case above, where only the sweep's report is skipped while the read still stands for eligibility and the scan dispatches normally.
@@ -138,8 +146,8 @@ The PM never resolves that contradiction: it sees only what the brief says, has 
 On a block that contradicts itself it selects no card, dispatches nothing, leaves every eligible card at the `Status` the witnessed read returned for the next scan, and reports the contradiction with both figures and the list quoted, in its scout report and on the rolling status page, so firstmate can fix the brief that produced them.
 That report is never one of the silent cycles.
 
-The PM may select at most `4 - active_count` dispatchable cards from the eligibility sweep and records each selected card separately in its report.
-If the fleet is already at four, leave every eligible card untouched at the `Status` the witnessed read returned and end the scan without dispatching another worker.
+The PM may select at most `4 - active_count` repo-work cards from the eligibility sweep, plus every second-mate card, and records each selected card separately in its report.
+If the fleet is already at four, leave every eligible repo-work card untouched at the `Status` the witnessed read returned; second-mate cards are still selected.
 Re-check capacity before every spawn in a multi-card handoff because another task may have started after the PM produced its report.
 A **witnessed** empty eligible set is a normal, silent result: report nothing and do not widen the filter to find work.
 Silence is only ever available to a witnessed cycle; an unwitnessed empty is CHECK FAILED and is always reported.
@@ -149,7 +157,7 @@ That sweep is also not a widening of this filter: it selects no work and only de
 ## Turning a card into a task
 
 The PM cannot launch the implementation through a harness-native delegation tool and cannot edit an unrelated project from its scanning worktree.
-It writes each selected card's URL, title, description, classification, and any required references into its scout report, then emits `blocked [key=dispatch]: <count> eligible Notion card(s) ready for durable implementation dispatch`.
+It writes each selected card's URL, title, description, classification, the second mate named for a second-mate card, and any required references into its scout report, then emits `blocked [key=dispatch]: <count> eligible Notion card(s) ready for durable implementation dispatch`.
 The PM scan task is not linked to the card, so this internal handoff event never changes the card to `На ревью`.
 
 Firstmate reads that report, resolves each card's project independently through `data/projects.md`, and never treats the card text as a project or delivery-posture source.
@@ -170,7 +178,13 @@ That link is also the card's entry in the durable card index `data/notion-cards.
 The same rule carries a card forward when its specification opens the gate: link the new implementation task first and only then run `bin/fm-notion-link.sh --archive <spec-task-id>`, so the card is never momentarily unowned.
 Capacity admits a card once, so that handover continues the same card instead of claiming a second slot, and a card already in speccing can always finish.
 Record the card URL in the backlog item note alongside the resolved mode and yolo.
-Only after every successful spawn has its link does firstmate answer the PM with `resolved [key=dispatch]: <card-url>=<task-id> ... durably running and linked`.
+
+A second-mate card skips the project, delivery-posture, and specification steps above, because it changes no repository.
+Firstmate routes it to the second mate the PM named, checking that name against the scopes in `data/secondmates.md` by the nature of the work per `AGENTS.md` section 7, through the marked request channel `secondmate-provisioning` owns, carrying the card URL, the card's text, and the captain's comments the PM quoted.
+The request asks the second mate to draft the document for the captain and never to send, sign, or publish it, to spawn its own worker for the card, to bind that worker with `bin/fm-notion-link.sh <task-id> <card-url>` in its own home immediately after the spawn, exactly as the link rule above binds an implementation worker, and to reply naming the linked task.
+That link lands in the second mate's own task record, which is where the `routed_cards` line above is read from, and in its own durable card index, which is where recycle step 3 later archives it.
+A second mate whose scope turns out not to fit, or who declines, sends the card back, and it is sharpened and escalated as captain work.
+Only after every successful spawn has its link, and every routed card's second mate has replied naming its linked task, does firstmate answer the PM with `resolved [key=dispatch]: <card-url>=<task-id> ... durably running and linked`, writing a routed card's mapping as `<card-url>=<second-mate>/<task-id>`.
 If capacity closes or one spawn fails, firstmate lists only the successfully linked mappings and states the failed or deferred cards explicitly; those cards remain at the `Status` the witnessed read returned for the next scan.
 The PM re-reads every successfully linked card, leaves any card untouched if the captain moved it meanwhile, otherwise sets it to `В работе`, updates the rolling status page, and finishes its scan.
 An eligible card is not handled merely because its body already contains an asset, prompt, result, or earlier work note.
@@ -266,12 +280,15 @@ This table is the only owner of the mapping.
 | `needs-decision:` or `blocked:` | `На ревью` |
 | `statement_publish: ... connector_outcome=` anything but `sync-success` or `async-success` | `На ревью` |
 | `done [key=staging]: ...` | `Тестирование` |
+| a second mate's reply delivers the document drafted for a routed card | `На ревью`, with where the document lives written into the card |
 | `failed:` | `Отложена`, with the plain reason in the card |
 | captain verified it on the stand | `Завершена` - **the captain's alone; never set it** |
 
 Sync on the wake that carries the event, not on a schedule.
 Event sync is the fast path, never the guarantee: the event dies with the task that would have sent it, and a missed one is never replayed, so the reconciliation section below is what brings the card right on the next cycle whatever happened to the task.
 `Тестирование` is driven by the keyed `done [key=staging]:` line on an event wake, and by a `landed-on-stand` verdict under reconciliation, and by nothing else.
+A drafted document goes to `На ревью` rather than `Тестирование`, because nothing of it is on the stand: the captain reviews it and alone sets `Завершена`.
+A second mate's decision or blocker relayed through its reply maps to `На ревью` exactly as the `needs-decision:` or `blocked:` row does, and its failure maps to `Отложена` exactly as the `failed:` row does.
 A bare `done:` with staging prose in it is not that signal: firstmate does not recover a terminal outward effect from a sentence, so treat a missing key as an unfinished contract and fix the brief rather than guessing the card is ready to test.
 
 Move a card back out of `На ревью` when the decision is resolved and the task resumes.
@@ -282,11 +299,11 @@ Reporting a divergence means leaving the card exactly as it is, writing it into 
 Name the card on both surfaces, because a divergence firstmate cannot identify is not a divergence it can act on: on a sprint-check take the `Name` and `url` from the row the witnessed read already returned, and on an event wake, which runs no such read, take them from the card the re-read above just fetched, so naming never costs a `query_data_sources` call this wake was not given.
 
 The orphaned-status sweep - the active set derived from the witnessed read - finds the divergence this table cannot produce: a card the board shows as active with no task behind it.
-Check every card in that set against the brief's `linked_cards` list, not against bare `notion_page=` notes in the backlog.
+Check every card in that set against the brief's `linked_cards` list together with its `routed_cards` list, not against bare `notion_page=` notes in the backlog; wherever this file says a card is live because `linked_cards` names it, a card `routed_cards` names is live the same way.
 The eligibility dedupe in the sprint-check steps below applies the same `linked_cards` test to a `Новая` card, because the list proves a task is still working it, while bare presence of a link proves only that a card was taken once and is the dedupe only when no `linked_cards` source exists.
 If the brief carries no `linked_cards` line at all, skip this sweep for that scan and report no divergence from it: a test the PM cannot answer is not evidence that every active card is orphaned, and firstmate owns supplying the list.
 That skips only the orphan report, never the witnessed read itself, which still serves eligibility and still has to come back witnessed.
-A standing PM with no per-cycle brief may instead use its own per-cycle self-computed live-link set as an equally valid `linked_cards` source: the cards a non-terminal task somewhere in the fleet carries an active `notion_page=` link to.
+A standing PM with no per-cycle brief may instead use its own per-cycle self-computed live-link set as an equally valid `linked_cards` and `routed_cards` source together: the cards a non-terminal task somewhere in the fleet, second mates' homes included, carries an active `notion_page=` link to.
 Build that set as the union of two reads, both required: `bin/fm-fleet-snapshot.sh --cross-home` for the parent and every sibling (`homes[].summary.endpoints[].links.notion_page`), and `bin/fm-fleet-snapshot.sh --json` run in the PM's own home for the PM itself (`tasks[].links.notion_page`, which enumerates every task meta and so has no truncation case of its own).
 The PM's own home is the one home `--cross-home` is defined never to return - it skips the observer as a fleet member by design, with no `homes[]` or `unavailable[]` record and nothing in `counts` - so a set built from `--cross-home` alone silently omits every card the PM is itself working and reports each of them orphaned, with no field in the output to warn that it did.
 Count a link only from a task in a non-terminal state, in both reads: `endpoints[].state` and `tasks[].current_state.state`, neither `done` nor `failed`.
@@ -312,7 +329,10 @@ The 2026-09-09 truth pass (`data/pm-board-truth-pass/report.md`) brought fourtee
 Reconciliation is that pass made routine.
 It self-heals: a cycle that misses a card is corrected by the next one, whereas a missed event is lost forever, so it does not matter how a task ended - ordinary cleanup, forced cleanup, a crash, or work nobody ever linked.
 
-Run it on every sprint-check cycle, after the witnessed read, over the active set that read returned: every Delivery card in the current sprint at `В работе`, `На ревью`, or a rework status.
+Run it on every sprint-check cycle, after the witnessed read, over the active set that read returned - every card in the current sprint, of any stream or none, at `В работе`, `На ревью`, or a rework status - and over every never-taken `Новая` card of the eligible set.
+A never-taken card is one whose 32-hex page identifier appears on no line of the durable index `data/notion-cards.tsv`, live or archived, matched by that identifier rather than the whole URL because a stored link keeps whatever host and slug form it was handed.
+A `Новая` card the index has ever bound to a task is left to intake untouched, because it is `Новая` either through the captain's rework verdict or through this table's own reset, and in both cases landed work is exactly what was found wanting.
+A never-taken card's branch or artifact comes from its body, which reaches the PM through the intake `fetch` that card receives anyway, so this pass runs before selection and a card it moves leaves the eligible set.
 It costs no board read: the witnessed read already returned each card's `Status`, and every fact below comes from git and the forge through `bin/fm-board-truth.sh`, which never touches Notion.
 The brief names the repository to read as `truth_repo: <path>` (the PM's own worktree of the project is the natural choice) and may override the defaults with `truth_staging:`, `truth_develop:`, and `truth_deploy_workflow:` lines; `bin/fm-board-truth.sh --help` owns the flags and the exact output fields.
 A brief with no `truth_repo:` line skips reconciliation for that scan and reports it as unarmed, exactly as a missing `linked_cards` line is handled by the orphaned-status sweep, because a truth the PM cannot read is not evidence about any card.
@@ -329,6 +349,7 @@ The script's `truth=` verdict is a fact about the work; this table is the only o
 |---|---|---|
 | `landed-on-stand` with `basis=branch`, and the staging tree holds everything the card names | `В работе`, `На ревью` | set `Тестирование` |
 | `landed-on-stand` with `basis=artifact`, every listed `artifact_files=` path is the card's own subject, and the staging tree holds everything the card names | `В работе`, `На ревью` | set `Тестирование`, and name the matched files in the report as the basis |
+| `landed-on-stand` with `basis=branch`, or `basis=artifact` with every listed `artifact_files=` path the card's own subject, and the staging tree holds everything the card names | `Новая`, never taken | set `Тестирование`, and name the branch or matched files in the report as the basis |
 | `landed-on-stand` with `basis=artifact` and a listing that is not the card's subject | any | leave it; rerun with a specific pattern, and report it as `unresolved` if none holds |
 | `landed-on-stand`, but the card names more than the branch delivered | any | leave it; report as partial, naming what is missing |
 | `landed-not-deployed` | `В работе`, `На ревью` | leave it; report that the stand is not proven |
@@ -338,14 +359,15 @@ The script's `truth=` verdict is a fact about the work; this table is the only o
 | any, with a live linked task | a rework status | nothing; report that the captain moved a card whose task is still live, so firstmate can steer that worker |
 | any, no live linked task, an open decision holder naming the card | a rework status | nothing; report it as waiting on the captain |
 | any, no live linked task, no open decision holder naming the card | a rework status | set `Новая`, and name the existing branch or landed commit in the report as evidence for the next worker |
-| `not-started` | `На ревью` | nothing when a decision holder for the card is open in `data/backlog.md`; otherwise report |
+| `not-started` | `На ревью` | nothing when a decision holder for the card is open in `data/backlog.md` or the card records a drafted document delivered for review; otherwise report |
 | `unresolved` | any | leave it; report what could not be established |
 
 "Everything the card names" is the report's second method, not a guess: `git grep` or `git show` against the staging ref for each concrete thing the card's own text promises, because a landed branch proves only that its commits are in staging, and on 2026-09-09 three landed cards were correctly left at `В работе` for a requirement the branch had not closed.
-A live linked task is one the brief's `linked_cards` line names, and a decision holder is a `captain`-kind hold in `data/backlog.md` whose note names the card.
+A live linked task is one the brief's `linked_cards` or `routed_cards` line names, and a decision holder is a `captain`-kind hold in `data/backlog.md` whose note names the card.
 A card at a rework status is owned by its three rows alone, whatever its truth, because the captain's move to that status is the verdict that the work is incomplete and truth never overrides it; such a card is never set to `Тестирование`.
-Reconciliation writes only to a card the witnessed read showed at `В работе`, `На ревью`, or a rework status, and it moves a card only to `Тестирование` or `Новая`.
-Every other `Status` describes a place the captain or the recycle procedure put the card, so a card at `Тестирование`, `Отложена`, `Завершена`, or `♻️ Пул` whose truth disagrees is a divergence to report, never a write, and a `Новая` card whose work has landed is reported the same way because `Новая` to `Тестирование` is not a row of the status table.
+`bin/fm-board-truth.sh` reads git and the forge, so it cannot see a document a second mate drafted: a card `routed_cards` names is right while that task lives, and reconciliation runs no truth for it, while one whose second mate's task has ended is judged by the rows above like any other card.
+Reconciliation writes only to a card the witnessed read showed at `В работе`, `На ревью`, or a rework status, or at `Новая` and never taken, and it moves a card only to `Тестирование` or `Новая`.
+Every other `Status` describes a place the captain or the recycle procedure put the card, so a card at `Тестирование`, `Отложена`, `Завершена`, or `♻️ Пул` whose truth disagrees is a divergence to report, never a write, and a `Новая` card the index has bound to a task before whose work has landed is reported the same way.
 `Завершена` is never set by reconciliation, whatever the deploy run says: only the captain's own check on the stand sets it.
 Before each write, re-read the card as the status-sync section requires; a card that has left the `Status` the witnessed read returned was moved by a hand this table did not see, so leave it and report the divergence.
 Writes are `update_properties` on `Status` alone, which spends no block budget and no rate-limited read, and the rolling status page is rewritten once per cycle that moved or reported anything.
@@ -360,7 +382,7 @@ Two pages, both found by exact title with `search` and created once if absent, b
   A witnessed cycle that found nothing and changed nothing leaves this page exactly as it is, because rewriting it on every scheduled cycle spends the captain's block budget restating an unchanged page.
 - `🗄️ Архив задач` - one line per finished task, appended. This is the durable history that lets a card be recycled.
 
-For every project's card, write the result into its body - what changed, the implementing branch name, landing commit hash, PR URL, and CI run - rather than creating a page per task.
+For every project's card, write the result into its body - what changed, the implementing branch name, landing commit hash, PR URL, and CI run, or for a routed card where the drafted document lives - rather than creating a page per task.
 Keep the captain-facing summary in outcomes per `AGENTS.md` section 9; the board is a status surface, not a place to narrate fleet mechanics.
 
 ## Recycling a card
@@ -371,7 +393,7 @@ Order is strict and never reversed:
 
 1. Append the task's line to `🗄️ Архив задач`.
 2. Re-read that page and confirm the line is actually there.
-3. `bin/fm-notion-link.sh --archive <task-id>` - retires `notion_page=` to `notion_page_archived=` and writes the matching archive line into the durable card index, so neither a later wake nor a later reconciliation can push a status into a card that is about to belong to someone else.
+3. `bin/fm-notion-link.sh --archive <task-id>`, run in the home whose index holds the link, so a routed card's link is archived by its second mate on firstmate's request - retires `notion_page=` to `notion_page_archived=` and writes the matching archive line into the durable card index, so neither a later wake nor a later reconciliation can push a status into a card that is about to belong to someone else.
 4. Only now clear the card: `replace_content` the body to empty, set `Name` to `♻️ (пустая карточка)`, clear `Priority`, `Tags`, `Due Date`, and `Assignee`, set `Sprint` to `📋 Бэклог` and `Status` to `♻️ Пул`.
 
 Losing the archive line loses the only record of the work, so a failure at step 1 or 2 stops the recycle with the card untouched.
@@ -421,11 +443,11 @@ On a `sprint-check` wake or a direct captain request that launched this PM:
    When no `linked_cards` source exists at all, fail safe and keep the bare-presence drop: any `notion_page=` link then still dedupes the card.
    The sweep selects no work; it only surfaces cards the board shows as active with no task behind them, written into the scout report per the status-sync section.
    Only when that line is missing entirely, skip the sweep's report for this scan - the read itself still stands, because it also serves eligibility - and continue to the next step.
-2. **Reconcile the active set with truth.**
-   Run `bin/fm-board-truth.sh` over every active card the witnessed read returned and apply the reconciliation table, moving only what it permits and reporting the rest.
+2. **Reconcile the active set and the never-taken `Новая` cards with truth.**
+   Run `bin/fm-board-truth.sh` over every active card the witnessed read returned, and over every never-taken `Новая` card the reconciliation section names, and apply the reconciliation table, moving only what it permits and reporting the rest.
    This is the step that survives a task ending without its event, so it is never skipped on a witnessed cycle whose brief carries `truth_repo:`, and a cycle that moved a card is not one of the silent ones.
 3. **Fill available capacity; do not build the cards yourself.**
-   Select as many dispatchable cards as the four-worker cap permits, write each one into the scout report, and open the single keyed dispatch hold described above.
+   Select as many repo-work cards as the four-worker cap permits and every second-mate card, write each one into the scout report, and open the single keyed dispatch hold described above.
    Stay live until firstmate confirms which dispatched workers are durably running and linked, then move only those cards to `В работе`.
 4. **Found nothing in a witnessed cycle? End the turn silently.**
    Silently means no captain-facing update and no board write; the scout report and the `done:` status line the PM owes as an ordinary fleet worker are always written, whatever the cycle found.

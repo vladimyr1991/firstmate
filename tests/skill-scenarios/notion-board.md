@@ -17,6 +17,8 @@ S15 is the only one of the three the control answers `NOT STATED`, because the s
 S14 earns its place as an agreement guard: the control answering it the same way is what shows this change did not alter an answer the skill already gave.
 S16's control answer disagrees with the post-change answer on purpose, and that disagreement is itself the visible regression close rather than a guard that the answer is unchanged.
 S15's `NOT STATED` is the evidence that the new text added something the skill did not say before.
+S17 to S21 belong to the all-streams change of 2026-09-23 and record the answers it owes: which streams are eligible, where a legal text goes, whether a routed card uses a capacity slot, what a never-taken `Новая` card whose work landed becomes, and what a rework-reset `Новая` card with landed work does not become.
+The control run against the pre-change skill answers S17 and S18 oppositely - only `Деливери` was eligible, so a `Лигал` card was never selected - answers S19 and S21 `NOT STATED`, and answers S20 oppositely, because the pre-change text reported a landed `Новая` card instead of moving it.
 
 ## S1 - A capacity block that contradicts itself
 
@@ -177,3 +179,53 @@ S15's `NOT STATED` is the evidence that the new text added something the skill d
 **Expected answer:** None may: `insert_content`, `update_content`, and `replace_content` are all forbidden for the statement, which is published only as one `notion-create-comment` call. `replace_content` stays exclusive to recycle step 4, and `update_properties` stays the status-sync tool. `discussion_id` and `selection_with_ellipsis` are forbidden on the comment too, the latter because anchoring to a body block would require matching card body text, which the section forbids.
 
 **Anchor:** "Publishing the structured statement", "The write".
+
+## S17 - Which streams a current-sprint card may come from
+
+**Situation:** The witnessed read came back witnessed with four current-sprint `Новая` rows: one `Деливери`, one `Лигал`, one `Маркетинг`, and one whose `Stream` is empty. None is named in `linked_cards` or `routed_cards`. A fifth `Новая` row of stream `Деливери` sits in `⏭️ Следующий спринт`.
+
+**Question:** Which of the five rows are in the eligible set?
+
+**Expected answer:** The four current-sprint rows, whatever their `Stream`, the empty one included; `Stream` is never a filter. The next-sprint row is not eligible, because the next sprint and the backlog are never pulled autonomously.
+
+**Anchor:** "The witnessed read", the derived-set bullets and the sentence stating that `Stream` is never a filter; "What the PM may take", the eligibility line.
+
+## S18 - A legal text on the board
+
+**Situation:** An eligible `Лигал` card asks for a draft privacy notice for the product's call recordings. `data/secondmates.md` registers a `legal` second mate whose scope covers data-protection law.
+
+**Question:** Which dispatchability bucket does the card land in, who does the work, and how is the card bound?
+
+**Expected answer:** Second-mate work: the PM names the `legal` second mate in its report, and firstmate routes the card to it through the marked request channel, skipping the project, delivery-posture, and specification steps, asking for a draft for the captain that the fleet never sends, signs, or publishes. The second mate spawns its own worker and binds it with `bin/fm-notion-link.sh <task-id> <card-url>` in its own home immediately after the spawn, then replies naming the task; only then does firstmate's `resolved [key=dispatch]` line map the card as `<card-url>=<second-mate>/<task-id>`, and the PM moves the card to `В работе`.
+
+**Anchor:** "What the PM may take", the three dispatchability buckets; "Turning a card into a task", the second-mate paragraph and the `resolved [key=dispatch]` sentence.
+
+## S19 - Capacity when second-mate cards are selected
+
+**Situation:** The brief carries `active_count: 4`, a four-entry `linked_cards` list, and `routed_cards: none`. The eligible set holds one repo-work card and two second-mate cards.
+
+**Question:** How many cards does the PM select, and does the routed work count toward `active_count` on the next brief?
+
+**Expected answer:** It leaves the repo-work card untouched at `Новая`, because the four-worker cap is full, and still selects both second-mate cards, because a second-mate card uses no implementation worker and the cap never limits them. Routed cards never count toward `active_count`; the next brief lists them in `routed_cards` instead, outside the `active_count` and `linked_cards` correspondence check.
+
+**Anchor:** "What the PM may take", the sentences on `routed_cards`, on a second-mate card never counting toward `active_count`, and on selecting at most `4 - active_count` repo-work cards plus every second-mate card.
+
+## S20 - A never-taken `Новая` card whose work landed without a card
+
+**Situation:** A current-sprint `Новая` card's 32-hex page id appears on no line of `data/notion-cards.tsv`. Its body names a booking-engine module and route. `bin/fm-board-truth.sh --card <url> --branch <inferred>` reports `truth=landed-on-stand basis=branch`, and `git grep` against the staging ref finds every thing the card names.
+
+**Question:** What does the PM do with the card, and when in the cycle?
+
+**Expected answer:** In the reconciliation step, before selection, it re-reads the card and, if it still sits at `Новая`, sets `Тестирование` and names the branch in the report as the basis; the card thereby leaves the eligible set and is not dispatched. `Завершена` stays the captain's alone.
+
+**Anchor:** "Reconciling the board with truth", the paragraph defining a never-taken card and the `Новая, never taken` row.
+
+## S21 - A `Новая` card the index has bound before
+
+**Situation:** The same as S20, except the durable index holds an archived link line for the card's page id, because a previous reconciliation reset the card from `На доработку` to `Новая`.
+
+**Question:** Does reconciliation move the card to `Тестирование`?
+
+**Expected answer:** No. A `Новая` card the index has ever bound to a task is left to intake untouched, because it is `Новая` through the captain's rework verdict or this table's own reset, and landed work is exactly what was found wanting; if it is reported at all it is as a divergence, never a write.
+
+**Anchor:** "Reconciling the board with truth", the sentence beginning "A `Новая` card the index has ever bound to a task" and the sentence on what every other `Status` means.
