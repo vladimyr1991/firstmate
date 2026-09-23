@@ -26,6 +26,10 @@ WATCH="$ROOT/bin/fm-watch.sh"
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-watch-triage-tests)
+# The watcher asks the machine-wide test-gate queue before any stale escalation;
+# point every real bin/fm-gate.sh call at a hold of this suite's own so no test
+# reads, or prunes tickets from, a live fleet's queue.
+export FM_GATE_LOCK_DIR="$TMP_ROOT/gate-lock"
 
 # Common watcher knobs: tight poll/grace, no check or heartbeat cadence unless a
 # test overrides them, so a test only exercises the path it targets. FM_CREW_STATE_BIN
@@ -1028,6 +1032,200 @@ test_paused_authoritative_working_preserves_wedge_timer() {
   pass "a paused status overridden by authoritative working preserves its wedge timer and escalates"
 }
 
+# --- a live test-gate wait is a declared external wait, never a wedge ---------
+# On 2026-09-23 three workers queued behind a 30-minute gate run were each
+# wedge-escalated up to demand-deep-inspection while bin/fm-gate.sh listed them
+# as live waiters, and the holder's idle pane the same way. Every escalation
+# point now asks the queue (FM_GATE_BIN here) and absorbs a live holder or
+# waiter; a dead one, or a queue that cannot answer, escalates as before.
+
+# Seed a provably-working stale whose wedge timer is already past the threshold,
+# so the next watcher poll reaches wedge_timer_check's escalation point.
+seed_overdue_wedge() {  # <state> <window> <task> <capture-file>
+  local state=$1 window=$2 task=$3 capture=$4 key sig
+  printf 'idle, gate queue output' > "$capture"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/$task.meta"
+  printf 'working: queue taken, gate running\n' > "$state/$task.status"
+  sig=$(seen_sig "$state/$task.status"); printf '%s' "$sig" > "$state/.seen-${task}_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text "idle, gate queue output")" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$(hash_text "idle, gate queue output")" > "$state/.stale-$key"
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  printf '2\n' > "$state/.wedge-escalations-$key"
+}
+
+test_live_gate_wait_restarts_the_wedge_timer_instead_of_escalating() {
+  local answer dir state fakebin out window key pid since
+  for answer in holder waiter; do
+    dir=$(make_case "gate-wait-wedge-$answer"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; window="test:fm-gated"
+    make_fake_gate "$fakebin" >/dev/null
+    seed_overdue_wedge "$state" "$window" gated "$dir/pane.txt"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    watch_bg "$state" "$fakebin" "$out" env FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+      FM_GATE_BIN="$fakebin/fm-gate.sh" FM_FAKE_GATE_STATE="$answer" FM_FAKE_GATE_LOG="$dir/gate.log" \
+      FM_STALE_ESCALATE_SECS=240
+    pid=$!
+    if ! wait_live "$pid" 30; then
+      reap "$pid"; fail "a live gate $answer was escalated as a wedge: $(cat "$out")"
+    fi
+    reap "$pid"
+    [ ! -s "$out" ] || fail "a live gate $answer printed a wake: $(cat "$out")"
+    [ ! -s "$state/.wake-queue" ] || fail "a live gate $answer enqueued a wake"
+    grep -Fx "task-state gated" "$dir/gate.log" >/dev/null || fail "the watcher did not ask the gate about the task: $(cat "$dir/gate.log" 2>/dev/null)"
+    since=$(cat "$state/.stale-since-$key" 2>/dev/null || echo 0)
+    [ $(( $(date +%s) - since )) -lt 60 ] || fail "a live gate $answer did not restart the wedge timer"
+    [ ! -e "$state/.wedge-escalations-$key" ] || fail "a live gate $answer kept its wedge escalation count"
+  done
+  pass "a live test-gate holder or waiter restarts the wedge timer instead of escalating"
+}
+
+test_dead_or_unanswerable_gate_wait_still_wedge_escalates() {
+  local answer dir state fakebin out window pid
+  for answer in none fail bogus; do
+    dir=$(make_case "gate-wait-dead-$answer"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; window="test:fm-gated"
+    make_fake_gate "$fakebin" >/dev/null
+    seed_overdue_wedge "$state" "$window" gated "$dir/pane.txt"
+    watch_bg "$state" "$fakebin" "$out" env FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+      FM_GATE_BIN="$fakebin/fm-gate.sh" FM_FAKE_GATE_STATE="$answer" FM_FAKE_GATE_LOG="$dir/gate.log" \
+      FM_STALE_ESCALATE_SECS=240
+    pid=$!
+    wait_for_exit "$pid" 40 || fail "a gate answer of $answer suppressed the wedge escalation"
+    grep -Fx "task-state gated" "$dir/gate.log" >/dev/null || fail "the watcher did not ask the gate before escalating ($answer)"
+    grep -F "possible wedge, escalation 3, demand-deep-inspection" "$out" >/dev/null \
+      || fail "a gate answer of $answer did not keep today's escalation: $(cat "$out")"
+  done
+  pass "a dead gate holder or waiter, or a queue that cannot answer, still wedge-escalates"
+}
+
+test_first_sight_stale_absorbs_a_live_gate_wait() {
+  local answer dir state fakebin out window key pid sig
+  for answer in waiter none; do
+    dir=$(make_case "gate-wait-first-sight-$answer"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; window="test:fm-queued"
+    make_fake_gate "$fakebin" >/dev/null
+    printf 'idle, waiting for the queue' > "$dir/pane.txt"
+    printf 'window=%s\nkind=ship\n' "$window" > "$state/queued.meta"
+    printf 'working: implementation committed\n' > "$state/queued.status"
+    sig=$(seen_sig "$state/queued.status"); printf '%s' "$sig" > "$state/.seen-queued_status"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    printf '%s' "$(hash_text "idle, waiting for the queue")" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    # No running pipeline and no busy pane: without the queue this surfaces at once.
+    watch_bg "$state" "$fakebin" "$out" env FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+      FM_FAKE_CREW_STATE='state: stopped · source: pane · idle prompt' \
+      FM_GATE_BIN="$fakebin/fm-gate.sh" FM_FAKE_GATE_STATE="$answer" FM_STALE_ESCALATE_SECS=240
+    pid=$!
+    if [ "$answer" = waiter ]; then
+      if ! wait_live "$pid" 30; then
+        reap "$pid"; fail "a first-sight stale in a live gate wait surfaced: $(cat "$out")"
+      fi
+      reap "$pid"
+      [ ! -s "$state/.wake-queue" ] || fail "a first-sight stale in a live gate wait enqueued a wake"
+      [ -s "$state/.stale-since-$key" ] || fail "a first-sight gate wait did not start the wedge timer that re-asks the queue"
+    else
+      wait_for_exit "$pid" 40 || fail "a first-sight stale with no gate wait was not surfaced"
+      grep -Fx "stale: $window" "$out" >/dev/null || fail "a first-sight stale with no gate wait lost its plain surface: $(cat "$out")"
+    fi
+  done
+  pass "a first-sight stale of a crew in a live gate wait is absorbed, and surfaces without one"
+}
+
+test_terminal_stale_absorbs_a_live_gate_wait() {
+  local dir state fakebin out window key pid sig
+  dir=$(make_case gate-wait-terminal); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; window="test:fm-regate"
+  make_fake_gate "$fakebin" >/dev/null
+  printf 'idle, rerunning the gate' > "$dir/pane.txt"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/regate.meta"
+  printf 'done: implemented and committed; ready for /no-mistakes\n' > "$state/regate.status"
+  sig=$(seen_sig "$state/regate.status"); printf '%s' "$sig" > "$state/.seen-regate_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text "idle, rerunning the gate")" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  watch_bg "$state" "$fakebin" "$out" env FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+    FM_FAKE_CREW_STATE='state: stopped · source: pane · idle prompt' \
+    FM_GATE_BIN="$fakebin/fm-gate.sh" FM_FAKE_GATE_STATE=holder FM_STALE_ESCALATE_SECS=240
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a terminal-looking stale holding the gate surfaced: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ -s "$state/.stale-since-$key" ] || fail "a terminal-looking gate holder did not start the wedge timer"
+  pass "a terminal-looking stale status is overridden by a live gate hold like an active run"
+}
+
+test_busy_turn_age_absorbs_a_live_gate_holder() {
+  local answer dir state fakebin out window key pid
+  for answer in holder none; do
+    dir=$(make_case "gate-wait-busy-$answer"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; window="test:fm-busygate"
+    make_fake_gate "$fakebin" >/dev/null
+    printf 'Working...' > "$dir/pane.txt"
+    printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busygate.meta"
+    record_pi_busy "$state" busygate
+    printf 'working: queue taken, gate running\n' > "$state/busygate.status"
+    printf '%s' "$(seen_sig "$state/busygate.status")" > "$state/.seen-busygate_status"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    printf '%s' "$(hash_text "Working...")" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    touch -t 200001010000 "$state/busygate.meta"
+    echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+    watch_bg "$state" "$fakebin" "$out" env FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+      FM_GATE_BIN="$fakebin/fm-gate.sh" FM_FAKE_GATE_STATE="$answer" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240
+    pid=$!
+    if [ "$answer" = holder ]; then
+      if ! wait_live "$pid" 30; then
+        reap "$pid"; fail "a busy pane holding the gate past the turn-age bound was escalated: $(cat "$out")"
+      fi
+      reap "$pid"
+      [ ! -s "$out" ] || fail "a busy gate holder printed a wake: $(cat "$out")"
+    else
+      wait_for_exit "$pid" 40 || fail "a busy pane past the turn-age bound with no gate wait did not escalate"
+      grep -F "possible wedge" "$out" >/dev/null || fail "busy escalation without a gate wait lost its wedge label: $(cat "$out")"
+    fi
+  done
+  pass "a busy pane past the turn-age bound is absorbed while it holds the gate, and escalates without it"
+}
+
+test_paused_resurface_waits_out_a_live_gate_wait() {
+  local answer dir state fakebin out window key pid statusf back
+  for answer in waiter none; do
+    dir=$(make_case "gate-wait-paused-$answer"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; window="test:fm-pgate"
+    make_fake_gate "$fakebin" >/dev/null
+    printf 'idle, queued' > "$dir/pane.txt"
+    printf 'window=%s\nkind=ship\n' "$window" > "$state/pgate.meta"
+    statusf="$state/pgate.status"
+    printf 'paused: waiting for the test-gate queue\n' > "$statusf"
+    back=$(( $(date +%s) - 500 ))
+    if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+    else touch -m -d "@$back" "$statusf"; fi
+    printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-pgate_status"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    printf '%s' "$(hash_text "idle, queued")" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    watch_bg "$state" "$fakebin" "$out" env FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+      FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting for the test-gate queue' \
+      FM_GATE_BIN="$fakebin/fm-gate.sh" FM_FAKE_GATE_STATE="$answer" FM_PAUSE_RESURFACE_SECS=240
+    pid=$!
+    if [ "$answer" = waiter ]; then
+      if ! wait_live "$pid" 30; then
+        reap "$pid"; fail "a declared gate-queue pause re-surfaced while the queue lists it: $(cat "$out")"
+      fi
+      reap "$pid"
+      [ ! -s "$state/.wake-queue" ] || fail "a live gate-queue pause enqueued a re-surface"
+    else
+      wait_for_exit "$pid" 40 || fail "a declared pause with no gate wait did not re-surface"
+      grep -F "awaiting external" "$out" >/dev/null || fail "the pause re-surface lost its label: $(cat "$out")"
+    fi
+  done
+  pass "a declared pause is not re-surfaced while the gate queue lists it live, and is without it"
+}
+
 # --- consecutive wedge escalations on the same pane demand deep inspection ----
 # Root cause of the PR #252 incident's ~20 minutes of unnoticed green: each
 # wedge escalation fires, gets classified as "still validating" one poll later
@@ -1852,6 +2050,12 @@ test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
+test_live_gate_wait_restarts_the_wedge_timer_instead_of_escalating
+test_dead_or_unanswerable_gate_wait_still_wedge_escalates
+test_first_sight_stale_absorbs_a_live_gate_wait
+test_terminal_stale_absorbs_a_live_gate_wait
+test_busy_turn_age_absorbs_a_live_gate_holder
+test_paused_resurface_waits_out_a_live_gate_wait
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
 test_busy_pane_below_turn_age_bound_is_absorbed

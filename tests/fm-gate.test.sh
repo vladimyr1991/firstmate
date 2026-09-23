@@ -1865,6 +1865,77 @@ test_a_parked_hold_is_neither_abandoned_nor_over_the_ceiling_until_it_expires() 
   pass "fm-gate.sh: a parked hold is neither abandoned nor over the ceiling until it expires"
 }
 
+# Supervisors ask `task-state` whether an idle pane is sitting in a live gate
+# wait, so its answer must track the real processes: a holder only while its
+# run heartbeats AND its recorded wrapper lives, a waiter only while its ticket's
+# process lives, and an unreadable queue must be an error rather than `none`.
+descendant_pids() {  # <pid>
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    printf '%s\n' "$child"
+    descendant_pids "$child"
+  done
+}
+
+test_task_state_names_live_holders_and_waiters_only() {
+  local state wt statusf out rc holder waiter orphans
+  state=$(new_state task-state)
+  GATE_LOCK=$(new_lock task-state)
+  wt="$TMP_ROOT/task-state-wt"
+  statusf="$TMP_ROOT/task-state.status"
+  register_task "$state" task-a "$wt"
+  : > "$statusf"
+  holder=$(start_run_holder "$state" task-a "$wt" "$statusf" "sleep 20")
+  waiter=$(start_waiter "$state" task-b 30 "$TMP_ROOT/task-state.b")
+
+  out=$(gate "$state" task-state task-a 2>&1); rc=$?
+  expect_code 0 "$rc" "task-state must answer for the holder"
+  [ "$out" = holder ] || fail "a heartbeating holder must read holder: $out"
+  out=$(gate "$state" task-state task-b 2>&1); rc=$?
+  expect_code 0 "$rc" "task-state must answer for a waiter"
+  [ "$out" = waiter ] || fail "a live waiter must read waiter: $out"
+  out=$(gate "$state" task-state task-z 2>&1); rc=$?
+  expect_code 0 "$rc" "task-state must answer for an unrelated task"
+  [ "$out" = none ] || fail "a task neither holding nor waiting must read none: $out"
+
+  # A heartbeat past the abandonment threshold is no proof of a live run.
+  age_path "$GATE_LOCK/heartbeat" 5000
+  [ "$(gate "$state" task-state task-a 2>&1)" = none ] || fail "a stale heartbeat must not read as a live holder"
+  touch "$GATE_LOCK/heartbeat"
+  [ "$(gate "$state" task-state task-a 2>&1)" = holder ] || fail "a refreshed heartbeat must read holder again"
+
+  # A parked hold runs nothing, so it is not a wait.
+  printf 'reason=x\nuntil=%s\n' "$(( $(date +%s) + 100 ))" > "$GATE_LOCK/parked"
+  [ "$(gate "$state" task-state task-a 2>&1)" = none ] || fail "a parked hold must not read as a live holder"
+  rm -f "$GATE_LOCK/parked"
+
+  # A wrapper killed outright leaves a fresh heartbeat behind; it is still dead.
+  # Its heartbeat loop and command outlive it, so they are collected first and
+  # stopped once the case is read.
+  orphans=$(descendant_pids "$holder")
+  kill -9 "$holder" 2>/dev/null
+  wait "$holder" 2>/dev/null
+  touch "$GATE_LOCK/heartbeat"
+  [ -d "$GATE_LOCK" ] || fail "a killed wrapper must leave its hold behind for this case"
+  out=$(gate "$state" task-state task-a 2>&1)
+  # shellcheck disable=SC2086  # a whitespace-separated pid list
+  [ -z "$orphans" ] || kill $orphans 2>/dev/null
+  [ "$out" = none ] || fail "a holder whose wrapper is gone must read none: $out"
+
+  # A dead waiter's ticket no longer counts.
+  kill "$waiter" 2>/dev/null
+  wait "$waiter" 2>/dev/null
+  [ "$(gate "$state" task-state task-b 2>&1)" = none ] || fail "a waiter whose process is gone must read none"
+
+  # An unreadable queue is an error, never an answer.
+  GATE_LOCK=$(new_lock task-state-foreign)
+  ln -s "$TMP_ROOT" "$GATE_LOCK.queue"
+  out=$(gate "$state" task-state task-b 2>&1); rc=$?
+  expect_code 1 "$rc" "task-state must fail when the queue cannot be read"
+  assert_not_contains "$out" none "an unreadable queue must not print none"
+  pass "fm-gate.sh: task-state names live holders and waiters only, and fails on an unreadable queue"
+}
+
 # `run` is the mandated one-liner's whole body: the running status line is
 # written the instant the queue is granted, the command's own exit status is
 # carried out, and the release happens on every exit status - which used to be
@@ -2340,6 +2411,7 @@ test_a_marker_refusal_names_what_it_found
 test_an_unreadable_marker_owner_is_retried_not_called_foreign
 test_a_foreign_queue_directory_or_journal_is_refused_and_never_removed
 test_a_parked_hold_is_neither_abandoned_nor_over_the_ceiling_until_it_expires
+test_task_state_names_live_holders_and_waiters_only
 test_run_writes_the_running_line_releases_on_failure_and_carries_the_exit_status
 test_breaking_a_hold_leaves_a_trace_where_firstmate_reads
 test_limits_and_messages_name_thresholds_by_variable
