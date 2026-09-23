@@ -67,27 +67,58 @@ test_inject_msg_long_digest_deferred_writes_no_file() {
 }
 
 test_inject_msg_long_digest_unconfirmed_removes_file() {
-  local dir state sent_log
-  dir=$(make_supercase inject-long-unconfirmed)
-  state="$dir/state"
-  sent_log="$dir/sent.log"
-  afk_enter "$state"
-  (
-    fm_backend_target_exists() { return 0; }
-    pane_is_busy() { return 1; }
-    fm_backend_composer_state() { printf 'empty'; }
-    fm_backend_tmux_send_text_submit() { printf '%s\n' "$2" >> "$sent_log"; printf 'send-failed'; }
-    fm_backend_source() { return 0; }
-    for _ in 1 2 3; do
+  local dir state sent_log stub_verdict
+  for stub_verdict in send-failed none; do
+    dir=$(make_supercase "inject-long-unconfirmed-$stub_verdict")
+    state="$dir/state"
+    sent_log="$dir/sent.log"
+    afk_enter "$state"
+    (
+      fm_backend_target_exists() { return 0; }
+      pane_is_busy() { return 1; }
+      fm_backend_composer_state() { printf 'empty'; }
+      fm_backend_tmux_send_text_submit() {
+        printf '%s\n' "$2" >> "$sent_log"
+        [ "$stub_verdict" = none ] || printf '%s' "$stub_verdict"
+      }
+      fm_backend_source() { return 0; }
+      for _ in 1 2 3; do
+        FM_SEND_MAX_BYTES=400 FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=s:w \
+          FM_INJECT_CONFIRM_SLEEP=0 inject_msg "$(printf 'z%.0s' $(seq 1 600))" "$state" \
+          && fail "inject_msg should fail when the pointer submit is unconfirmed ($stub_verdict)"
+      done
+      true
+    ) || fail "long-digest unconfirmed ($stub_verdict) subshell failed"
+    [ "$(grep -c 'too long for the composer' "$sent_log")" -eq 3 ] || fail "each retry should have sent a pointer ($stub_verdict): $(cat "$sent_log")"
+    ls "$state"/.subsuper-digest-* >/dev/null 2>&1 && fail "untyped pointer submits ($stub_verdict) left orphan digest files: $(ls "$state"/.subsuper-digest-*)"
+  done
+  pass "inject_msg: a send-failed or empty-verdict pointer submit removes its digest file so retries leave no orphans"
+}
+
+test_inject_msg_long_digest_pending_keeps_file() {
+  local dir state sent_log stub_verdict digest_file
+  for stub_verdict in pending unknown; do
+    dir=$(make_supercase "inject-long-$stub_verdict")
+    state="$dir/state"
+    sent_log="$dir/sent.log"
+    afk_enter "$state"
+    (
+      fm_backend_target_exists() { return 0; }
+      pane_is_busy() { return 1; }
+      fm_backend_composer_state() { printf 'empty'; }
+      fm_backend_tmux_send_text_submit() { printf '%s' "$2" > "$sent_log"; printf '%s' "$stub_verdict"; }
+      fm_backend_source() { return 0; }
       FM_SEND_MAX_BYTES=400 FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=s:w \
-        FM_INJECT_CONFIRM_SLEEP=0 inject_msg "$(printf 'z%.0s' $(seq 1 600))" "$state" \
-        && fail "inject_msg should fail when the pointer submit is unconfirmed"
-    done
-    true
-  ) || fail "long-digest unconfirmed subshell failed"
-  [ "$(grep -c 'too long for the composer' "$sent_log")" -eq 3 ] || fail "each retry should have sent a pointer: $(cat "$sent_log")"
-  ls "$state"/.subsuper-digest-* >/dev/null 2>&1 && fail "unconfirmed pointer submits left orphan digest files: $(ls "$state"/.subsuper-digest-*)"
-  pass "inject_msg: an unconfirmed pointer submit removes its digest file so retries leave no orphans"
+        FM_INJECT_CONFIRM_SLEEP=0 inject_msg "KEEP-MARKER $(printf 'k%.0s' $(seq 1 600))" "$state" \
+        && fail "inject_msg should report a $stub_verdict pointer submit as undelivered"
+      true
+    ) || fail "long-digest $stub_verdict subshell failed"
+    digest_file=$(sed -n 's/.*read it in full at //p' "$sent_log")
+    [ -n "$digest_file" ] || fail "no pointer was typed for the $stub_verdict case: $(cat "$sent_log")"
+    grep -q 'KEEP-MARKER' "$digest_file" 2>/dev/null \
+      || fail "a $stub_verdict pointer submit deleted the digest file the typed pointer names: $digest_file"
+  done
+  pass "inject_msg: a pending/unknown pointer submit keeps the digest file the pointer names"
 }
 
 test_inject_msg_long_digest_pointer_over_limit_refuses() {
@@ -2038,6 +2069,7 @@ test_inject_msg_herdr_submits_through_backend_dispatch
 test_inject_msg_long_digest_goes_through_file_pointer
 test_inject_msg_long_digest_deferred_writes_no_file
 test_inject_msg_long_digest_unconfirmed_removes_file
+test_inject_msg_long_digest_pending_keeps_file
 test_inject_msg_long_digest_pointer_over_limit_refuses
 test_send_text_submit_refuses_over_limit
 test_inject_msg_defers_on_dead_shell_unknown

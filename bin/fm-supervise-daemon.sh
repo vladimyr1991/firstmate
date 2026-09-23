@@ -972,7 +972,9 @@ inject_msg() {  # <message> [state]
   if [ "$verdict" = empty ]; then
     return 0  # Backend confirmed the submit.
   fi
-  [ -z "$digest_file" ] || rm -f "$digest_file" 2>/dev/null
+  case "$verdict" in
+    ''|send-failed) [ -z "$digest_file" ] || rm -f "$digest_file" 2>/dev/null ;;
+  esac
   log "inject failed: submit unconfirmed after $retries retries (verdict=$verdict, text may be in composer)"
   return 1
 }
