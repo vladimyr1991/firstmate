@@ -447,17 +447,17 @@ test_watch_restart_rejects_reused_pid() {
   pass "watch restart refuses to signal a reused pid"
 }
 
-# Wait until a backgrounded node peer has installed its SIGTERM handler and
-# touched its ready file. Seeing the pid exec node is not enough: --restart sends
-# TERM immediately, and a node still booting dies of it before the handler is
-# registered, so the arm would correctly start a fresh watcher instead of
-# attaching. The ready file lands after exec, so the identity snapshot taken next
-# also sees the final command line.
-wait_for_ready() {
-  local pid=$1 ready=$2 i=0
-  while [ "$i" -lt 200 ]; do
-    [ -e "$ready" ] && return 0
-    kill -0 "$pid" 2>/dev/null || return 1
+# Wait until a backgrounded pid has exec'd the named program. Between fork and
+# exec the child still carries this shell's command line, and fm_pid_identity
+# folds the command line into the identity, so a snapshot taken too early would
+# mismatch the running program and read as a reused pid.
+wait_for_exec() {
+  local pid=$1 name=$2 i=0 comm
+  while [ "$i" -lt 100 ]; do
+    comm=$(LC_ALL=C ps -p "$pid" -o comm= 2>/dev/null || true)
+    case "$comm" in
+      *"$name"*) return 0 ;;
+    esac
     sleep 0.05
     i=$((i + 1))
   done
@@ -471,9 +471,9 @@ test_watch_restart_attaches_to_healthy_peer() {
   fakebin="$dir/fakebin"
   out="$dir/restart.out"
   mark_pr_check_migration_complete "$state"
-  node -e 'process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.argv[1], ""); setTimeout(() => {}, 300000)' "$dir/peer.ready" &
+  node -e '{const t=Date.now()+1500;while(Date.now()<t){}} process.on("SIGTERM", () => {}); setTimeout(() => {}, 300000)' &
   peer=$!
-  wait_for_ready "$peer" "$dir/peer.ready" || fail "peer pid $peer never installed its SIGTERM handler"
+  wait_for_exec "$peer" node || fail "peer pid $peer never exec'd node"
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"
@@ -1039,31 +1039,4 @@ test_msys_pid_identity_uses_proc() {
   pass "MSYS process identity uses compatible /proc fields"
 }
 
-test_singleton_start
-test_pid_identity_is_locale_invariant
-test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
-test_msys_pid_identity_uses_proc
-test_stale_watch_lock_reclaimed
-test_live_stale_watch_lock_is_actionable
-test_guard_warnings
-test_lock_single_winner_under_concurrency
-test_lock_steals_dead_pid_lock
-test_lock_stale_steal_single_winner_under_concurrency
-test_lock_live_steal_mutex_is_not_reclaimed
-test_lock_does_not_steal_live_lock
-test_lock_empty_pid_uses_minimum_grace
-test_lock_late_claim_loses_after_recreate
-test_lock_paused_mid_acquire_claim_fails_during_steal
-test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
-test_watcher_self_evicts_on_lock_takeover
-test_arm_self_eviction_is_loud_without_successor
-test_arm_attaches_and_waits_for_live_fresh_watcher
-test_attached_arm_signal_is_recorded_in_cycle_ledger
-test_arm_starts_and_self_heals
-test_arm_hup_cleans_child_and_temp_output
-test_arm_propagates_immediate_wake_before_confirmation
-test_arm_waits_for_peer_beacon_after_child_stands_down
-test_arm_fails_loud_when_no_fresh_watcher_confirmable
-test_cycle_exit_ledger_links_successor_and_stays_bounded
-test_stopped_watcher_is_live_but_stale_then_exit_is_classified
