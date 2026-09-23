@@ -91,6 +91,7 @@ bin/fm-test-run.sh --check-coverage
 `bin/fm-test-run.sh --check-coverage` verifies that both parallel lanes partition the proven-isolated set.
 It also verifies that the parallel lanes, portable serial lane, and real-Herdr family are disjoint and cover every `tests/*.test.sh` script.
 It separately verifies that the portable serial CI shards are non-empty, disjoint, and together equal the portable serial lane.
+It refuses any `tests/*-e2e.test.sh` that uses `bin/fm-herdr-lab.sh` but belongs to neither `real-herdr-gated` nor `live-harness-optin`, since such a script would skip green in a portable lane.
 
 ## Timing artifacts
 

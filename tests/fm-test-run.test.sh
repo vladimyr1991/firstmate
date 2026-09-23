@@ -416,6 +416,33 @@ test_portable_shard_union_and_coverage_guard() {
   pass "portable shard union, disjointness, and coverage guard hold"
 }
 
+test_coverage_guard_refuses_herdr_lab_e2e_outside_herdr_families() {
+  local tmp out rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-herdr-guard.XXXXXX")
+  mkdir -p "$tmp/repo"
+  cp -R "$ROOT/bin" "$ROOT/tests" "$tmp/repo/"
+  "$tmp/repo/bin/fm-test-run.sh" --check-coverage >/dev/null 2>"$tmp/err" \
+    || { rm -rf "$tmp"; fail "coverage guard must pass on an unchanged copy: $(cat "$tmp/err")"; }
+
+  # A new real-Herdr e2e with no family would skip green in a portable lane.
+  printf '#!/usr/bin/env bash\nH=bin/fm-herdr-lab.sh\n' >"$tmp/repo/tests/fm-zz-unfiled-herdr-e2e.test.sh"
+  rc=0
+  out=$("$tmp/repo/bin/fm-test-run.sh" --check-coverage 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "coverage guard must refuse an unfiled Herdr lab e2e"; }
+  assert_contains "$out" "tests/fm-zz-unfiled-herdr-e2e.test.sh" "guard names the unfiled Herdr e2e"
+  rm -f "$tmp/repo/tests/fm-zz-unfiled-herdr-e2e.test.sh"
+
+  # Dropping the focus-flash e2e from its family must be refused by name.
+  sed 's/fm-backend-herdr-focus-flash-e2e\.test\.sh|/fm-zz-absent.test.sh|/' \
+    "$ROOT/bin/fm-test-run.sh" >"$tmp/repo/bin/fm-test-run.sh"
+  rc=0
+  out=$("$tmp/repo/bin/fm-test-run.sh" --check-coverage 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "coverage guard must refuse the focus-flash e2e outside real-herdr-gated"; }
+  assert_contains "$out" "tests/fm-backend-herdr-focus-flash-e2e.test.sh" "guard names the focus-flash e2e"
+  rm -rf "$tmp"
+  pass "coverage guard refuses a Herdr lab e2e that belongs to no Herdr family"
+}
+
 test_portable_serial_shards_partition_the_serial_lane() {
   local lanes count serial shard listed union dups shard_lane total cap
   lanes=$("$RUNNER" --list-lanes)
@@ -1170,6 +1197,7 @@ test_gate_skip_accounting
 test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
+test_coverage_guard_refuses_herdr_lab_e2e_outside_herdr_families
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
