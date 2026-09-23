@@ -72,7 +72,7 @@ Use this bank selectively after inspecting available evidence. Ask only question
 - Are logs, screenshots, traces, request IDs, failing tests, or suspect changes available?
 - What is the blast radius and severity? Is there data loss, security impact, or a safe workaround?
 - Must the fix repair existing bad data or only prevent recurrence?
-- Which regression test fails before the fix and passes after it?
+- Which regression test fails before the fix and passes after it, and which runner and CI lane actually executes it?
 
 ## Refactors
 

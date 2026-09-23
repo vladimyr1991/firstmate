@@ -107,6 +107,7 @@ A criterion phrased as "before and after this change" is a one-shot migration ch
 Left unprescribed, the implementer substitutes a self-comparison that proves determinism, and the gate goes green on a property nobody checked.
 
 When the specification prescribes a test seam - a fixture, environment flag, media emulation, or hook - verify it against the project's own testing documentation and a one-line measurement on the dispatch base.
+For every test the specification names, existing or new, also name the runner and CI lane that actually executes it and verify that selection on the dispatch base; a test file no lane selects passes locally and asserts nothing in the gate (task fm-herdr-e2e-green-fix, PR 89, relied on a `.test.py` that no lane ever ran).
 Prefer project-proven seams over framework documentation.
 If the project documents that a Playwright fixture does not reach the page, prescribe the working form, not the non-working framework-default form: for a project whose config force-feeds the fixture form's effect, that is `page.emulateMedia({ reducedMotion: 'reduce' })` called explicitly before `goto` rather than the bare `test.use({ ... })` fixture.
 
@@ -127,6 +128,7 @@ Mark `READY` only when all statements below are true:
 - no unresolved choice can cause meaningful rework;
 - A specification that makes a component READ a new record must name the component that WRITES it, or state explicitly that the record is recorded by hand and by whom.
   If it is recorded by hand into a file another component parses, the spec must also name every existing parser of that file and say what the new key's position and format must satisfy - a hand-edited key is a change to that file's contract, not an addition beside it.
+  The same census applies to any shared resource the change touches - a lock, file, socket, queue, or budget: the specification must name every other component that waits on or consumes it and state the ruling for each, because naming the one waiter the task was about leaves its siblings to regress silently (task fm-herdr-e2e-green-fix, PR 89, named one waiter on a session lock and missed two siblings on the same lock).
 - A specification that defines a derived set, a completeness claim, or a correctness rule over data produced by a named producer must enumerate every way that producer can return an incomplete answer - its documented exclusions, bounds, timeouts, and skip rules, including ones defined elsewhere in the same specification - and state the ruling for each, and where that rule matches records held by two producers it must enumerate both producers' accepted identifier forms as well, not only each producer's incompleteness modes.
   Naming the risk class and assigning its mitigation to the implementer does not satisfy this.
 - A specification that constrains test changes - forbidding new tests, freezing the existing ones, or naming the only test that may change - must name the behavioral coverage that constraint may not cost, or state explicitly that coverage may be traded and why.
