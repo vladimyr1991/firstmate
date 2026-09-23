@@ -334,9 +334,11 @@ busy_turn_over_age() {  # <task>
 # clock, a token counter) cannot keep resetting the cadence the way a hash-tied
 # timer would. A .paused-resurfaced-<key> throttle marker records the last
 # re-surface epoch so, once past the window, it fires once per window rather than
-# every poll. Advances the stale suppressor to <hash> and flags the key paused.
+# every poll. While the gate queue vouches for the task, a
+# .paused-gate-checked-<key> marker throttles re-asking fm-gate to once per
+# STALE_ESCALATE_SECS. Advances the stale suppressor to <hash> and flags the key paused.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason
+  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age gc reason
   key=$(printf '%s' "$win" | tr ':/.' '___')
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -347,12 +349,19 @@ handle_paused_stale() {  # <window> <task> <hash>
   age=$(( $(date +%s) - mtime ))
   rf="$STATE/.paused-resurfaced-$key"
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
-  if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ] \
-    && ! crew_in_gate_wait "$task"; then
-    reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
-    fm_wake_append stale "$win" "$reason" || exit 1
-    date +%s > "$rf"
-    wake "$reason"
+  gc="$STATE/.paused-gate-checked-$key"
+  if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
+    if [ "$(age_of "$gc")" -lt "$STALE_ESCALATE_SECS" ]; then
+      :
+    elif crew_in_gate_wait "$task"; then
+      date +%s > "$gc"
+    else
+      rm -f "$gc"
+      reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
+      fm_wake_append stale "$win" "$reason" || exit 1
+      date +%s > "$rf"
+      wake "$reason"
+    fi
   fi
   triage_log "absorbed stale (paused, awaiting external, age ${age}s): $win"
 }
@@ -362,7 +371,7 @@ clear_pause_state() {  # <window>
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key" "$STATE/.paused-gate-checked-$key"
 }
 
 clear_pause_tracking() {  # <window>
@@ -436,7 +445,7 @@ surface_nonterminal_stale() {  # <window> <hash>
     date +%s > "$STATE/.paused-rechecked-$key"
     date +%s > "$STATE/.paused-resurfaced-$key"
   else
-    rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+    rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key" "$STATE/.paused-gate-checked-$key"
   fi
   wake "stale: $win"
 }

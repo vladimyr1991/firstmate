@@ -1226,6 +1226,68 @@ test_paused_resurface_waits_out_a_live_gate_wait() {
   pass "a declared pause is not re-surfaced while the gate queue lists it live, and is without it"
 }
 
+test_paused_gate_wait_rechecks_gate_on_escalate_cadence() {
+  local dir state fakebin out window key pid statusf back gc gatelog
+  dir=$(make_case gate-wait-paused-throttle); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; window="test:fm-pthrottle"; gatelog="$dir/gate.log"
+  make_fake_gate "$fakebin" >/dev/null
+  printf 'idle, queued' > "$dir/pane.txt"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/pthrottle.meta"
+  statusf="$state/pthrottle.status"
+  printf 'paused: waiting for the test-gate queue\n' > "$statusf"
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-pthrottle_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  gc="$state/.paused-gate-checked-$key"
+  printf '%s' "$(hash_text "idle, queued")" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  run_throttle_watch() {  # <gate answer>
+    watch_bg "$state" "$fakebin" "$out" env FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+      FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting for the test-gate queue' \
+      FM_GATE_BIN="$fakebin/fm-gate.sh" FM_FAKE_GATE_STATE="$1" FM_FAKE_GATE_LOG="$gatelog" \
+      FM_PAUSE_RESURFACE_SECS=240 FM_STALE_ESCALATE_SECS=240
+    pid=$!
+  }
+  age_gate_marker() {
+    back=$(( $(date +%s) - 300 ))
+    printf '%s\n' "$back" > "$gc"
+    if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$gc"
+    else touch -m -d "@$back" "$gc"; fi
+  }
+
+  date +%s > "$gc"
+  run_throttle_watch none
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a fresh gate-checked marker did not hold the pause absorbed: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ ! -s "$gatelog" ] || fail "repeated paused polls under a fresh gate-checked marker asked the gate: $(cat "$gatelog")"
+  [ ! -s "$state/.wake-queue" ] || fail "a fresh gate-checked marker let the pause re-surface"
+
+  age_gate_marker
+  run_throttle_watch waiter
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a live gate waiter re-surfaced after the gate-checked marker aged: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ "$(grep -c '^task-state pthrottle$' "$gatelog")" -eq 1 ] \
+    || fail "an aged gate-checked marker did not re-ask the gate exactly once: $(cat "$gatelog" 2>/dev/null)"
+  [ "$(( $(date +%s) - $(cat "$gc") ))" -lt 60 ] || fail "a vouched gate re-ask did not restart the gate-checked marker"
+  [ ! -s "$state/.wake-queue" ] || fail "a vouched gate re-ask enqueued a re-surface"
+
+  age_gate_marker
+  : > "$gatelog"
+  run_throttle_watch none
+  wait_for_exit "$pid" 40 || fail "a none gate answer after the marker aged did not re-surface the pause"
+  grep -F "awaiting external" "$out" >/dev/null || fail "the pause re-surface lost its label: $(cat "$out")"
+  grep -Fx 'task-state pthrottle' "$gatelog" >/dev/null || fail "the re-surface did not ask the gate first"
+  [ ! -e "$gc" ] || fail "a re-surface left the gate-checked marker behind"
+  pass "a vouched declared pause re-asks the gate once per escalate window and re-surfaces once it stops vouching"
+}
+
 # --- consecutive wedge escalations on the same pane demand deep inspection ----
 # Root cause of the PR #252 incident's ~20 minutes of unnoticed green: each
 # wedge escalation fires, gets classified as "still validating" one poll later
@@ -2056,6 +2118,7 @@ test_first_sight_stale_absorbs_a_live_gate_wait
 test_terminal_stale_absorbs_a_live_gate_wait
 test_busy_turn_age_absorbs_a_live_gate_holder
 test_paused_resurface_waits_out_a_live_gate_wait
+test_paused_gate_wait_rechecks_gate_on_escalate_cadence
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
 test_busy_pane_below_turn_age_bound_is_absorbed
